@@ -1971,6 +1971,16 @@ _VALUE_TUPLE_ENTERED_TEXT = (
     "and its date is the order's ENTERED date. Confirm only if this is a "
     "different fill."
 )
+# A map value-tuple item on the execution date that the TYPED values do not
+# derive from (self-sweep SS-6, R5-03's class): such an item survives the
+# dedup only because the DB scan of the typed tuple did not match it, so
+# "These values match" would state a false equality; it names the ORDER's
+# values instead.
+_VALUE_TUPLE_ORDER_TEXT = (
+    "Recorded fill #{fill_id} ({date} at {price:.2f} x {qty:g}), which "
+    "carries no broker order id, has order {order}'s date, price and "
+    "quantity. Confirm only if this is a different fill."
+)
 _PARTIAL_TEXT = (
     "Possible partial of this order: fill #{fill_id} ({date} at {price:.2f} "
     "x {qty:g}). Confirm only if fill #{fill_id} is not part of order "
@@ -1985,7 +1995,8 @@ _UNREADABLE_TEXT = (
 #: against a static walk of the module's ``_*_TEXT`` names.
 FLAG_TEXT_TEMPLATES: tuple[str, ...] = (
     "_F1_OTHER_TEXT", "_F1_NONE_TEXT", "_VALUE_TUPLE_TEXT",
-    "_VALUE_TUPLE_ENTERED_TEXT", "_PARTIAL_TEXT", "_UNREADABLE_TEXT",
+    "_VALUE_TUPLE_ENTERED_TEXT", "_VALUE_TUPLE_ORDER_TEXT", "_PARTIAL_TEXT",
+    "_UNREADABLE_TEXT",
 )
 
 
@@ -2198,11 +2209,17 @@ def exit_record_flags(
                 # The resolver matches a value tuple on the candidate's
                 # execution date (the entry's own ``date``) or on its order's
                 # ENTERED date; an item dated otherwise than the entry is the
-                # entered-date match, and its text says so (R5-03).
-                template = (
-                    _VALUE_TUPLE_TEXT
-                    if item.get("date") == selected_entry.get("date")
-                    else _VALUE_TUPLE_ENTERED_TEXT)
+                # entered-date match, and its text says so (R5-03). An
+                # execution-date item says "These values match" only when the
+                # TYPED values derive from it; otherwise it names the order's
+                # values (SS-6), because that equality would be false.
+                if item.get("date") != selected_entry.get("date"):
+                    template = _VALUE_TUPLE_ENTERED_TEXT
+                elif derives_from(item, exit_date=t_date,
+                                  exit_price=t_price, shares=t_shares):
+                    template = _VALUE_TUPLE_TEXT
+                else:
+                    template = _VALUE_TUPLE_ORDER_TEXT
                 map_value_tuple_items.append((fill_id, template.format(
                     fill_id=fill_id, date=item.get("date"),
                     price=float(item.get("price")),

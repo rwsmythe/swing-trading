@@ -409,3 +409,30 @@ def test_r503_an_entered_date_match_says_so_and_never_these_values_match():
     assert "fill #7 (2026-05-19 at 130.00 x 4)" in text7
     assert by_id[f"{FLAG_VALUE_TUPLE}|o1|8"].startswith(
         "These values match recorded fill #8")
+
+
+def test_ss6_a_map_item_the_typed_values_do_not_derive_from_never_says_these_values_match():
+    """Self-sweep SS-6 (uncounted), R5-03's class re-grepped. A map
+    value-tuple item on the EXECUTION date that is NOT deduplicated into a
+    DB-derived match is one the typed values do NOT derive from (the DB scan
+    runs on the typed tuple over the same anonymous rows, at the same grain),
+    so "These values match recorded fill #N" states a false equality. Its
+    text names the ORDER's values instead; an item the typed values DO
+    derive from keeps the value-tuple text (R5-03's control, unchanged).
+    PRE-FIX: the edited POST rendered "These values match recorded fill
+    #8"."""
+    executed = {"fill_id": 8, "date": "2026-05-20", "price": 130.0,
+                "quantity": 4.0, "reason": DUP_REASON_VALUE_TUPLE}
+    s1 = dict(O1, possible_duplicates=[executed])
+    flags = _flags(("2026-05-20", 131.5, 4), selected=s1, selected_id="o1",
+                   cmap={"h1": s1, "h2": O2})
+    by_id = {f.identity: f.text for f in flags}
+    text8 = by_id[f"{FLAG_VALUE_TUPLE}|o1|8"]
+    assert "These values match" not in text8
+    assert "order o1's date, price and quantity" in text8
+    assert "fill #8 (2026-05-20 at 130.00 x 4)" in text8
+    unedited = _flags(("2026-05-20", 130.0, 4), selected=s1,
+                      selected_id="o1", cmap={"h1": s1, "h2": O2})
+    assert {f.identity: f.text for f in unedited}[
+        f"{FLAG_VALUE_TUPLE}|o1|8"].startswith(
+            "These values match recorded fill #8")
