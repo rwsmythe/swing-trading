@@ -337,4 +337,13 @@ on stdin. Transcripts: `C:/Users/rwsmy/swing-data/review-transcripts/d87-load/`.
 
 | Round | Model / effort | Footer | Verdict | Crit / Major / Minor | New / Reopened | Depth (orchestrator) |
 |---|---|---|---|---|---|---|
-| (none) | | | | | | |
+| R1 (head `08e83e62`, diff `tests/` vs `9845b799`) | gpt-5.6-sol / high (= `strong.config.toml`) | 146,268; `^ERROR` 0 | NEW_CRITICAL_MAJOR_FOUND (x2, the duplicated final message; the other token 0) | 0 / 3 / 1 | 4 new / 0 reopened | |
+
+R1 findings and dispositions (full text + adjudication: `C:/Users/rwsmy/swing-data/review-transcripts/d87-load/copowers-findings.md`; transcript `review-r1.txt`, 613,189 bytes; prompt `prompt-r1.md`, 44,004 bytes):
+
+- R1-01 major: the final-head harness run measured the three children higher (182.03 / 85.88 / 87.97 s), so 5x exceeds the committed 900 / 300 / 300 s. VALID; routed (L2's 5x passes the 15-minute hang latency CHARC accepted). Proposed: basis = max over all harness runs, L2 1000 s, the two CLI children 450 s.
+- R1-02 major: the post-fix sibling's 0.5 s self-release starts at `held`, so a descheduled main thread can still pass without contention. VALID by read; routed (it contradicts the ruling's "now non-vacuous"). Proposed: start the 0.5 s only once the audit connection's `BEGIN IMMEDIATE` has begun (`set_trace_callback` event).
+- R1-03 major as filed: the module comment at `test_schwab_setup_cli.py:30-33` falsely says both regexes target the sentinel (VALID, comment fix in scope); the unpinned real-token construction path is pre-existing (Codex agrees), proposed BANKED to the orchestrator.
+- R1-04 minor: the holder neither closes its connection in `finally` nor surfaces thread exceptions. VALID, fix in scope.
+
+Nothing has been fixed since R1; the loop is stopped at the R1 gate.
