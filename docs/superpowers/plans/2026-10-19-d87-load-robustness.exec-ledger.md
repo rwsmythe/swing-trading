@@ -492,8 +492,8 @@ on stdin. Transcripts: `C:/Users/rwsmy/swing-data/review-transcripts/d87-load/`.
 
 | Round | Model / effort | Footer | Verdict | Crit / Major / Minor | New / Reopened | Depth (orchestrator) |
 |---|---|---|---|---|---|---|
-| R1 (head `08e83e62`, diff `tests/` vs `9845b799`) | gpt-5.6-sol / high (= `strong.config.toml`) | 146,268; `^ERROR` 0 | NEW_CRITICAL_MAJOR_FOUND (x2, the duplicated final message; the other token 0) | 0 / 3 / 1 | 4 new / 0 reopened | |
-| R2 (head `200d836d`, diff `tests/` vs `9845b799`; cell 2) | gpt-5.6-sol / high (= `strong.config.toml`) | 187,459; `^ERROR` 0 | NO_NEW_CRITICAL_MAJOR (x2, the duplicated final message; the other token 0) | 0 / 0 / 3 | 3 new / 0 reopened | |
+| R1 (head `08e83e62`, diff `tests/` vs `9845b799`) | gpt-5.6-sol / high (= `strong.config.toml`) | 146,268; `^ERROR` 0 | NEW_CRITICAL_MAJOR_FOUND (x2, the duplicated final message; the other token 0) | 0 / 3 / 1 | 4 new / 0 reopened | cell 1: 420,552 at return (over the 400K cap; round 2 went to a fresh cell) |
+| R2 (head `200d836d`, diff `tests/` vs `9845b799`; cell 2) | gpt-5.6-sol / high (= `strong.config.toml`) | 187,459; `^ERROR` 0 | NO_NEW_CRITICAL_MAJOR (x2, the duplicated final message; the other token 0) | 0 / 0 / 3 | 3 new / 0 reopened | cell 2: 281,233 at return |
 
 R1 findings and dispositions (full text + adjudication: `C:/Users/rwsmy/swing-data/review-transcripts/d87-load/copowers-findings.md`; transcript `review-r1.txt`, 613,189 bytes; prompt `prompt-r1.md`, 44,004 bytes):
 
@@ -528,3 +528,19 @@ continuation brief stops at this gate):
 
 Round 2 is the first clean verdict, so the A-loop ends here. Spend, A
 rounds: 146,268 + 187,459 = 333,727 tokens.
+
+## 6. Orchestrator dispositions of the round-2 minors (after the cell returned)
+
+- R2-01: FIXED at `7046199d` (orchestrator, docstring only). The module
+  docstring no longer credits `_redact_message`; it points at the comment
+  beside `_SENTINEL_ACCESS_TOKEN`, which states the real path. File passes
+  (27, `-n 0`); ruff clean. It changes no examined behaviour, so no
+  confirming round.
+- R2-02: ACCEPTED as is. A holder error that coincides with a failing test
+  body goes unreported, but the test is already red; it cannot produce a
+  false green, a leak or a hang.
+- R2-03: no change; the unsaturated gate is recorded in 4D.
+- Outcome in the rule's vocabulary: CONVERGED at round 2.
+- Noted, banked to the orchestrator: a PowerShell child in the suite wrote
+  `Microsoft/Windows/PowerShell/ModuleAnalysisCache` relative to its cwd
+  (the worktree root, untracked, not in any commit).
