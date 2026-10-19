@@ -119,3 +119,61 @@ Cell 2 proposed opening the plan's short read connection through `swing.data.db.
 11. T7-f: the base variant is voided by d2 (400, refresh notice, one o1 row); the variant with `_exit_candidates_maps_equal` stubbed True gets "already recorded as fill(s) #A" (400, one o1 row); tab B's acknowledgements are test-built because its first response drops its flags.
 
 Author of the sections above: orchestrator.
+
+## Cell 3 (implementer-opus-high, dispatched off `6f7ebade`)
+
+Author of this section: cell 3.
+
+| Commit | Task | Note |
+|---|---|---|
+| `67c4573e` | 22-F roster message | the unclassified-failure text points a later validator to `LATER_ARC_ROSTER`, never `ROSTER` (CHARC ratification 2026-10-19, relayed by the orchestrator) |
+| `606a25fb` | T7 | the confirm shape; FORK 1 precheck, FORK 3 flag drop, one connection; T6-b/c/g, the T6-h confirm leg, FORK 1 (ii)/(iii), T7-a..j, the one-connection test; 8 + 2 tests superseded (named in the body) |
+| `867dfb67` | T8 | `--confirm-duplicate`; cell 1's draft committed with its seeding bug fixed (a 10-share entry) |
+
+**Encodings cell 3 made without a fork (Reviewer A's prompt carries each, challenge invited):**
+12. The d2 check of a `force` POST runs BEFORE the route connection opens (it is a Schwab fetch, not one of the ruled advisory reads); the FORK 1 precheck therefore follows it. Either order records nothing; a void confirm that is also over-size shows the void text, not "exceeds".
+13. A `force` POST whose fresh VM is `None` (trade gone) is treated as VOID.
+14. `anonymous_fill_matches` on the route is given the typed `exit_date` as typed (the same string F1 and the retention rule compare), not `[:10]`; the CLI passes `[:10]` because the CLI accepts a datetime.
+15. The unreadable reader runs only for a LINKED exit (its flag needs `linked`); `anonymous_fill_matches` calls the one reader internally, so a linked POST reads it twice (AL-9's cost, doubled; no cache built).
+16. An unclaimed submission's flagged re-render carries the FRESH anchor (as the `ValueError` re-render already does), so its Confirm arrives as a CLAIMED POST and may be asked F1 against the fresh default. Pre-existing re-render behaviour, not new.
+
+**T6 supersession classification** (all of `tests/web/test_routes/`, run against the T7 code with the OLD test texts restored, then with the rewritten ones):
+- SUPERSEDED (9 red, all rewritten by replacement, named in `606a25fb`): `test_exit_post_audit_columns.py` -- the plan's six plus `test_g_multi_partial_selects_non_default_candidate_and_preserves_others` and `test_h_major2_authoritative_selected_candidate_order_id_from_envelope`; `test_exit_form_auto_fill.py::test_r2_minor1_operator_instruction_text_present_in_multi_partial_fieldset` (the template text T7 rewrites). Its negative twin `test_r2_minor1_no_instruction_text_on_single_fill_case` was green both ways and was moved to the new sentence so its negative stays meaningful.
+- REGRESSION: none. T7-k's file and the 22-F exit tests green unchanged.
+- Read off the output: old texts 9 failed / 1171 passed; rewritten 1180 passed, 0 failed.
+
+### T9 census commands (column names checked against the live DDL, `mode=ro`, schema only)
+
+Live DDL read 2026-10-18 by `PRAGMA table_info` on `~/swing-data/swing.db` (`mode=ro`): `fills` has `fill_id`, `action`, `schwab_source_value_json`; `reconciliation_corrections` has `affected_table`, `affected_row_id`, `field_name`. All names in both commands exist.
+
+**PLAN CORRECTION (measured by execution, not a fork): the plan's census 4 SQL is VACUOUS as written.** It aliases the extracted id `oid`, and `oid` is one of SQLite's ROWID aliases: in `WHERE oid IS NOT NULL` and `GROUP BY oid` it resolves to the table's rowid (`fill_id`, an `INTEGER PRIMARY KEY`), not to the alias, so every group has one row and `HAVING COUNT(*) > 1` returns nothing on any data. On a synthetic DB with two non-entry fills sharing id `a`: the plan's text returned `[]`; the same query with the alias renamed `linked_id` returned `[('a', 2, '1,2')]`; `SELECT oid, fill_id` returned equal pairs. Encoded with the alias `linked_id`; nothing else changed.
+
+Both run against the scratch COPY (never the live DB), from the worktree, through plain `sqlite3` with `mode=ro`; `PYTHONPATH=.` so the authority is the worktree's. Replace `<COPY>` with the copy's absolute path. Dry-run on a synthetic DB: census 4 printed `[('a', 2, '1,3')]`, census 5 printed `3 non-entry envelopes; 1 refused: [2]`.
+
+```bash
+cd C:/Users/rwsmy/swing-trading/.worktrees/d79-exec && PYTHONPATH=. python - "<COPY>" <<'PY'
+import sqlite3, sys
+from swing.trades.latched_origin import ENVELOPE_REFUSED, canonical_envelope_identity
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+# Census 4 (CHARC K6): linked exit fills sharing an extracted id, split partials excluded.
+# Expected: only known partial sets.
+print("census 4:", c.execute("""SELECT json_extract(schwab_source_value_json,'$.schwab_order_id') AS linked_id,
+       COUNT(*), group_concat(fill_id)
+FROM fills
+WHERE action != 'entry' AND json_valid(schwab_source_value_json)
+  AND fill_id NOT IN (SELECT affected_row_id FROM reconciliation_corrections
+                      WHERE affected_table = 'fills' AND field_name = '__insert__')
+  AND linked_id IS NOT NULL
+GROUP BY linked_id HAVING COUNT(*) > 1""").fetchall())
+# Census 5 (CHARC FORK 2): the authority over every non-NULL non-entry envelope.
+# Expected: 0 refused (0 of 33 at intake). A non-zero count is a finding.
+rows = c.execute("SELECT fill_id, schwab_source_value_json FROM fills "
+                 "WHERE action != 'entry' AND schwab_source_value_json IS NOT NULL "
+                 "ORDER BY fill_id").fetchall()
+refused = [f for f, e in rows if canonical_envelope_identity(e).state == ENVELOPE_REFUSED]
+print("census 5:", len(rows), "non-entry envelopes;", len(refused), "refused:", refused)
+c.close()
+PY
+```
+
+Note on census 4 as a reader: `json_extract` is a different reader from the authority (AL-1's reason), so a padded id groups under its padded text there; census 5 is the authority's count.
