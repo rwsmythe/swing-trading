@@ -192,16 +192,17 @@ def test_a_populated_auto_fill_renders_values_and_hidden_anchor(
     assert "Auto-fill source:" in body
     assert "schwab_auto" in body
 
-    # Negative defense-in-depth: single-fill case (candidates length 1)
-    # must NOT render the multi-partial radio fieldset nor emit per-
-    # candidate hidden inputs. Guards against a regression in the
-    # template's `{% if vm.auto_fill_candidates|length > 1 %}` gate.
+    # Single-fill case (candidates length 1): NO multi-partial radio
+    # fieldset (the template's `length > 1` gate), but the index-0
+    # per-candidate hidden inputs DO travel, so the submission names the
+    # selected order (D79, RD K3 precondition (4); superseded by replacement:
+    # this used to assert the inputs were absent).
     assert 'type="radio"' not in body, (
         "single-fill case must not render radio fieldset"
     )
-    assert 'candidate_signature_hash_' not in body, (
-        "single-fill case must not emit per-candidate hidden inputs"
-    )
+    assert 'name="candidate_signature_hash_0"' in body
+    assert 'name="candidate_order_id_0"' in body
+    assert 'candidate_signature_hash_1' not in body
 
 
 # ============================================================================

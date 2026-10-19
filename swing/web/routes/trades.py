@@ -2875,6 +2875,24 @@ async def exit_post(
                 # present, otherwise treat as "no selection" (single-fill
                 # without per-candidate hidden inputs is also legal).
                 selected_index = 0 if 0 in candidate_sigs else None
+            else:
+                # D79 (RD K3 precondition (4)): THE SINGLE-CANDIDATE SHAPE
+                # STAMPS ``selected_*`` TOO. A one-entry ``candidates_map`` with
+                # no per-candidate inputs at all (a bare or legacy submission)
+                # names exactly one candidate, so that entry IS the selection;
+                # without this the envelope carried no selected id, and a
+                # confirmation with no selected id is anonymous and cannot keep
+                # an id. Server-side, so it does not depend on the template
+                # (which now also emits the index-0 inputs for one candidate).
+                single_map = anchor_envelope.get("candidates_map")
+                if isinstance(single_map, dict) and len(single_map) == 1:
+                    [(only_sig, only_entry)] = single_map.items()
+                    selected_index = 0
+                    candidate_sigs[0] = str(only_sig)
+                    only_order = (only_entry.get("order_id")
+                                  if isinstance(only_entry, dict) else None)
+                    candidate_orders[0] = (
+                        only_order if isinstance(only_order, str) else "")
 
         # Provenance-stamping branch — fires only when both halves of the
         # consistency check agree (valid dict envelope + claim present).

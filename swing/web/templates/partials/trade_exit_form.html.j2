@@ -138,6 +138,16 @@
         </div>
         {% endfor %}
       </fieldset>
+      {% elif vm.auto_fill_candidates and vm.auto_fill_candidates|length == 1 %}
+      {#- D79 (RD K3 precondition (4)): ONE candidate renders no radio, but
+          its per-candidate inputs still travel so the submission names the
+          selected order exactly as a multi-candidate one does. The POST
+          infers the same selection server-side from a one-entry map. -#}
+      {% set cand = vm.auto_fill_candidates[0] %}
+      <input type="hidden" name="candidate_signature_hash_0"
+             value="{{ cand.signature_hash }}">
+      <input type="hidden" name="candidate_order_id_0"
+             value="{{ cand.order_id or '' }}">
       {% endif %}
 
       <div><label>Exit date</label>
