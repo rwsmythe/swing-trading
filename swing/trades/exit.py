@@ -438,9 +438,12 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     authority before ``BEGIN`` (an unreadable one is refused there, CHARC
     FORK 2 F2-(iii)). Then ONE ``BEGIN IMMEDIATE`` is taken, and the trade
     read, ``check_exit_preconditions`` (all six refusals, one spelling), the
-    identity guard, the writes and the ``COMMIT`` all run under it; a refusal
-    raised there propagates as the same ``ValueError`` after a clean
-    rollback. ACCEPTED COST (CHARC's ruling): a request refused on its
+    identity guard, the writes, the derived metrics of the return value
+    (realized P&L, risk-per-share, R-multiple; executing Fork A-F01) and the
+    ``COMMIT`` all run under it; a refusal or any other failure raised there
+    propagates after a clean rollback, so a raise from ``record_exit`` means
+    nothing was recorded. Only the ``ExitResult`` construction follows the
+    ``COMMIT``. ACCEPTED COST (CHARC's ruling): a request refused on its
     arguments alone now takes one ``BEGIN IMMEDIATE`` / ``ROLLBACK`` first --
     nothing on a single-operator DB, where a second spelling of the checks
     is not. A consequence of the same order: a request with BOTH a bad
@@ -580,31 +583,39 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
                 event_ts=req.event_ts, rationale=req.rationale,
             )
         # partial_exited + new_size > 0: stays partial_exited (no transition).
+
+        # D79 executing Fork A-F01 (branch A): the derived metrics of the
+        # return value are computed HERE, under the lock and BEFORE the
+        # COMMIT, so a failure computing them (a stored ``entry_price`` or
+        # ``initial_stop`` that is not a number) rolls the exit back through
+        # ``_rollback_or_raise`` like any other in-transaction failure. A
+        # raise from ``record_exit`` therefore always means nothing was
+        # recorded -- the contract the web route's 22-F guard and the CLI
+        # both read.
+        pnl = compute_realized_pnl(
+            entry_price=trade.entry_price,
+            exit_price=req.exit_price,
+            quantity=req.shares,
+        )
+        rps = compute_initial_risk_per_share(
+            entry_price=trade.entry_price,
+            initial_stop=trade.initial_stop,
+        )
+        if rps > 0:
+            rmult = compute_r_multiple(
+                realized_pnl=pnl,
+                initial_risk_per_share=rps,
+                quantity=req.shares,
+            )
+        else:
+            rmult = 0.0
+        fully_closed = (new_size == 0)
         conn.commit()
     except BaseException as exc:  # noqa: BLE001 -- the CLASS (S-D39 / D73)
         _rollback_or_raise(conn, "record_exit", exc)
         raise
 
-    # Compute derived metrics for the return value (post-commit; pure math).
-    pnl = compute_realized_pnl(
-        entry_price=trade.entry_price,
-        exit_price=req.exit_price,
-        quantity=req.shares,
-    )
-    rps = compute_initial_risk_per_share(
-        entry_price=trade.entry_price,
-        initial_stop=trade.initial_stop,
-    )
-    if rps > 0:
-        rmult = compute_r_multiple(
-            realized_pnl=pnl,
-            initial_risk_per_share=rps,
-            quantity=req.shares,
-        )
-    else:
-        rmult = 0.0
-    fully_closed = (new_size == 0)
-
+    # Only the result's construction follows the COMMIT.
     return ExitResult(
         exit_id=fill_id,
         realized_pnl=pnl,

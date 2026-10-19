@@ -323,3 +323,49 @@ def test_t1d_concurrent_size_check_runs_under_the_lock(tmp_path, monkeypatch):
             or "exceeds" in str(out2["exc"])), out2["exc"]
     assert events == ["commit1", "read"]
 
+
+
+# ----------------------------------------------------------------- A-F01
+def test_af01_metric_failure_rolls_the_exit_back(tmp_path):
+    """D79 executing Fork A-F01 (branch A). The realized P&L, risk-per-share
+    and R-multiple are computed INSIDE the owned transaction, before COMMIT,
+    so a failure there rolls the exit back: a raise from ``record_exit``
+    means nothing was recorded (the contract the route's 22-F guard and the
+    CLI both read). ``trades.entry_price`` is planted as TEXT by raw UPDATE
+    (the column is ``REAL NOT NULL`` with no type CHECK, so SQLite stores an
+    unconvertible string as TEXT). PRE-FIX: the metrics ran after
+    ``conn.commit()``, so the call raised ``TypeError`` with ONE exit fill
+    durable. POST-FIX: it raises with ZERO exit fills and the trade's size
+    and state unchanged; the escaping error is the math's own ``TypeError``,
+    never a ``ValueError`` (CHARC, 2026-10-19). NULLS killed: the post-commit
+    metric block; a wrapper translating the failure into a ``ValueError``."""
+    db = make_db(tmp_path)
+    tid = seed_trade(db, state="managing", current_size=10.0)
+    raw = sqlite3.connect(str(db))
+    try:
+        raw.execute("UPDATE trades SET entry_price = 'bad' WHERE id = ?",
+                    (tid,))
+        raw.commit()
+        assert raw.execute("SELECT typeof(entry_price) FROM trades "
+                           "WHERE id = ?", (tid,)).fetchone()[0] == "text"
+    finally:
+        raw.close()
+    conn = connect(db)
+    try:
+        with pytest.raises(TypeError) as info:
+            exit_mod.record_exit(conn, exit_req(tid, shares=4))
+        # CHARC (2026-10-19): the math's own error escapes, NOT re-dressed as
+        # a ValueError -- a corrupt row is a programming fault, not an
+        # operator refusal, so no caller's ``except ValueError`` re-renders it.
+        assert type(info.value) is TypeError
+        assert not isinstance(info.value, ValueError)
+        assert not conn.in_transaction
+    finally:
+        conn.close()
+    assert count_exit_fills(db) == 0
+    c = sqlite3.connect(str(db))
+    try:
+        assert c.execute("SELECT state, current_size FROM trades WHERE id = ?",
+                         (tid,)).fetchone() == ("managing", 10.0)
+    finally:
+        c.close()
