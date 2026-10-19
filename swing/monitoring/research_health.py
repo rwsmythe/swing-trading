@@ -487,6 +487,25 @@ def pipeline_run_exists(conn: sqlite3.Connection, run_id: int | None) -> bool:
         raise
 
 
+def pipeline_run_asof(conn: sqlite3.Connection, run_id: int | None) -> str | None:
+    """The `data_asof_date` of the `pipeline_runs` row keyed by `run_id`, or None
+    (`run_id is None`, no such row, or a missing `pipeline_runs` table -- the same
+    degrade-gracefully contract as `pipeline_run_exists`). The in-run step uses it
+    to source the LIVE run's session from the run's OWN ledger row rather than a
+    runner local. Any OTHER OperationalError re-raises."""
+    if run_id is None:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT data_asof_date FROM pipeline_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return None
+        raise
+    return row[0] if row is not None else None
+
+
 # --------------------------------------------------------------------------
 # 19-B Task 5: the broken-context write-suppression guard (RD-reviewed
 # distinguisher). Machine-readable signals ONLY -- a direct DB COUNT for the
@@ -1080,6 +1099,9 @@ _TERMINAL_STATUSES = (
 # Conservative-degrade: a dropped/empty/unavailable pipeline_runs ledger ->
 # _run_observed_sessions returns None -> clause 2a is FALSE for every session ->
 # nothing is missed-run-accepted (never accept-everything-false-green).
+# The in-run nightly step may also pass the LIVE run -- its data_asof_date and its
+# not-yet-released warnings -- as `live_run`, so both ledger readers see the run's
+# own evidence on top of the completed rows; the clauses above are unchanged.
 _OBSERVE_SKIP_REASONS = ("no bar for observation_date", "non_finite_ohlc")
 
 
@@ -1098,32 +1120,83 @@ def _canonical_session(value: object) -> str | None:
         return None
 
 
-def _observe_skip_index(conn: sqlite3.Connection) -> set[tuple[str, str]]:
-    """Return the set of (ticker, observation_date) pairs explained by a
-    recorded `pattern_observe` skip-warning in a COMPLETED pipeline run
-    (CALIBRATION C clause 2b). Reads pipeline_runs.warnings_json (migration
-    0003; runner.py writes the entries at run completion).
+def _skip_pairs_for_run(asof: object, items: object) -> set[tuple[str, str]]:
+    """The (ticker, observation_date) pairs ONE run's warnings explain: the single
+    filter body shared by the completed-row path and the live-run path of
+    `_observe_skip_index`, so the two input sources cannot diverge.
 
-    ONLY state='complete' runs (MAJOR-R2-2: a failed/non-complete/stale run's
-    warnings must not explain a hole), and ONLY warnings whose `step` is
-    'pattern_observe', `reason` is in _OBSERVE_SKIP_REASONS, AND whose
-    `observation_date` equals THAT row's data_asof_date (MAJOR-R2-2: tie the
-    free-text warning to the session the run actually observed). DEFENSIVE
-    (read-only monitor, the schema-boundary discipline): a missing pipeline_runs
-    table -> empty set (no explanations -> unexplained holes COUNT, never crash,
-    never false-green). A NULL/non-JSON/non-list/non-dict warnings_json row is
-    skipped gracefully (a general parse-guard, NOT per-value-shape branches).
+    Only warnings whose `step` is 'pattern_observe', `reason` is in
+    _OBSERVE_SKIP_REASONS, AND whose `observation_date` equals THAT run's
+    data_asof_date count (MAJOR-R2-2: tie the free-text warning to the session
+    the run actually observed). Both dates are canonicalized before comparing or
+    indexing (Codex R1 MAJOR): date.fromisoformat accepts non-canonical forms, and
+    comparing raw strings could both mis-tie the warning AND index a key that
+    never matches the canonical (ticker, session) lookup. A non-parseable date on
+    either side skips the entry (no explanation, conservative). A non-list `items`
+    or a non-dict entry is skipped gracefully (a general parse-guard, NOT
+    per-value-shape branches).
     """
+    pairs: set[tuple[str, str]] = set()
+    if not isinstance(items, list):
+        return pairs
+    asof_c = _canonical_session(asof)
+    if asof_c is None:
+        return pairs
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("step") != "pattern_observe":
+            continue
+        if item.get("reason") not in _OBSERVE_SKIP_REASONS:
+            continue
+        ticker = item.get("ticker")
+        obs_date = item.get("observation_date")
+        if not isinstance(ticker, str) or not isinstance(obs_date, str):
+            continue
+        obs_c = _canonical_session(obs_date)
+        if obs_c is None:
+            continue
+        # The observe step writes observation_date == data_asof_date, so a
+        # date-mismatched warning attached to the wrong run must not explain a
+        # hole at an arbitrary session (MAJOR-R2-2).
+        if obs_c != asof_c:
+            continue
+        pairs.add((ticker, obs_c))
+    return pairs
+
+
+def _observe_skip_index(
+    conn: sqlite3.Connection,
+    *,
+    live_run: tuple[str, list[dict]] | None = None,
+) -> set[tuple[str, str]]:
+    """Return the set of (ticker, observation_date) pairs explained by a
+    recorded `pattern_observe` skip-warning (CALIBRATION C clause 2b): the
+    warnings of every COMPLETED pipeline run (pipeline_runs.warnings_json,
+    migration 0003; runner.py writes the entries at run completion) PLUS, when
+    supplied, the warnings of the live run that is about to complete.
+
+    Only state='complete' rows are read from the ledger (MAJOR-R2-2: a failed,
+    non-complete or stale run's warnings must not explain a hole); the live run is
+    supplied solely by the in-run step, as `(data_asof_date, warnings)`, because
+    its own warnings reach the ledger only at release. Both sources go through
+    `_skip_pairs_for_run`, so the admission rule (step, reason, the
+    observation_date == data_asof_date tie, canonical dates) is one body.
+    DEFENSIVE (read-only monitor, the schema-boundary discipline): a missing
+    pipeline_runs table -> the ledger half is empty (no explanations -> unexplained
+    holes COUNT, never crash, never false-green). A NULL/non-JSON/non-list/
+    non-dict warnings_json row is skipped gracefully.
+    """
+    index: set[tuple[str, str]] = set()
     try:
         rows = conn.execute(
             "SELECT data_asof_date, warnings_json FROM pipeline_runs"
             " WHERE state = 'complete'"
         ).fetchall()
     except sqlite3.OperationalError as exc:
-        if _schema_unavailable(exc):
-            return set()
-        raise
-    index: set[tuple[str, str]] = set()
+        if not _schema_unavailable(exc):
+            raise
+        rows = []
     for asof, warnings_json in rows:
         if not warnings_json:
             continue
@@ -1131,35 +1204,9 @@ def _observe_skip_index(conn: sqlite3.Connection) -> set[tuple[str, str]]:
             items = json.loads(warnings_json)
         except (ValueError, TypeError):
             continue
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            if item.get("step") != "pattern_observe":
-                continue
-            if item.get("reason") not in _OBSERVE_SKIP_REASONS:
-                continue
-            ticker = item.get("ticker")
-            obs_date = item.get("observation_date")
-            if not isinstance(ticker, str) or not isinstance(obs_date, str):
-                continue
-            # Canonicalize both dates before comparing/indexing (Codex R1 MAJOR):
-            # date.fromisoformat accepts non-canonical forms; comparing raw
-            # strings could both mis-tie the warning AND index a key that never
-            # matches the canonical (ticker, session) lookup. A non-parseable
-            # date on either side -> skip the entry (no explanation, conservative).
-            obs_c = _canonical_session(obs_date)
-            asof_c = _canonical_session(asof)
-            if obs_c is None or asof_c is None:
-                continue
-            # Tie the warning to the session the run actually observed: the
-            # observe step writes observation_date == data_asof_date, so a
-            # date-mismatched warning attached to the wrong run must not explain
-            # a hole at an arbitrary session (MAJOR-R2-2).
-            if obs_c != asof_c:
-                continue
-            index.add((ticker, obs_c))
+        index |= _skip_pairs_for_run(asof, items)
+    if live_run is not None:
+        index |= _skip_pairs_for_run(live_run[0], live_run[1])
     return index
 
 
@@ -1189,15 +1236,28 @@ def _global_observed_sessions(conn: sqlite3.Connection) -> set[str]:
     return sessions
 
 
-def _run_observed_sessions(conn: sqlite3.Connection) -> set[str] | None:
-    """Return the set of sessions a COMPLETED pipeline run actually observed
-    (DISTINCT data_asof_date of state='complete' runs; the observe step writes
+def _run_observed_sessions(
+    conn: sqlite3.Connection,
+    *,
+    live_run: tuple[str, list[dict]] | None = None,
+) -> set[str] | None:
+    """Return the set of sessions a pipeline run actually observed: the DISTINCT
+    data_asof_date of every state='complete' run PLUS, when supplied, the live
+    run's own canonical data_asof_date (the observe step writes
     observation_date == data_asof_date, runner.py). The AUTHORITATIVE missed-run
     signal (MAJOR-R1-4): a benign whole-session miss is `S NOT IN` this set.
 
+    Only state='complete' rows are read from the ledger; the live run is supplied
+    solely by the in-run step, so a failed or stale run never names a session
+    here. A live asof that does not canonicalize is ignored (the ledger half is
+    unchanged, never None-ed and never widened because of the live value). The
+    live session joining the set is the conservative direction: a zero-observation
+    observe failure AT the live session is not a missed run.
+
     Returns None (NOT an empty set) when pipeline_runs is UNAVAILABLE
     (_schema_unavailable) OR when there are zero completed runs -- the
-    CONSERVATIVE-DEGRADE sentinel. With no proven run ledger, clause 2a is FALSE
+    CONSERVATIVE-DEGRADE sentinel, and a live run does not prove a ledger. With
+    no proven run ledger, clause 2a is FALSE
     for every S (a missed run cannot be proven), so an interior hole must be
     skip-warning-explained or it COUNTS. Returning an empty set instead would
     make `S not in set()` TRUE for every S -> accept-everything false-green.
@@ -1224,7 +1284,13 @@ def _run_observed_sessions(conn: sqlite3.Connection) -> set[str] | None:
         if canon is None:
             return None
         sessions.add(canon)
-    return sessions or None
+    if not sessions:
+        return None
+    if live_run is not None:
+        live_asof = _canonical_session(live_run[0])
+        if live_asof is not None:
+            sessions.add(live_asof)
+    return sessions
 
 
 def _latest_moved_past_session(
@@ -1276,13 +1342,15 @@ def _latest_moved_past_session(
     a DIFFERENT maximum from the same index.
 
     The skip half REUSES the existing `_observe_skip_index` admission rule -- a
-    `pattern_observe` skip-warning of a known reason, in a state='complete' run,
-    whose observation_date equals that run's data_asof_date -- so there is ONE
+    `pattern_observe` skip-warning of a known reason, in a state='complete' run
+    (or in the live run the in-run step supplies), whose observation_date equals
+    that run's data_asof_date -- so there is ONE
     admission rule, never a second forked predicate. Both halves are canonical
     YYYY-MM-DD, so the lexical max IS the chronological max.
 
     WHY THIS DOES NOT WIDEN THE STILL-RED SET: a skip-warning at L can only
-    exist because a COMPLETED run named L, so it is genuine moved-past evidence.
+    exist because a run that completed (or is completing) named L, so it is
+    genuine moved-past evidence.
     A dead/behind drumbeat runs nothing after the hole and therefore warns
     nothing -> no later evidence -> clause 1 stays False -> the outage stays RED.
     And clause 1 only GATES clause-2a: the whole-session-miss test (zero
@@ -1408,6 +1476,7 @@ def _calibration_c_partition(
 
 def _check_coverage_gaps(
     conn: sqlite3.Connection, *, now: datetime,
+    live_run: tuple[str, list[dict]] | None = None,
 ) -> list[ResearchHealthCheck]:
     """A MATURE detection whose forward-observation date sequence has HOLES vs
     the NYSE trading calendar -- including a MISSING TAIL (the observe step
@@ -1459,8 +1528,8 @@ def _check_coverage_gaps(
     # CALIBRATION C globals (computed ONCE; read-only). ticker carried per
     # detection (MAJOR-R1-1: needed for the (ticker, S) skip-warning join).
     global_observed_sessions = _global_observed_sessions(conn)
-    run_observed_sessions = _run_observed_sessions(conn)
-    skip_index = _observe_skip_index(conn)
+    run_observed_sessions = _run_observed_sessions(conn, live_run=live_run)
+    skip_index = _observe_skip_index(conn, live_run=live_run)
 
     # Group per detection (preserving obs date order); record the asof + ticker.
     per_det: dict[int, dict] = {}
@@ -2118,6 +2187,7 @@ def compute_research_health(
     exports_root=None,
     manifest_dir=None,
     now: datetime | None = None,
+    live_run: tuple[str, list[dict]] | None = None,
 ) -> ResearchHealthStatus:
     """Read-only roll-up of the 7 research data-collection-integrity checks into
     the §3 status envelope (monitor="research_measurement", overall=worst_of,
@@ -2141,7 +2211,7 @@ def compute_research_health(
     checks: list[ResearchHealthCheck] = []
     checks += _check_temporal_log_finiteness(conn)
     checks += _check_excluded_reason_breakdown(exports_root=manifest_root)
-    checks += _check_coverage_gaps(conn, now=now)
+    checks += _check_coverage_gaps(conn, now=now, live_run=live_run)
     checks += _check_structural_integrity(conn)
     checks += _check_drumbeat_liveness(exports_root=manifest_root, now=now)
     checks += _check_candidate_completeness(conn)

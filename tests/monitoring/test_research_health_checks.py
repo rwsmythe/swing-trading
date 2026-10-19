@@ -2509,3 +2509,205 @@ def test_transport_green_when_empty_table(tmp_path: Path) -> None:
     check = _only(_check_fetch_transport_health(conn), "fetch_transport_health")
     assert check.status == "green"
     assert "n/a" in check.summary.lower()
+
+
+# ---------------------------------------------------------------------------
+# D81 -- the in-run monitor may be told about the LIVE run (its warnings_json is
+# written at lease release, AFTER the step reads, so the ledger cannot show it).
+# Window: _NOW = Sunday 2026-06-14 -> last_completed 2026-06-12.
+# ---------------------------------------------------------------------------
+_L_PRIOR = ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-10")  # completed + observed
+_L_MISSED = "2026-06-11"   # the missed night: no run row, no observations anywhere
+_L_LIVE = "2026-06-12"     # the live run's own session (== last completed)
+_L_TICKERS = [f"LV{i:02d}" for i in range(6)]   # 6 tickers x 2 holes = 12 > RED(10)
+
+
+def _live_skip(ticker: str, session: str) -> dict:
+    return {"step": "pattern_observe", "ticker": ticker,
+            "observation_date": session, "reason": "no bar for observation_date"}
+
+
+def _seed_live_world(
+    conn: sqlite3.Connection, *, observed: tuple[str, ...] = _L_PRIOR,
+    completed: tuple[str, ...] = _L_PRIOR, live_asof: str | None = _L_LIVE,
+) -> None:
+    for t in _L_TICKERS:
+        det = _seed_detection(conn, ticker=t, data_asof_date="2026-06-04")
+        for d in observed:
+            _seed_observation(conn, det, observation_date=d, status="pending")
+    _seed_all_sessions_runs(conn, completed, "tok-live-c")
+    if live_asof is not None:
+        # The production shape: the ledger row EXISTS (state='running') with
+        # warnings_json NULL -- the warnings travel through `live_run` instead.
+        _seed_pipeline_run(conn, data_asof_date=live_asof, state="running",
+                           lease_token="tok-live-run")
+
+
+def test_coverage_calib_c_live_run_skip_explains_missed_sessions(
+    tmp_path: Path,
+) -> None:
+    # D81 cry-wolf. Every ticker observed 06-05..06-10; 06-11 was a missed night;
+    # the live run (06-12) skip-warns every ticker (no bar). Its warnings reach
+    # the ledger only at release, AFTER this monitor reads.
+    #
+    # Without live_run (today's behaviour, asserted FIRST = the RED half): 6 x
+    # {06-11, 06-12} = 12 gaps -> RED, although the same holes are accepted
+    # twenty seconds later once the row is complete.
+    # With live_run: (T, 06-12) is skip-indexed -> 06-12 accepted by 2b; clause-1
+    # now sees a skip at 06-12 > 06-11, 06-11 is in no observation and no run
+    # -> 2a accepted -> GREEN, both named in detail.
+    conn = _schema_conn(tmp_path)
+    _seed_live_world(conn)
+    before = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert before.status == "red"
+    assert "12 observation-coverage gap(s)" in before.summary
+    live = (_L_LIVE, [_live_skip(t, _L_LIVE) for t in _L_TICKERS])
+    after = _only(
+        _check_coverage_gaps(conn, now=_NOW, live_run=live), "coverage_gaps")
+    assert after.status == "green"
+    assert "12 accepted historical" in after.summary
+    assert "accepted" in (after.detail or "")
+
+
+def test_coverage_calib_c_live_run_skip_tie_must_match_asof(
+    tmp_path: Path,
+) -> None:
+    # The MAJOR-R2-2 tie survives the merge: a live skip whose observation_date
+    # (06-11) is not the live asof (06-12) is NOT indexed, so nothing is explained.
+    conn = _schema_conn(tmp_path)
+    _seed_live_world(conn)
+    live = (_L_LIVE, [_live_skip(t, _L_MISSED) for t in _L_TICKERS])
+    check = _only(
+        _check_coverage_gaps(conn, now=_NOW, live_run=live), "coverage_gaps")
+    assert check.status == "red"
+    assert "12 observation-coverage gap(s)" in check.summary
+
+
+_L_2A_OBSERVED = ("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-11", "2026-06-12")
+
+
+def _seed_2a_world(conn: sqlite3.Connection) -> None:
+    # 6 tickers observed on every session EXCEPT 06-10; no completed run and no
+    # observation names 06-10 (a whole-session missed run). Baseline: clause-1 (a
+    # later observation) + clause-2a accept the hole -> GREEN.
+    _seed_live_world(
+        conn, observed=_L_2A_OBSERVED, completed=_L_2A_OBSERVED,
+        live_asof="2026-06-10")
+
+
+@pytest.mark.parametrize("live_asof", ["2026-06-10", "20260610"])
+def test_coverage_calib_c_live_run_zero_obs_at_live_session_still_red(
+    tmp_path: Path, live_asof: str,
+) -> None:
+    # A live run at 06-10 with NO skip and no observation at 06-10: a
+    # zero-observation observe failure. Baseline (no live_run): 06-10 is in no
+    # completed run and unobserved everywhere, with a later observation ->
+    # clause-1 + 2a -> GREEN. With the live run named 06-10 (canonical OR a
+    # parseable compact form, which canonicalizes like a ledger row) the session
+    # is in the run ledger -> NOT a missed run, nothing explains it -> counted.
+    # Liveness never explains a hole.
+    conn = _schema_conn(tmp_path)
+    _seed_2a_world(conn)
+    before = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert before.status == "green"
+    after = _only(
+        _check_coverage_gaps(conn, now=_NOW, live_run=(live_asof, [])),
+        "coverage_gaps")
+    assert after.status == "yellow"
+    assert "6 observation-coverage gap(s)" in after.summary
+
+
+def test_coverage_calib_c_live_run_does_not_create_a_ledger(
+    tmp_path: Path,
+) -> None:
+    # Zero completed runs -> _run_observed_sessions is None (clause 2a disabled).
+    # A live run must not conjure a ledger: the 06-10 hole stays counted. A
+    # live run that did create {06-12} would make 06-10 a "missed run" (2a) and
+    # flip this GREEN.
+    conn = _schema_conn(tmp_path)
+    _seed_live_world(
+        conn, observed=("2026-06-05", "2026-06-08", "2026-06-09", "2026-06-11",
+                        "2026-06-12"),
+        completed=())
+    live = (_L_LIVE, [])
+    check = _only(
+        _check_coverage_gaps(conn, now=_NOW, live_run=live), "coverage_gaps")
+    assert check.status == "yellow"
+    assert "6 observation-coverage gap(s)" in check.summary
+
+
+@pytest.mark.parametrize("world", ["skip", "2a"])
+@pytest.mark.parametrize("bad_asof", ["2026/06/12", "not-a-date", ""])
+def test_coverage_calib_c_live_run_malformed_asof_ignored(
+    tmp_path: Path, bad_asof: str, world: str,
+) -> None:
+    # An asof that does not canonicalize is IGNORED by BOTH readers: the result
+    # is identical to live_run=None (never accept-everything, and never None-out a
+    # proven ledger because of the live value -- the "2a" world is GREEN at
+    # baseline, so a reader that degraded to None would turn it yellow).
+    conn = _schema_conn(tmp_path)
+    if world == "2a":
+        _seed_2a_world(conn)
+    else:
+        _seed_live_world(conn)
+    baseline = _only(_check_coverage_gaps(conn, now=_NOW), "coverage_gaps")
+    assert baseline.status == ("green" if world == "2a" else "red")
+    live = (bad_asof, [_live_skip(t, bad_asof) for t in _L_TICKERS]
+            + [_live_skip(t, _L_LIVE) for t in _L_TICKERS])
+    check = _only(
+        _check_coverage_gaps(conn, now=_NOW, live_run=live), "coverage_gaps")
+    assert (check.status, check.summary, check.detail) == (
+        baseline.status, baseline.summary, baseline.detail)
+
+
+def test_coverage_calib_c_live_run_compact_asof_canonicalized_like_ledger(
+    tmp_path: Path,
+) -> None:
+    # ONE filter body, two input sources: a parseable-but-non-canonical live asof
+    # ("20260612", which date.fromisoformat accepts) canonicalizes exactly as a
+    # completed row's does, so it yields the SAME verdict as the canonical form.
+    conn = _schema_conn(tmp_path)
+    _seed_live_world(conn)
+    canon = (_L_LIVE, [_live_skip(t, _L_LIVE) for t in _L_TICKERS])
+    compact = ("20260612", [_live_skip(t, "20260612") for t in _L_TICKERS])
+    a = _only(_check_coverage_gaps(conn, now=_NOW, live_run=canon), "coverage_gaps")
+    b = _only(_check_coverage_gaps(conn, now=_NOW, live_run=compact), "coverage_gaps")
+    assert a.status == "green"
+    assert (b.status, b.summary, b.detail) == (a.status, a.summary, a.detail)
+
+
+def test_coverage_calib_c_live_run_threads_through_compute(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    # compute_research_health forwards live_run to the coverage check (and passes
+    # None by default). The frozen _NOW cannot drive the full roll-up -- the
+    # envelope refuses a generated_ts already stale at construction -- so the
+    # coverage check is replaced by a recorder.
+    from swing.monitoring import research_health as rh
+
+    seen: list[object] = []
+
+    def _recorder(conn, *, now, live_run=None):
+        seen.append(live_run)
+        return []
+
+    monkeypatch.setattr(rh, "_check_coverage_gaps", _recorder)
+    conn = _schema_conn(tmp_path)
+    live = (_L_LIVE, [_live_skip("AAA", _L_LIVE)])
+    rh.compute_research_health(conn, exports_root=tmp_path)
+    rh.compute_research_health(conn, exports_root=tmp_path, live_run=live)
+    assert seen == [None, live]
+
+
+def test_pipeline_run_asof_reads_the_row_and_degrades(tmp_path: Path) -> None:
+    from swing.monitoring.research_health import pipeline_run_asof
+
+    conn = _schema_conn(tmp_path)
+    _seed_pipeline_run(conn, data_asof_date="2026-06-12", state="running",
+                       lease_token="tok-asof")
+    run_id = conn.execute("SELECT id FROM pipeline_runs").fetchone()[0]
+    assert pipeline_run_asof(conn, run_id) == "2026-06-12"
+    assert pipeline_run_asof(conn, run_id + 1) is None      # no such row
+    assert pipeline_run_asof(conn, None) is None             # no run id
+    # pre-schema DB (no pipeline_runs table) degrades like pipeline_run_exists.
+    assert pipeline_run_asof(sqlite3.connect(":memory:"), 1) is None
