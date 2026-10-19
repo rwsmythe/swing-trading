@@ -84,17 +84,27 @@ class _StubClient:
 
 
 def _external_lock_holder(db: Path, hold_seconds: float, release_evt: threading.Event,
-                          held_evt: threading.Event):
+                          held_evt: threading.Event, errors: list[BaseException]):
     """Hold the SQLite write lock (simulating a candidates/archive/evaluate
     writer) until `release_evt` is set or `hold_seconds` pass, so an audit
     BEGIN IMMEDIATE must wait. `held_evt` is set only once BEGIN IMMEDIATE has
-    RETURNED, i.e. once this connection owns RESERVED."""
-    conn = open_connection(db, busy_timeout_ms=30000)
-    conn.execute("BEGIN IMMEDIATE")  # RESERVED write lock; blocks other writers
-    held_evt.set()
-    release_evt.wait(timeout=hold_seconds)
-    conn.commit()
-    conn.close()
+    RETURNED, i.e. once this connection owns RESERVED.
+
+    Any exception raised in this thread is appended to `errors`, and the
+    connection is closed in ``finally``. An exception escaping a thread is only
+    a pytest warning, so each test asserts `errors` is empty after joining."""
+    conn = None
+    try:
+        conn = open_connection(db, busy_timeout_ms=30000)
+        conn.execute("BEGIN IMMEDIATE")  # RESERVED write lock; blocks other writers
+        held_evt.set()
+        release_evt.wait(timeout=hold_seconds)
+        conn.commit()
+    except BaseException as exc:  # noqa: BLE001 -- surfaced to the test via `errors`
+        errors.append(exc)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _wait_held(held: threading.Event) -> None:
@@ -103,14 +113,20 @@ def _wait_held(held: threading.Event) -> None:
     )
 
 
+def _assert_holder_clean(errors: list[BaseException]) -> None:
+    assert errors == [], f"the external lock holder raised: {errors!r}"
+
+
 def test_forced_start_lock_leaves_no_audit_row(tmp_path):
     # PRE-FIX shape: tiny busy_timeout + external holder during start ->
     # record_call_start's BEGIN IMMEDIATE times out BEFORE the insert commits.
     db = _db(tmp_path)
     release = threading.Event()
     held = threading.Event()
+    holder_errors: list[BaseException] = []
     holder = threading.Thread(
-        target=_external_lock_holder, args=(db, _PRE_FIX_HOLD_BOUND, release, held))
+        target=_external_lock_holder,
+        args=(db, _PRE_FIX_HOLD_BOUND, release, held, holder_errors))
     holder.start()
     audit_conn = None
     try:
@@ -133,6 +149,7 @@ def test_forced_start_lock_leaves_no_audit_row(tmp_path):
         holder.join()
         if audit_conn is not None:
             audit_conn.close()
+    _assert_holder_clean(holder_errors)
 
 
 def test_forced_finish_lock_leaves_in_flight_row(tmp_path):
@@ -144,12 +161,14 @@ def test_forced_finish_lock_leaves_in_flight_row(tmp_path):
     release = threading.Event()
     held = threading.Event()
     holders: list[threading.Thread] = []
+    holder_errors: list[BaseException] = []
 
     def _on_http():
         # spawn the lock holder mid-HTTP (record_call_start has committed), and
         # return only once it owns RESERVED, so finish contends
         holder = threading.Thread(
-            target=_external_lock_holder, args=(db, _PRE_FIX_HOLD_BOUND, release, held))
+            target=_external_lock_holder,
+            args=(db, _PRE_FIX_HOLD_BOUND, release, held, holder_errors))
         holders.append(holder)
         holder.start()
         _wait_held(held)
@@ -176,6 +195,7 @@ def test_forced_finish_lock_leaves_in_flight_row(tmp_path):
         for holder in holders:
             holder.join()
         audit_conn.close()
+    _assert_holder_clean(holder_errors)
 
 
 def test_post_fix_30s_all_attempts_complete(tmp_path):
@@ -185,7 +205,9 @@ def test_post_fix_30s_all_attempts_complete(tmp_path):
     audit_conn = open_connection(db, busy_timeout_ms=30000, check_same_thread=False)
     release = threading.Event()
     held = threading.Event()
-    holder = threading.Thread(target=_external_lock_holder, args=(db, 0.5, release, held))
+    holder_errors: list[BaseException] = []
+    holder = threading.Thread(
+        target=_external_lock_holder, args=(db, 0.5, release, held, holder_errors))
     holder.start()
     try:
         _wait_held(held)  # the holder owns RESERVED before the audit write starts
@@ -205,3 +227,4 @@ def test_post_fix_30s_all_attempts_complete(tmp_path):
         release.set()
         holder.join()
         audit_conn.close()
+    _assert_holder_clean(holder_errors)
