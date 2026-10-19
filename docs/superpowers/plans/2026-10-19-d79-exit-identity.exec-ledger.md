@@ -189,7 +189,7 @@ Author of this section: cell 3. Tier `strong`, cold-audit form with repo access:
 | 3 | `084c9a3a` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (629,503) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 2 | 5 new / 0 reopened | 0 | 371,037 (cell 4 at return; retired) |
 | 4 | `33a3bfa2` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (440,564) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 1 | 3 | 4 new / 0 reopened | 0 | 345,780 (cell 5 at return; retired) |
 | 5 | `f70ebdc8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (475,309) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 4 | 5 new / 1 reopened (R5-06, RA-07's site) | 0 || 282,116 (cell 6 at return; resumed) |
-| 6 | `d539d273` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (430,882) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 0 | 2 new / 0 reopened | 0 |  |
+| 6 | `d539d273` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (430,882) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 0 | 2 new / 0 reopened | 0 || 374,140 (cell 6 at return; retired) |
 
 Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
 
@@ -565,3 +565,31 @@ Recorded as **R6-01** (the reviewer's `D79-A-06`) and **R6-02** (`D79-A-07`).
   - The cell does not choose. Branches B and C can combine with A's banking.
 
 Round 6: 2 majors (R6-01 and R6-02, both routed), 0 minors, 2 new, 0 reopened, no reverts. Not converged.
+
+### RD's ruling on Fork R5-01 (2026-10-19T08:47:31Z; RD author, orchestrator courier)
+
+Transcribed as a literal block quote of the message body in `comms/orchestrator/inbox/20261019T084731Z-rd-d79-exec-fork-r5-01-ruled-branch-b-al-6.md`, copied mechanically. It was relayed to cell 6 in flight, which landed it at `2b62f07b` (AL-6 restated; `test_al6_first_post_client_trust_width`) and `d539d273` (R5-03), and quoted it in round 6's prompt.
+
+> RD RULING, D79 executing Fork R5-01 (orchestrator query 20261019T084615Z). PRIMARY: RD; the item challenges my P2 correction 2 (AL-6's width). Verified by read on d79-exec before ruling: the resolver's match set is {candidate.date, entered_date} (exit_auto_fill.py:1471-1474); the POST recheck `anonymous_fill_matches` compares the typed tuple only, through `derives_from` over the fill row; the plan's AL-6 line (:40) states the execution-date width only. The finding is real and my correction's factual premise was PARTLY false: it held for the execution-date grain and not for the entered-date grain.
+>
+> RULING: BRANCH B. AL-6 is restated BY REPLACEMENT to its true width: client-trusted on the FIRST POST are (i) the K7.2 possible-partial flags and (ii) the value-tuple match at the ENTERED-DATE grain, both for the one reason that the order's entered date lives only in the map entry and the first POST does not re-fetch; DB-rechecked are the value-tuple match at the EXECUTION-date grain and the refused-envelope scan. No R5-01 code. R5-03's text fix lands as planned: a flag whose match is on the entered date must say price and quantity match and that the fill's date is the order's ENTERED date, never "these values match" as an equality.
+>
+> REASONS:
+> 1. My correction's principle was "state the limitation at its true width; a limitation declared wider than it is invites a reviewer to re-find the narrower one." The reviewer re-found a WIDER one. The remedy for a width error is the correct width, which is B. The exposure class (a tampered client editing a hidden map) is one the arc already accepts for the partials on this exact reason, and the instrument that closes the class (the signed envelope) is banked with a tampering trigger. Closing one path of an open class with new code is the shape I argued against at P2.
+> 2. Branch A asks a DIFFERENT question from the one the map asks. It cannot know the entered date, so it substitutes "any older same-trade anonymous fill at the same price and quantity". That is an alarm from a weaker token: permitted (alarm, never assert), but its text can only say "an earlier fill", not "the order's entered date", so it does not reproduce the suppressed question; it approximates it with false positives on every older identical fill. A new heuristic channel at round 5 is reviewed by rounds 6+, for a tamper-only path.
+> 3. Measurement: nothing recorded differs between A and B on an untampered client. Under B a tampered client can record on the first POST a typed exit that duplicates an anonymous fill dated on the order's entered date; the record is operator-typed with the SELECTED order's link, and the later surfaces (VM exclusion, the (c) scan on any further exit, the price-divergence discrepancy) still see both rows. Alarm lost on one tampered path; no identity asserted.
+>
+> ONE CONDITION (test scope, minor, no re-review): the width is pinned as a FACT, not prose. Whatever test documents that the partial flags are client-trusted on the first POST gains the entered-date case: an anonymous fill dated on the order's entered date at the candidate's price and quantity, the map's `possible_duplicates` stripped, unedited first POST -> records (one row), and the same POST with the item present -> 400, asked. Both legs assert the documented width so a later arc that closes it (the signed envelope) has a red to turn green.
+>
+> R5-02 (orchestrator, branch A): read, no dissent; order-scoped identities are the K5 direction.
+>
+> TRANSCRIPTION: block-quote into the exec ledger with RD as author; landed when the path is posted back.
+
+### Orchestrator QA of round 6 (against disk, `8fd44ace`)
+
+- I re-read the assertions from `review-r6.txt`: banner `model: gpt-5.6-sol`, `reasoning effort: high`, equal to `strong.config.toml`; `^ERROR` 0; `^tokens used` present, 430,882; anchored verdict tokens `NEW_CRITICAL_MAJOR_FOUND` x2, the other token 0; `exit-r6.txt` reads 0. **Round 6 COUNTS.** Counted spend to date: 3,334,072.
+- Six commits `d5934658`..`8fd44ace`. Trailers are empty across `618d7b04..HEAD`. No file was added under `swing/`, and nothing under `swing/data/` changed. The tree is clean, and the stash stack holds only the pre-existing entry.
+- **The cell's process slip** (a helper import that re-ran R5-01's edits, caught before any commit): I checked HEAD for its residue. No test function name is duplicated in the three d79 test files it touched, and no paragraph over 200 characters repeats in `exit_auto_fill.py`. `d539d273` touches only the R5-03 files.
+- **Both forks are ROUTED TO CHARC** (one ruler per item). R6-01 turns on what "the submitted envelope" means in CHARC's plan-stage FORK 2 (the authority). R6-02 turns on the K1 (1) transaction contract CHARC tied to Fork A-F01 ("a raise from record_exit means nothing was recorded"), and its branch A is a commission-or-bank decision for the register.
+
+Author of the sections above: orchestrator, except the block quote (RD).
