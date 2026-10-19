@@ -250,7 +250,9 @@ def test_t7h_t7i_an_unreadable_recorded_envelope_asks_then_records(
         body = _text(r1)
         assert f"Fill #{fid}'s envelope cannot be read" in body
         assert f"correct fill #{fid}" in body
-        assert _acks(r1.text) == [f"unreadable_envelope|{fid}"]
+        # D79-A2 (Fork A2, branch B): the identity names the linked order
+        # the question is about (o2, the default) as well as the fill.
+        assert _acks(r1.text) == [f"unreadable_envelope|o2|{fid}"]
         assert len(_exit_rows(world.cfg)) == 1
         r2 = _confirm(tc, world.tid, r1.text)
     assert r2.status_code == 200, r2.text[:500]
@@ -319,3 +321,59 @@ def test_t7_an_accepted_claimed_post_opens_one_connection(world, monkeypatch):
     assert seen["get_trade"][0] is route_conn
     assert seen["anonymous"] == [route_conn]
     assert seen["identities"] == [route_conn]
+
+
+# ------------------------------------------- D79-A2 (Reviewer A round 1)
+def _entered_then_executed(oid: str, entered: str, executed: str,
+                           price: float, qty: int):
+    """A FILLED SELL order ENTERED on ``entered`` and EXECUTED on
+    ``executed``: its K7.2 possible-partial window is [entered, executed]."""
+    from swing.integrations.schwab.models import (
+        SchwabExecutionLeg,
+        SchwabOrderResponse,
+    )
+    return SchwabOrderResponse(
+        order_id=oid, status="FILLED", enter_time=f"{entered}T14:30:00.000Z",
+        instrument_symbol="NVDA", instruction="SELL", quantity=qty,
+        order_type="LIMIT", price=price,
+        executions=[SchwabExecutionLeg(
+            leg_id=1, price=price, quantity=qty, mismarked_quantity=None,
+            instrument_id=1, time=f"{executed}T14:30:00.000Z")])
+
+
+def test_a2_an_acknowledged_partial_of_one_order_does_not_discharge_another(
+        world):
+    """D79-A2, orchestrator Fork A2 ruling branch B: the browser shape. Both
+    candidates list fill #F as a possible partial (both windows open on
+    2026-05-19; F is 2026-05-20 at 129.00 x 2, inside both and no larger
+    than either). o1 is picked at its own values and its flag renders. The
+    operator then switches the radio AND the values to o2 and presses
+    Confirm with o1's acknowledgements. The map is unchanged, so d2 passes.
+    Expected: 400, asked again about o2, no fill. PRE-FIX: both questions
+    carry the identity ``possible_partial|F``, so o1's acknowledgement
+    satisfies o2's and o2 is recorded (200, one row)."""
+    world.box["orders"] = [
+        _entered_then_executed("o1", "2026-05-19", "2026-05-20", 130.0, 4),
+        _entered_then_executed("o2", "2026-05-19", "2026-05-21", 131.0, 3),
+    ]
+    fid = _plant_fill(world.cfg, world.tid, day="2026-05-20", price=129.0,
+                      qty=2)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        r1 = _post(tc, world.tid, dict(
+            fd, candidate_index="0", exit_date="2026-05-20",
+            exit_price="130.00", shares="4"))
+        assert r1.status_code == 400, r1.text[:500]
+        assert _checked_radios(r1.text) == ["0"]
+        assert (f"Possible partial of this order: fill #{fid}" in _text(r1))
+        assert f"is not part of order o1" in _text(r1)
+        assert _acks(r1.text) == [f"possible_partial|o1|{fid}"]
+        o1_acks = _acks(r1.text)
+        r2 = _confirm(tc, world.tid, r1.text, acks=o1_acks,
+                      candidate_index="1", exit_date="2026-05-21",
+                      exit_price="131.00", shares="3")
+    assert r2.status_code == 400, r2.text[:500]
+    assert "Confirm or retype before recording." in r2.text
+    assert f"is not part of order o2" in _text(r2)
+    assert _acks(r2.text) == [f"possible_partial|o2|{fid}"]
+    assert len(_exit_rows(world.cfg)) == 1  # the planted F alone

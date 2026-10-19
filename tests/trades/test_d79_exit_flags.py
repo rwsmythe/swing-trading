@@ -233,7 +233,7 @@ def test_t4g_unreadable_flag_only_on_a_linked_exit():
                   linked=False) == ()
     [flag] = _flags(("2026-05-20", 130.0, 4), unreadable=bad, linked=True)
     assert flag.kind == FLAG_UNREADABLE_ENVELOPE
-    assert flag.subject == "9"
+    assert flag.subject == "o1|9"  # D79-A2: the linked order, then the fill
     assert "correct fill #9" in flag.text
 
 
@@ -257,8 +257,8 @@ def test_flags_dedupe_by_identity_and_order():
         anonymous=(PossibleDuplicateFill(5, "2026-05-21", 131.0, 3.0),),
         unreadable=(RecordedExitFill(9, 2, "2026-05-01", 1.0, 1.0),))
     assert [f.identity for f in flags] == [
-        f"{FLAG_VALUE_TUPLE}|5", f"{FLAG_POSSIBLE_PARTIAL}|6",
-        f"{FLAG_UNREADABLE_ENVELOPE}|9"]
+        f"{FLAG_VALUE_TUPLE}|5", f"{FLAG_POSSIBLE_PARTIAL}|o2|6",
+        f"{FLAG_UNREADABLE_ENVELOPE}|o2|9"]
     assert json.dumps([f.text for f in flags]).isascii()
 
 
@@ -299,3 +299,46 @@ def test_a1_a_fractional_map_entry_is_asked_f1_naming_quantity():
                     cmap={"h1": sel, "h2": O2})
     assert flag.kind == FLAG_F1_NO_CANDIDATE
     assert " in quantity." in flag.text
+
+
+# ------------------------------------------------- D79-A2 (Reviewer A R1)
+_PARTIAL_F = {"fill_id": 6, "date": "2026-05-19", "price": 129.0,
+              "quantity": 1.0, "reason": DUP_REASON_POSSIBLE_PARTIAL}
+
+
+def test_a2_the_partial_and_unreadable_identities_name_the_order():
+    """D79-A2, Fork A2 branch B: the same fill F asked about under two
+    selected orders yields two DIFFERENT identities, so one order's
+    acknowledgement cannot discharge the other's question; the (c)
+    identity is unchanged (the matched fill alone). PRE-FIX: both orders'
+    partial and unreadable identities are ``<kind>|<fill_id>`` (equal)."""
+    s1 = dict(O1, possible_duplicates=[_PARTIAL_F])
+    s2 = dict(O2, possible_duplicates=[_PARTIAL_F])
+    cmap = {"h1": s1, "h2": s2}
+    bad = (RecordedExitFill(9, 2, "2026-05-01", 1.0, 1.0),)
+    anon = (PossibleDuplicateFill(5, "2026-05-21", 131.0, 3.0),)
+    f1 = _flags(("2026-05-20", 130.0, 4), selected=s1, selected_id="o1",
+                cmap=cmap, unreadable=bad, anonymous=anon)
+    f2 = _flags(("2026-05-21", 131.0, 3), selected=s2, selected_id="o2",
+                cmap=cmap, unreadable=bad, anonymous=anon)
+    assert [f.identity for f in f1] == [
+        f"{FLAG_VALUE_TUPLE}|5", f"{FLAG_POSSIBLE_PARTIAL}|o1|6",
+        f"{FLAG_UNREADABLE_ENVELOPE}|o1|9"]
+    assert [f.identity for f in f2] == [
+        f"{FLAG_VALUE_TUPLE}|5", f"{FLAG_POSSIBLE_PARTIAL}|o2|6",
+        f"{FLAG_UNREADABLE_ENVELOPE}|o2|9"]
+
+
+def test_a2_with_no_usable_id_the_partial_names_the_selected_hash():
+    """Fork A2: with no usable selected order id the partial's order key is
+    the selected entry's signature hash -- the map key whose value IS the
+    selected entry -- so two id-less candidates still differ."""
+    s1 = dict(O1, order_id=None, possible_duplicates=[_PARTIAL_F])
+    s2 = dict(O2, order_id=None, possible_duplicates=[_PARTIAL_F])
+    cmap = {"h1": s1, "h2": s2}
+    [p1] = _flags(("2026-05-20", 130.0, 4), selected=s1, selected_id=None,
+                  cmap=cmap)
+    [p2] = _flags(("2026-05-21", 131.0, 3), selected=s2, selected_id=None,
+                  cmap=cmap)
+    assert p1.identity == f"{FLAG_POSSIBLE_PARTIAL}|h1|6"
+    assert p2.identity == f"{FLAG_POSSIBLE_PARTIAL}|h2|6"

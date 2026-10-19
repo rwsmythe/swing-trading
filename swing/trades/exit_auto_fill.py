@@ -1967,8 +1967,10 @@ class ExitRecordFlag:
     ``identity`` (``"<kind>|<subject>"``) is what a confirmation acknowledges
     -- never the kind alone (ledger "Plan intake"): for F1 the subject binds
     the SELECTED order and the TYPED values, so a retype after a flag is a
-    new flag and re-asks; for (c), a possible partial and an unreadable
-    envelope it is the named fill's id.
+    new flag and re-asks; for (c) it is the named fill's id; for a possible
+    partial and an unreadable envelope it is ``<order key>|<fill_id>``, the
+    order the question is about and the named fill (D79-A2; the order key is
+    defined in ``exit_record_flags``).
     """
 
     kind: str
@@ -2059,6 +2061,25 @@ def exit_record_flags(
       (carries an authority-read order id), one per unreadable recorded row on
       ANY trade.
 
+    THE PARTIAL AND UNREADABLE IDENTITIES ARE SCOPED TO THE ORDER THE
+    QUESTION IS ABOUT (D79-A2, orchestrator Fork A2 ruling, branch B). Both
+    texts name the selected order, so both identities carry it:
+    ``possible_partial|<order key>|<fill_id>`` and
+    ``unreadable_envelope|<order key>|<fill_id>``. The order key is
+    ``selected_order_id``; with no usable id it is the selected entry's
+    signature hash -- the ``candidates_map`` key whose value IS
+    ``selected_entry`` -- and an empty string when there is neither (a
+    synthesized entry, which carries no map items, so only an unreadable
+    question could use it, and that one needs a linked exit). For the
+    unreadable flag ``selected_order_id`` IS the linked order id: the exit
+    POST makes the persisted top-level id the selected entry's (or pops it),
+    so a linked exit's authority-read id is the selected one. An
+    acknowledgement given to one order's question therefore never
+    discharges another order's identical question on a radio switch the
+    d2 map check cannot see. F1 (selected id plus typed values) and (c)
+    (the matched fill's id: the question is about the typed exit against an
+    anonymous fill, which a radio switch does not change) are unchanged.
+
     Every text is ASCII-coerced before construction: the typed date and the
     map items are client-supplied.
     """
@@ -2075,6 +2096,11 @@ def exit_record_flags(
             flags.append(flag)
 
     order_label = selected_order_id or "this order"
+    selected_hash = next(
+        (key for key, entry in (candidates_map or {}).items()
+         if entry is selected_entry),
+        None) if selected_entry is not None else None
+    order_key = selected_order_id or selected_hash or ""
     if selected_entry is not None and not derives_from(
             selected_entry, exit_date=t_date, exit_price=t_price,
             shares=t_shares):
@@ -2135,10 +2161,10 @@ def exit_record_flags(
     for fill_id, text in value_tuple_items:
         add(FLAG_VALUE_TUPLE, str(fill_id), text)
     for fill_id, text in partial_items:
-        add(FLAG_POSSIBLE_PARTIAL, str(fill_id), text)
+        add(FLAG_POSSIBLE_PARTIAL, f"{order_key}|{fill_id}", text)
     if linked:
         for row in unreadable_fills:
-            add(FLAG_UNREADABLE_ENVELOPE, str(row.fill_id),
+            add(FLAG_UNREADABLE_ENVELOPE, f"{order_key}|{row.fill_id}",
                 _UNREADABLE_TEXT.format(fill_id=row.fill_id,
                                         order=order_label))
     return tuple(flags)
