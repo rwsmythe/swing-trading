@@ -1987,10 +1987,11 @@ class ExitRecordFlag:
     ``identity`` (``"<kind>|<subject>"``) is what a confirmation acknowledges
     -- never the kind alone (ledger "Plan intake"): for F1 the subject binds
     the SELECTED order and the TYPED values, so a retype after a flag is a
-    new flag and re-asks; for (c) it is the named fill's id; for a possible
+    new flag and re-asks; for a DB-derived (c) match it is the named fill's
+    id; for a (c) item drawn from the selected entry's map, a possible
     partial and an unreadable envelope it is ``<order key>|<fill_id>``, the
-    order the question is about and the named fill (D79-A2; the order key is
-    defined in ``exit_record_flags``).
+    order the question is about and the named fill (D79-A2, Fork R5-02; the
+    order key is defined in ``exit_record_flags``).
     """
 
     kind: str
@@ -2068,8 +2069,10 @@ def exit_record_flags(
       grain). ``FLAG_F1_OTHER_ORDER`` when they derive from exactly one OTHER
       map entry, else ``FLAG_F1_NO_CANDIDATE`` naming the differing fields.
       The text shows the selected order's own values beside the typed ones.
-    * **(c)** (RD K5c): every ``anonymous_matches`` row, plus the selected
-      entry's map ``possible_duplicates`` items labelled value-tuple.
+    * **(c)** (RD K5c): every ``anonymous_matches`` row (DB-derived), plus
+      the selected entry's map ``possible_duplicates`` items labelled
+      value-tuple (map-derived); a fill both sources name is asked once,
+      under the DB-derived identity (Fork R5-02).
     * **Possible partial** (RD K7.2): the selected entry's map items labelled
       ``possible_partial``. CLIENT-TRUSTED on the first POST (AL-6): an item
       is used only when it is a dict with an int ``fill_id`` and a known
@@ -2081,11 +2084,13 @@ def exit_record_flags(
       (carries an authority-read order id), one per unreadable recorded row on
       ANY trade.
 
-    THE PARTIAL AND UNREADABLE IDENTITIES ARE SCOPED TO THE ORDER THE
-    QUESTION IS ABOUT (D79-A2, orchestrator Fork A2 ruling, branch B). Both
-    texts name the selected order, so both identities carry it:
-    ``possible_partial|<order key>|<fill_id>`` and
-    ``unreadable_envelope|<order key>|<fill_id>``. The order key is
+    A QUESTION DRAWN FROM AN ORDER'S LIST IS SCOPED TO THAT ORDER; A
+    QUESTION DRAWN FROM THE TYPED VALUES AGAINST THE DB IS NOT (D79-A2,
+    orchestrator Fork A2 ruling, branch B; Fork R5-02, branch A). The
+    partial, the unreadable and the MAP-DERIVED (c) identities carry the
+    order: ``possible_partial|<order key>|<fill_id>``,
+    ``unreadable_envelope|<order key>|<fill_id>`` and
+    ``value_tuple_match|<order key>|<fill_id>``. The order key is
     ``selected_order_id``; with no usable id it is the selected entry's
     signature hash -- the ``candidates_map`` key whose value IS
     ``selected_entry`` -- and an empty string when there is neither (a
@@ -2096,9 +2101,10 @@ def exit_record_flags(
     so a linked exit's authority-read id is the selected one. An
     acknowledgement given to one order's question therefore never
     discharges another order's identical question on a radio switch the
-    d2 map check cannot see. F1 (selected id plus typed values) and (c)
-    (the matched fill's id: the question is about the typed exit against an
-    anonymous fill, which a radio switch does not change) are unchanged.
+    d2 map check cannot see. F1 (selected id plus typed values) and the
+    DB-derived (c) match (the matched fill's id: the question is about the
+    typed exit against an anonymous fill, which a radio switch does not
+    change) are unchanged.
 
     Every text is ASCII-coerced before construction: the typed date and the
     map items are client-supplied.
@@ -2148,10 +2154,19 @@ def exit_record_flags(
                 typed=typed_text, selected=order_label, sel_values=sel_text,
                 fields=fields))
 
-    value_tuple_items: list[tuple[int, str]] = []
+    # (c) has TWO sources, and their identities differ (Fork R5-02, branch
+    # A). A DB-derived match is the typed values against the ledger, which a
+    # radio switch does not change: ``value_tuple_match|<fill_id>``. A
+    # map-derived item is the SELECTED ORDER's own list, exactly like the
+    # partials: ``value_tuple_match|<order key>|<fill_id>``. A fill both
+    # sources name is asked ONCE, under the DB-derived identity.
+    value_tuple_items: list[tuple[str, str]] = []
+    map_value_tuple_items: list[tuple[int, str]] = []
     partial_items: list[tuple[int, str]] = []
+    db_matched: set[int] = set()
     for match in anonymous_matches:
-        value_tuple_items.append((match.fill_id, _VALUE_TUPLE_TEXT.format(
+        db_matched.add(match.fill_id)
+        value_tuple_items.append((str(match.fill_id), _VALUE_TUPLE_TEXT.format(
             fill_id=match.fill_id, date=match.date, price=match.price,
             qty=match.quantity)))
     items = (selected_entry.get("possible_duplicates")
@@ -2167,7 +2182,7 @@ def exit_record_flags(
             continue
         try:
             if reason == DUP_REASON_VALUE_TUPLE:
-                value_tuple_items.append((fill_id, _VALUE_TUPLE_TEXT.format(
+                map_value_tuple_items.append((fill_id, _VALUE_TUPLE_TEXT.format(
                     fill_id=fill_id, date=item.get("date"),
                     price=float(item.get("price")),
                     qty=float(item.get("quantity")))))
@@ -2178,8 +2193,11 @@ def exit_record_flags(
                     qty=float(item.get("quantity")), order=order_label)))
         except (TypeError, ValueError, OverflowError):
             continue
-    for fill_id, text in value_tuple_items:
-        add(FLAG_VALUE_TUPLE, str(fill_id), text)
+    for fill_id, text in map_value_tuple_items:
+        if fill_id not in db_matched:
+            value_tuple_items.append((f"{order_key}|{fill_id}", text))
+    for subject, text in value_tuple_items:
+        add(FLAG_VALUE_TUPLE, subject, text)
     for fill_id, text in partial_items:
         add(FLAG_POSSIBLE_PARTIAL, f"{order_key}|{fill_id}", text)
     if linked:

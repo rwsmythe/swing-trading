@@ -342,3 +342,43 @@ def test_a2_with_no_usable_id_the_partial_names_the_selected_hash():
                   cmap=cmap)
     assert p1.identity == f"{FLAG_POSSIBLE_PARTIAL}|h1|6"
     assert p2.identity == f"{FLAG_POSSIBLE_PARTIAL}|h2|6"
+
+
+# ------------------------------------------------- R5-02 (Reviewer A R5)
+_VT_F = {"fill_id": 7, "date": "2026-05-20", "price": 130.0,
+         "quantity": 4.0, "reason": DUP_REASON_VALUE_TUPLE}
+
+
+def test_r502_a_map_derived_value_tuple_identity_names_the_order():
+    """Fork R5-02, branch A (orchestrator): a value-tuple item drawn from the
+    SELECTED entry's map ``possible_duplicates`` is a question about that
+    order's own list, so its identity is
+    ``value_tuple_match|<order key>|<fill_id>`` -- the same order key as the
+    partials -- and the same fill under two orders yields two identities.
+    No DB-derived match is in play. PRE-FIX: both are
+    ``value_tuple_match|7`` (equal), so one order's acknowledgement
+    discharges the other's."""
+    s1 = dict(O1, possible_duplicates=[_VT_F])
+    s2 = dict(O2, possible_duplicates=[_VT_F])
+    cmap = {"h1": s1, "h2": s2}
+    [v1] = _flags(("2026-05-20", 130.0, 4), selected=s1, selected_id="o1",
+                  cmap=cmap)
+    [v2] = _flags(("2026-05-21", 131.0, 3), selected=s2, selected_id="o2",
+                  cmap=cmap)
+    assert v1.identity == f"{FLAG_VALUE_TUPLE}|o1|7"
+    assert v2.identity == f"{FLAG_VALUE_TUPLE}|o2|7"
+
+
+def test_r502_a_fill_named_by_both_sources_is_one_flag_under_the_db_identity():
+    """Fork R5-02's dedup: when the DB-derived (c) match and the selected
+    entry's map item name ONE fill, ONE flag is emitted, under the
+    order-independent DB identity ``value_tuple_match|<fill_id>``. A PIN
+    against the fix's own null implementation (no dedup), which emits two
+    flags for one fill (``value_tuple_match|7`` and
+    ``value_tuple_match|o1|7``); pre-fix the two identities were equal, so
+    this passes there too."""
+    s1 = dict(O1, possible_duplicates=[_VT_F])
+    anon = (PossibleDuplicateFill(7, "2026-05-20", 130.0, 4.0),)
+    flags = _flags(("2026-05-20", 130.0, 4), selected=s1, selected_id="o1",
+                   cmap={"h1": s1, "h2": O2}, anonymous=anon)
+    assert [f.identity for f in flags] == [f"{FLAG_VALUE_TUPLE}|7"]

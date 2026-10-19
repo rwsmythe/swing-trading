@@ -66,8 +66,8 @@
 - **"F1":** the typed values contradict the SELECTED candidate's own map entry.
 - **"Flag identity":** `"<kind>|<subject>"` (ledger "Plan intake", the accepted encoding). The subject is:
   - for F1: `"<selected_order_id>|<date>|<price:.2f>|<qty>"` of the TYPED values;
-  - for (c): `"<fill_id>"`;
-  - for K7.2 and the refused envelope: `"<order key>|<fill_id>"`, where the order key is the selected order id, or the selected candidate's signature hash when the entry has no usable id (exec ledger, "FORK D79-A2", branch B). For the refused envelope the selected id is the linked order id.
+  - for a DB-derived (c) match: `"<fill_id>"`;
+  - for a map-derived (c) item, K7.2 and the refused envelope: `"<order key>|<fill_id>"`, where the order key is the selected order id, or the selected candidate's signature hash when the entry has no usable id (exec ledger, "FORK D79-A2", branch B, and "FORK R5-02", branch A). For the refused envelope the selected id is the linked order id. A fill named by both (c) sources is asked once, under the DB-derived identity.
 - **The `world` fixture:** `tests/web/test_routes/test_exit_rerender_anchor.py:99`.
   - o1 = 2026-05-20, 130.00 x 4.
   - o2 = 2026-05-21, 131.00 x 3; o2 is the default, at index 1.

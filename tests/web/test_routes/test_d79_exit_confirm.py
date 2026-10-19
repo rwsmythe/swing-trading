@@ -379,6 +379,45 @@ def test_a2_an_acknowledged_partial_of_one_order_does_not_discharge_another(
     assert len(_exit_rows(world.cfg)) == 1  # the planted F alone
 
 
+# ------------------------------------------- R5-02 (Reviewer A round 5)
+def test_r502_an_acknowledged_value_tuple_of_one_order_does_not_discharge_another(
+        world):
+    """Fork R5-02, branch A (orchestrator): the browser shape. o1 and o2 sell
+    at ONE price and quantity (130.00 x 3); o1 is entered 2026-05-19 and
+    executed 2026-05-20, o2 entered 2026-05-20 and executed 2026-05-21.
+    Anonymous fill F is 2026-05-20 at 130.00 x 3: o1's execution date and
+    o2's ENTERED date, so both orders' map lists carry F as a value-tuple
+    match. o1 is picked at its own values and asked about F (the DB-derived
+    match, deduplicated with o1's map item). The operator switches the radio
+    AND the values to o2 and presses Confirm with o1's acknowledgement. The
+    map is unchanged, so d2 passes, and o2's typed values match no fill in
+    the DB. Expected: 400, asked about F under o2's order-scoped identity,
+    no fill. PRE-FIX: o2's map-derived question carried the identity
+    ``value_tuple_match|F``, which o1's acknowledgement satisfied, so o2
+    recorded (200, two rows)."""
+    world.box["orders"] = [
+        _entered_then_executed("o1", "2026-05-19", "2026-05-20", 130.0, 3),
+        _entered_then_executed("o2", "2026-05-20", "2026-05-21", 130.0, 3),
+    ]
+    fid = _plant_fill(world.cfg, world.tid, day="2026-05-20", price=130.0,
+                      qty=3)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        r1 = _post(tc, world.tid, dict(
+            fd, candidate_index="0", exit_date="2026-05-20",
+            exit_price="130.00", shares="3"))
+        assert r1.status_code == 400, r1.text[:500]
+        assert _checked_radios(r1.text) == ["0"]
+        assert _acks(r1.text) == [f"value_tuple_match|{fid}"]
+        r2 = _confirm(tc, world.tid, r1.text, acks=_acks(r1.text),
+                      candidate_index="1", exit_date="2026-05-21",
+                      exit_price="130.00", shares="3")
+    assert r2.status_code == 400, r2.text[:500]
+    assert "Confirm or retype before recording." in r2.text
+    assert _acks(r2.text) == [f"value_tuple_match|o2|{fid}"]
+    assert len(_exit_rows(world.cfg)) == 1  # the planted F alone
+
+
 # ------------------------------------------- RA-04 (Reviewer A round 2)
 def test_ra04_a_void_confirm_whose_prefetch_is_none_builds_once(
         world, monkeypatch):
