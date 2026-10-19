@@ -2467,7 +2467,11 @@ def _exit_values_well_formed(date_value: object, price_value: object,
     envelope: an ISO ``YYYY-MM-DD`` string, a finite number that is not a
     bool, an int that is not a bool. The top-level quartet is judged by it
     at tier (d); the SELECTED map entry is judged by it before its values
-    are written to the persisted top level (D79 T6)."""
+    are written to the persisted top level (D79 T6).
+
+    A JSON int too large for a float (``float()`` raises ``OverflowError``)
+    is not a finite number, so it is NOT well formed (D79-A-02): the caller
+    answers 400 with the anchor cleared, never a 500."""
     import math as _math
     from datetime import date as _date_cls
 
@@ -2477,11 +2481,15 @@ def _exit_values_well_formed(date_value: object, price_value: object,
         _date_cls.fromisoformat(date_value)
     except (TypeError, ValueError):
         return False
-    price_ok = (
+    if not (
         isinstance(price_value, (int, float))
         and not isinstance(price_value, bool)
-        and _math.isfinite(float(price_value))
-    )
+    ):
+        return False
+    try:
+        price_ok = _math.isfinite(float(price_value))
+    except OverflowError:
+        return False
     shares_ok = (
         isinstance(shares_value, int) and not isinstance(shares_value, bool)
     )

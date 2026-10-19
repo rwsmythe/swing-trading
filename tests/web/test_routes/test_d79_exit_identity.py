@@ -527,3 +527,41 @@ def test_ra03_an_omitted_radio_on_a_multi_entry_map_is_no_selection(world):
     [(_fid, origin, env, _c, _p, _q)] = _exit_rows(world.cfg)
     assert origin == "schwab_auto"
     assert json.loads(env)["schwab_order_id"] == "o2"
+
+
+# ------------------------------------------------- D79-A-02 (Reviewer A R3)
+_HUGE_INT = 10 ** 400  # a JSON int ``float()`` cannot hold: OverflowError
+
+
+def test_a02_a_huge_int_top_level_price_is_not_well_formed(world):
+    """D79-A-02, caller one (tier (d)): a claimed envelope whose top-level
+    ``exit_price`` is a 401-digit JSON int. ``json.loads`` parses it as an
+    int and ``float()`` overflows. It is NOT well formed: 400 with tier
+    (d)'s text, the anchor cleared, no fill. PRE-FIX: the predicate's
+    ``float()`` raised ``OverflowError`` -- a 500."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        env["exit_price"] = _HUGE_INT
+        r = _post(tc, world.tid, dict(
+            fd, schwab_source_value_json=json.dumps(env, sort_keys=True)))
+    assert r.status_code == 400, r.text[:500]
+    assert "contains invalid values" in r.text
+    assert _exit_rows(world.cfg) == []
+
+
+def test_a02_a_huge_int_selected_entry_price_is_not_well_formed(world):
+    """D79-A-02, caller two (the selected-entry check): o1 picked, and o1's
+    map entry carries a 401-digit JSON int price; the top level is o2's,
+    well formed. 400 with the selected-entry text, no fill. PRE-FIX: a
+    500 (``OverflowError`` from the same predicate)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        env["candidates_map"][_hash_of(env, "o1")]["price"] = _HUGE_INT
+        r = _post(tc, world.tid, dict(
+            fd, candidate_index="0",
+            schwab_source_value_json=json.dumps(env, sort_keys=True)))
+    assert r.status_code == 400, r.text[:500]
+    assert "the selected auto-fill candidate carries invalid values" in r.text
+    assert _exit_rows(world.cfg) == []
