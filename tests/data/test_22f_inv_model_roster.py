@@ -314,9 +314,11 @@ def test_raising_validator_set_equals_roster_union_unreached() -> None:
     unclassified = sorted(raising - declared)
     no_longer_raising = sorted(declared - raising)
     assert not unclassified, (
-        "NEW raising validator(s) in neither ROSTER nor UNREACHED -- classify "
-        "each (persisted with its CHECK/trigger quote, or computed -> FND-4; "
-        f"or UNREACHED with the census reason): {unclassified}")
+        "NEW raising validator(s) not classified -- ROSTER is the pinned 118 "
+        "and is never extended; classify each into LATER_ARC_ROSTER "
+        "(persisted with its CHECK/trigger quote, or computed -> FND-4), with "
+        "the adding arc and the constructing site in a comment, or into "
+        f"UNREACHED with the census reason: {unclassified}")
     assert not no_longer_raising, (
         "declared validator(s) that no longer raise (or no longer match the "
         f"pattern): {no_longer_raising}")
