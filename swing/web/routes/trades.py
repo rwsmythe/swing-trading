@@ -2695,9 +2695,9 @@ async def exit_post(
     # when these are absent. Per CLAUDE.md gotcha "Form-render hidden
     # anchors driving POST-time validation MUST round-trip" + forward-
     # binding lesson #13 BINDING. Per-candidate hidden inputs
-    # (candidate_signature_hash_<i> + candidate_order_id_<i> + radio
-    # candidate_index) are read from request.form() below since their
-    # names are dynamic.
+    # (candidate_signature_hash_<i> + radio candidate_index) are read from
+    # request.form() below since their names are dynamic; the template's
+    # candidate_order_id_<i> inputs are not read (D79-A-05).
     schwab_source_value_json: str = Form(""),
     auto_fill_audit_at: str = Form(""),
     fill_origin_at_form_render: str = Form(""),
@@ -2739,11 +2739,13 @@ async def exit_post(
         if force and getlist is not None else set()
     )
 
-    # Collect all candidate_signature_hash_<i> / candidate_order_id_<i>
-    # pairs the form sent. Indices are 0-based; gaps OK (template emits
-    # contiguous indices but defense-in-depth tolerates sparsity).
+    # Collect every candidate_signature_hash_<i> the form sent. Indices are
+    # 0-based; gaps OK (template emits contiguous indices but
+    # defense-in-depth tolerates sparsity). The template's
+    # ``candidate_order_id_<i>`` inputs are NOT read: the selected order id
+    # comes from the ``candidates_map`` entry alone (Codex R2 Major #2; the
+    # hidden-input fallback was removed as unreachable, D79-A-05).
     candidate_sigs: dict[int, str] = {}
-    candidate_orders: dict[int, str] = {}
     for key in form_data:
         if key.startswith("candidate_signature_hash_"):
             try:
@@ -2751,12 +2753,6 @@ async def exit_post(
             except ValueError:
                 continue
             candidate_sigs[idx] = str(form_data.get(key) or "")
-        elif key.startswith("candidate_order_id_"):
-            try:
-                idx = int(key[len("candidate_order_id_"):])
-            except ValueError:
-                continue
-            candidate_orders[idx] = str(form_data.get(key) or "")
 
     # ------------------------------------------------------------------
     # Phase 13 T3.SB2 T-B.2.3 — fill_origin transition resolution.
@@ -3017,13 +3013,9 @@ async def exit_post(
                 # (which now also emits the index-0 inputs for one candidate).
                 single_map = anchor_envelope.get("candidates_map")
                 if isinstance(single_map, dict) and len(single_map) == 1:
-                    [(only_sig, only_entry)] = single_map.items()
+                    [only_sig] = single_map
                     selected_index = 0
                     candidate_sigs[0] = str(only_sig)
-                    only_order = (only_entry.get("order_id")
-                                  if isinstance(only_entry, dict) else None)
-                    candidate_orders[0] = (
-                        only_order if isinstance(only_order, str) else "")
 
         # Provenance-stamping branch — fires only when both halves of the
         # consistency check agree (valid dict envelope + claim present).
@@ -3264,21 +3256,16 @@ async def exit_post(
                 # keeps the persisted order_id consistent with the values
                 # compared above instead of letting two client-supplied fields
                 # disagree; it does NOT make either unforgeable (see the trust
-                # note at the membership check). Falls
-                # back to the client-submitted value only when
-                # candidates_map is empty (legacy envelopes lacking the
-                # map — pre-Critical-#1-fix envelopes; covered by R2 M4
-                # legacy-fill fallback territory).
-                if authoritative_selected is not None:
-                    auth_order_id = authoritative_selected.get("order_id")
-                    extended["selected_candidate_order_id"] = (
-                        auth_order_id if isinstance(auth_order_id, str)
-                        and auth_order_id else None
-                    )
-                else:
-                    extended["selected_candidate_order_id"] = (
-                        candidate_orders.get(selected_index, "") or None
-                    )
+                # note at the membership check). There is NO fallback to the
+                # hidden input: a selection reaches this point only with its
+                # hash in a non-empty map (an explicit selection on a map-less
+                # or empty-map envelope took the Fork RA-02 re-confirm above),
+                # so the map entry always exists (D79-A-05).
+                auth_order_id = authoritative_selected.get("order_id")
+                extended["selected_candidate_order_id"] = (
+                    auth_order_id if isinstance(auth_order_id, str)
+                    and auth_order_id else None
+                )
                 others = sorted(
                     sig for idx, sig in candidate_sigs.items()
                     if idx != selected_index
@@ -3343,13 +3330,22 @@ async def exit_post(
             # re-deriving would demote the best-evidenced row on the ledger and
             # re-offer its order.
             #
-            # WHAT THE DROP BRANCH COVERS NOW (D79): an UNCONFIRMED divergence
-            # cannot reach this point through the form -- the F1 flag stops the
-            # POST before ``record_exit`` until it is acknowledged -- so the
-            # drop is the BACKSTOP for a tampered or malformed anchor: zero or
-            # several map entries naming the id, an id that is not a non-blank
-            # string, or a legacy (map-less) envelope whose top-level quartet
-            # the typed values neither derive from nor were confirmed against.
+            # WHAT THE DROP BRANCH COVERS NOW (D79, after Forks RA-02 and
+            # D79-A-01): an UNCONFIRMED divergence cannot reach this point
+            # through the form -- the F1 flag stops the POST before
+            # ``record_exit`` until it is acknowledged -- so the drop is the
+            # BACKSTOP for a tampered or malformed anchor, and two shapes
+            # remain for it. (1) A map-bearing claim whose map carries
+            # SEVERAL entries naming the selected id: the top-level id is the
+            # selected map entry's own, so at least one entry names it and
+            # zero cannot occur. (2) A map-less claim with no selection whose
+            # top-level id is not a non-blank string. A map-less claim whose
+            # typed values diverge from its top-level quartet never records:
+            # its F1 is asked on a form that cannot be restored, so FORK 3
+            # drops it and re-confirms, and its confirm is VOID under d2. An
+            # explicit selection on a map-less or empty-map claim, and a
+            # map-bearing claim with no unique entry for its top-level id,
+            # never get here (the re-confirms above).
             # The evidence hierarchy is VALUES->ORDER, never TOKEN->ORDER:
             # ``selected_candidate_order_id`` still records what the operator
             # picked, and the flag channel alarms rather than asserts.
@@ -3375,15 +3371,15 @@ async def exit_post(
                     isinstance(top_order_id, str) and bool(top_order_id.strip())
                 )
                 named: list = []
-                # PRESENCE, not truthiness (Codex R1 major). An envelope that
-                # CARRIES ``candidates_map`` and declares it EMPTY asserts a
-                # candidate manifest containing nothing, and an id naming no
-                # entry in it evidences no link. A populated resolver never
-                # emits an empty map, so this is a client-edited or malformed
-                # envelope either way; the map governs whenever it is present.
+                # PRESENCE, not truthiness (Codex R1 major): the map governs
+                # whenever it is present. An envelope that CARRIES an EMPTY
+                # ``candidates_map`` asserts a manifest containing nothing; it
+                # no longer reaches this point (Fork D79-A-01 and Fork RA-02
+                # re-confirm it above), and the presence test is kept as the
+                # belt, so an empty map can never fall to the legacy branch.
                 if usable and "candidates_map" in anchor_envelope:
-                    # The id's own candidate is the map entry naming it. Zero
-                    # or several -> the id names no single offered fill, so it
+                    # The id's own candidate is the map entry naming it.
+                    # Several -> the id names no single offered fill, so it
                     # cannot evidence a link either way.
                     named = [
                         entry for entry in candidates_map.values()

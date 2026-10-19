@@ -937,9 +937,11 @@ class TradeExitFormVM:
     # the single-fill case renders pre-populated inputs directly (no
     # radio). Per-candidate ``signature_hash`` + ``order_id`` are emitted
     # as hidden inputs ``candidate_signature_hash_<i>`` +
-    # ``candidate_order_id_<i>`` so the POST handler can verify the operator's
-    # selected candidate index against the candidates the SUBMISSION itself
-    # carries. That is a consistency check on one submitted form, not proof of
+    # ``candidate_order_id_<i>``; the POST handler reads the HASH to verify the
+    # operator's selected candidate index against the candidates the
+    # SUBMISSION itself carries, and takes the order id from that candidate's
+    # ``candidates_map`` entry, never from ``candidate_order_id_<i>``
+    # (D79-A-05). That is a consistency check on one submitted form, not proof of
     # server provenance: these are hidden inputs and a client can alter them
     # together with the envelope (see the trust note in
     # ``swing/trades/exit_auto_fill.py``).
