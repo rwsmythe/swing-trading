@@ -3049,6 +3049,30 @@ async def exit_post(
                         submitted_sig_hash,
                     )
 
+            # D79 executing Fork RA-02 (orchestrator, branch A): AN EXPLICIT
+            # SELECTION THE SERVER CANNOT RESOLVE IS RE-ASKED, NEVER
+            # SYNTHESIZED. A claimed envelope with no ``candidates_map``
+            # carrying a selection names an order (the client's
+            # ``candidate_order_id_<i>``) that no list here can verify;
+            # recording it would link the TOP-LEVEL order while the audit
+            # trail claims the pick -- a recorded link that is not the
+            # operator's. So it takes the Fork 3 (G1) response: 400, the
+            # refresh notice, the FRESH map-bearing anchor (no submitted
+            # anchor is offered for restore), the typed values kept, nothing
+            # recorded -- even when the typed values derive from the
+            # top-level quartet. ``selected_index`` is set here only by an
+            # explicit ``candidate_index`` or by a ONE-entry map (RA-03), so
+            # with no map it is always an explicit selection.
+            if selected_index is not None and not candidates_map:
+                return _rerender_exit_form_with_error(
+                    request=request, templates=templates, cfg=cfg,
+                    cache=cache, executor=executor, trade_id=trade_id,
+                    exit_date=exit_date, exit_price=exit_price,
+                    shares=shares, reason=reason_enum.value, notes=notes,
+                    error_message=_EXIT_FLAGS_RECONFIRM_TEXT,
+                    refresh_notice=True,
+                )
+
             # D79 T6 (orchestrator K7.3): the selected entry's values are
             # about to become the persisted envelope's TOP-LEVEL values, so
             # they are held to the same shape tier (d) holds the top level to
@@ -3069,15 +3093,19 @@ async def exit_post(
                     "re-submit."
                 )
 
-            # D79 T6 item 2 + executing FORK 2 (orchestrator): THE SELECTED
-            # ENTRY the F1 question is asked against, and THE ONE SYNTHESIS
-            # SITE. With a selection whose hash its own map carries, it is that
-            # map entry. With NO such selection -- a legacy envelope carrying
-            # no ``candidates_map``, or a multi-entry map submitted with no
-            # candidate inputs -- it is SYNTHESIZED from the envelope's
+            # D79 T6 item 2 + executing FORK 2 (orchestrator, as narrowed by
+            # Fork RA-02): THE SELECTED ENTRY the F1 question is asked
+            # against, and THE ONE SYNTHESIS SITE. With a selection whose hash
+            # its own map carries, it is that map entry. With NO selection
+            # sent -- a legacy envelope carrying no ``candidates_map`` and no
+            # selection, or a multi-entry map submitted with no
+            # ``candidate_index`` -- it is SYNTHESIZED from the envelope's
             # top-level quartet, which is the candidate the form rendered as
             # the default (``resolve_exit_auto_fill`` writes the quartet from
-            # the last candidate, and the default radio is the last). So every
+            # the last candidate, and the default radio is the last). THE
+            # SYNTHESIS IS FOR THE NO-SELECTION SHAPE ONLY: an explicit
+            # selection on a map-less envelope never reaches this point (the
+            # Fork RA-02 re-confirm above). So every
             # claimed shape reaches F1, and no shape reaches the corrected
             # branch without an acknowledged F1 (orchestrator K5). For the
             # legacy shape F1 can only be NO_CANDIDATE (there is no other

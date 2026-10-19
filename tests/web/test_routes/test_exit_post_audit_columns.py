@@ -831,8 +831,15 @@ def test_g_multi_partial_legacy_envelope_non_default_pick_records_nothing_and_it
     anchor is never restorable, so the flags are DROPPED: 400, nothing
     recorded, the refresh notice, no flag text, and a message that the list
     must be re-confirmed. A Confirm of the ORIGINAL submission with a
-    test-built identity is VOID under d2. A legacy envelope never records a
-    correction.
+    test-built identity takes the SAME re-confirm response and records
+    nothing. A legacy envelope never records a correction.
+
+    SUPERSEDED again, by replacement (D79 executing Fork RA-02, branch A):
+    the submission carries an explicit selection (``candidate_index=1``) on
+    a map-less envelope, which the server cannot resolve, so EVERY such POST
+    -- the confirm included -- takes the Fork 3 G1 re-confirm response
+    before the d2 check is reached. The confirm leg asserted the d2 VOID
+    text; it now asserts the re-confirm text and the refresh notice.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
@@ -877,7 +884,9 @@ def test_g_multi_partial_legacy_envelope_non_default_pick_records_nothing_and_it
     assert "differ from order" not in html.unescape(first.text)
     assert _ack_identities(first.text) == []
     assert void.status_code == 400, void.text
-    assert "the confirmation is void" in void.text
+    assert "must be re-confirmed" in void.text
+    assert "auto-fill selection was refreshed" in void.text
+    assert _ack_identities(void.text) == []
 
 
 def test_h_critical1_unedited_default_radio_picks_authoritative_default(

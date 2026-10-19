@@ -467,3 +467,43 @@ def test_fork1_iii_one_spelling_called_from_both_sites(world, monkeypatch):
         ok = _post(tc, world.tid, _form(tc, world.tid))
     assert ok.status_code == 200, ok.text[:500]
     assert sites == ["route", "service"] and entered == [1]
+
+
+# ------------------------------------------------- RA-02 (Reviewer A R2)
+def test_ra02_an_explicit_selection_on_a_map_less_claim_is_reconfirmed(world):
+    """Fork RA-02, branch A (orchestrator): a claimed envelope with NO
+    ``candidates_map`` (top-level o2) carrying an explicit selection
+    (``candidate_index=0``, hash and order id o1), the typed values left at
+    o2's. The server cannot resolve the pick against any list, so it is NOT
+    synthesized: the Fork 3 G1 response -- 400, the refresh notice, the
+    FRESH map-bearing anchor, the typed values kept, nothing recorded --
+    even though the typed values derive from the top-level quartet.
+    PRE-FIX: 200, one fill whose top level is o2 while
+    ``selected_candidate_order_id`` claims o1."""
+    from tests.web.test_routes.test_exit_rerender_anchor import (
+        _NOTICE,
+        _hidden,
+        _input_attr,
+    )
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        o1_hash = _hash_of(env, "o1")
+        del env["candidates_map"]
+        legacy = {k: v for k, v in fd.items()
+                  if not k.startswith("candidate_")}
+        legacy.update(schwab_source_value_json=json.dumps(env, sort_keys=True),
+                      candidate_index="0", candidate_signature_hash_0=o1_hash,
+                      candidate_order_id_0="o1")
+        assert (legacy["exit_date"], legacy["exit_price"],
+                legacy["shares"]) == ("2026-05-21", "131.00", "3")
+        r = _post(tc, world.tid, legacy)
+    assert r.status_code == 400, r.text[:500]
+    body = _text(r)
+    assert "must be re-confirmed" in body
+    assert _NOTICE in body
+    assert _acks(r.text) == []
+    assert "candidates_map" in json.loads(
+        _hidden(r.text, "schwab_source_value_json"))
+    assert _input_attr(r.text, "exit_price", "value") == "131.00"
+    assert _exit_rows(world.cfg) == []
