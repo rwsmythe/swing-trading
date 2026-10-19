@@ -59,6 +59,7 @@ import hashlib
 import json
 import logging
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -86,6 +87,7 @@ from swing.trades.execution_dates import (
     latest_execution_leg_date,
     latest_execution_leg_instant,
 )
+from swing.trades.exit import RecordedExitFill, recorded_exit_identities
 from swing.trades.schwab_reconciliation import (
     _compute_execution_price,
     _is_execution_bearing_candidate,
@@ -267,6 +269,19 @@ ExitFillOrigin = Literal[
 ]
 
 
+# D79 (RD K7.2; orchestrator K7.5) -- WHY an anonymous recorded fill is named
+# against a candidate. Two reasons, two labels, never one shared label:
+#   - a VALUE-TUPLE match: same price and quantity, dated at either grain;
+#   - a POSSIBLE PARTIAL: dated inside the order's own execution window
+#     (entered date through executed date, inclusive) with a quantity no
+#     larger than the order's -- a hand-typed partial of a working order.
+DUP_REASON_VALUE_TUPLE = "value_tuple_match"
+DUP_REASON_POSSIBLE_PARTIAL = "possible_partial"
+_DUP_REASON_VALUES: frozenset[str] = frozenset({
+    DUP_REASON_VALUE_TUPLE, DUP_REASON_POSSIBLE_PARTIAL,
+})
+
+
 @dataclass(frozen=True)
 class PossibleDuplicateFill:
     """An ALREADY-RECORDED fill a candidate MIGHT duplicate, named in full.
@@ -300,6 +315,10 @@ class PossibleDuplicateFill:
     # name the wrong row. The live ledger happens to hold no fractional
     # quantity today; the schema has always permitted one.
     quantity: float
+    # D79 (RD K7.2): WHY the row is named -- ``DUP_REASON_VALUE_TUPLE`` or
+    # ``DUP_REASON_POSSIBLE_PARTIAL``. Last and defaulted, so positional
+    # construction is unchanged.
+    reason: str = DUP_REASON_VALUE_TUPLE
 
     def __post_init__(self) -> None:
         if isinstance(self.fill_id, bool) or not isinstance(self.fill_id, int):
@@ -311,6 +330,15 @@ class PossibleDuplicateFill:
             raise ValueError(
                 f"PossibleDuplicateFill.date must be non-empty str; "
                 f"got {self.date!r}"
+            )
+        # `isinstance` BEFORE membership: `[] in frozenset(...)` raises
+        # TypeError, not the ValueError this contract promises (the
+        # ``ExitAutoFillCandidate.date_source`` precedent).
+        if not (isinstance(self.reason, str)
+                and self.reason in _DUP_REASON_VALUES):
+            raise ValueError(
+                f"PossibleDuplicateFill.reason must be one of "
+                f"{sorted(_DUP_REASON_VALUES)}; got {self.reason!r}"
             )
 
 
@@ -978,6 +1006,8 @@ def resolve_exit_auto_fill(
                     "date": dup.date,
                     "price": dup.price,
                     "quantity": dup.quantity,
+                    # D79 (RD K7.2): the reason label rides with the row.
+                    "reason": dup.reason,
                 }
                 for dup in cand.possible_duplicates
             ],
@@ -1018,7 +1048,14 @@ def resolve_exit_auto_fill(
     # envelope nobody reads. It is stated first because it is the only one of
     # these messages that can cost the operator a wrong ledger row.
     advisory_parts: list[str] = []
-    flagged = [c for c in candidates if c.possible_duplicates]
+    # D79 (RD K7.2; orchestrator K7.5): the two reasons get SEPARATE
+    # sentences, each naming its rows -- a value-tuple match and a possible
+    # partial are different evidence and the operator adjudicates them
+    # differently.
+    flagged = [
+        c for c in candidates
+        if any(d.reason == DUP_REASON_VALUE_TUPLE for d in c.possible_duplicates)
+    ]
     if flagged:
         # NEUTRAL WORDING (Codex R16 minor). An earlier draft told the operator
         # the matching row was "recorded under the OLD date convention" and was
@@ -1034,6 +1071,7 @@ def resolve_exit_auto_fill(
             f"{c.quantity})"
             for c in flagged
             for dup in c.possible_duplicates
+            if dup.reason == DUP_REASON_VALUE_TUPLE
         )
         # NUMBER-NEUTRAL (Codex R20). The single-candidate/single-row case
         # is the COMMON one, and the previous phrasing read "1 offered fill
@@ -1052,6 +1090,30 @@ def resolve_exit_auto_fill(
             "or a different one. Check the trade's recorded fills before "
             "submitting."
         )
+    partial_flagged = [
+        c for c in candidates
+        if any(d.reason == DUP_REASON_POSSIBLE_PARTIAL
+               for d in c.possible_duplicates)
+    ]
+    if partial_flagged:
+        named_partials = "; ".join(
+            f"possible partial of this order: fill #{dup.fill_id} recorded "
+            f"{dup.date} at {dup.price:.2f} x {dup.quantity:g} (offered here "
+            f"as {c.date} at {c.price:.2f} x {c.quantity})"
+            for c in partial_flagged
+            for dup in c.possible_duplicates
+            if dup.reason == DUP_REASON_POSSIBLE_PARTIAL
+        )
+        noun = "fill has" if len(partial_flagged) == 1 else "fills have"
+        advisory_parts.append(
+            f"POSSIBLE PARTIAL: {len(partial_flagged)} offered {noun} one or "
+            f"more already-recorded fills dated inside its order's execution "
+            f"window with no larger a quantity -- {named_partials}. Each such "
+            "recorded fill carries no usable broker order id, so nothing here "
+            "can tell whether it was a partial of the same order. Check the "
+            "trade's recorded fills before submitting."
+        )
+    if flagged:
         log.warning(
             "schwab exit auto-fill: %s -- %d candidate(s) match an anonymous "
             "recorded fill on value and date with no id to decide identity "
@@ -1061,6 +1123,20 @@ def resolve_exit_auto_fill(
                 str(dup.fill_id)
                 for c in flagged
                 for dup in c.possible_duplicates
+                if dup.reason == DUP_REASON_VALUE_TUPLE
+            ),
+        )
+    if partial_flagged:
+        log.warning(
+            "schwab exit auto-fill: %s -- %d candidate(s) have an anonymous "
+            "recorded fill inside their order's execution window, a possible "
+            "partial (fill_ids %s); offered WITH the alarm, not suppressed",
+            ticker, len(partial_flagged),
+            ", ".join(
+                str(dup.fill_id)
+                for c in partial_flagged
+                for dup in c.possible_duplicates
+                if dup.reason == DUP_REASON_POSSIBLE_PARTIAL
             ),
         )
     fallback_dates = sorted(
@@ -1376,6 +1452,16 @@ def _undecidable_duplicates(
     entered_date = _extract_iso_date(getattr(order, "enter_time", "") or "")
     if entered_date:
         dates.add(entered_date)
+    # D79 K7.2's window. It is bounded by CANONICAL dates only: a tolerant
+    # ``entered_date`` that is not a calendar date (the retired reader above
+    # admits ``2026-08-03Tjunk``-style prefixes) cannot bound a string
+    # comparison honestly, so it degrades to the single execution day, as an
+    # EMPTY entered date does. Ordered low-to-high, so an entered date after
+    # the executed date (no validated order carries one) still yields a
+    # window rather than an empty interval.
+    window_entered = _canonical_date(entered_date) if entered_date else None
+    window_low, window_high = sorted(
+        (window_entered or candidate.date, candidate.date))
     matches: list[PossibleDuplicateFill] = []
     for row in anonymous_fills:
         try:
@@ -1469,7 +1555,21 @@ def _undecidable_duplicates(
             and math.isclose(row_quantity, quantity, rel_tol=1e-9, abs_tol=1e-9)
             and row.date in dates
         ):
-            matches.append(row)
+            matches.append(replace(row, reason=DUP_REASON_VALUE_TUPLE))
+        elif window_low <= row.date <= window_high and row_quantity <= quantity:
+            # D79, RD K7.2: A POSSIBLE PARTIAL OF THIS ORDER. A hand-typed
+            # partial of a working order is anonymous, and the later
+            # terminal candidate carries a LARGER quantity, so the
+            # value-tuple test above can never match it -- it would be offered
+            # clean and a confirmation would double-record. Flagged, never
+            # excluded: identity is never asserted from a date alone. The
+            # window is the order's execution window, entered date through
+            # executed date INCLUSIVE (the intake encoding, RD no-objection);
+            # the quantity bound is RD's verbatim "<= the candidate's". PRICE
+            # IS NOT COMPARED: a partial's price is a leg price, not the
+            # order's VWAP. A row that is already a value-tuple match keeps
+            # that label alone (the ``elif``).
+            matches.append(replace(row, reason=DUP_REASON_POSSIBLE_PARTIAL))
     return tuple(matches)
 
 
@@ -1719,6 +1819,302 @@ def derives_from(entry: object, *, exit_date: str, exit_price: float,
         and round(entry_price, 2) == round(exit_price, 2)
         and entry_shares == shares
     )
+
+
+def _fill_row_as_entry(fill_datetime: Any, price: Any, quantity: Any) -> dict:
+    """A recorded fill row PRESENTED AS A CANDIDATE ENTRY, so ``derives_from``
+    -- the one grain -- can judge it. ``date`` is ``str(fill_datetime)[:10]``,
+    the slice every reader of ``fills.fill_datetime`` uses."""
+    return {
+        "date": str(fill_datetime)[:10] if fill_datetime is not None else None,
+        "price": price,
+        "quantity": quantity,
+    }
+
+
+def anonymous_fill_matches(
+    conn: Any, *, trade_id: int, exit_date: str, exit_price: float,
+    shares: int,
+) -> tuple[PossibleDuplicateFill, ...]:
+    """The anonymous (c) value-tuple matches of a TYPED exit on ONE trade.
+
+    D79 (RD K5c, K7.1): an ANONYMOUS recorded non-entry fill on this trade --
+    one the one reader (``swing.trades.exit.recorded_exit_identities``) linked
+    no broker order id to: a NULL envelope, an envelope naming no order, or an
+    envelope the authority REFUSED -- whose (date, price at 2 dp, quantity)
+    the typed values derive from. PER-TRADE, because an identical manual exit
+    on a different trade is the legal case.
+
+    THE COMPARISON IS ``derives_from`` AND NOTHING ELSE (RD P2 correction 1:
+    one grain in both places). This function carries no comparison of its
+    own; a second spelling of the grain is the drift class the arc closes.
+
+    Shared by the web exit POST and the CLI ``trade exit``. Read-only; the
+    caller holds no transaction.
+    """
+    linked = {
+        hit.fill_id
+        for hits in recorded_exit_identities(conn).by_order_id.values()
+        for hit in hits
+    }
+    rows = conn.execute(
+        "SELECT fill_id, fill_datetime, price, quantity FROM fills "
+        "WHERE trade_id = ? AND action != 'entry' ORDER BY fill_id",
+        (trade_id,),
+    ).fetchall()
+    matches: list[PossibleDuplicateFill] = []
+    for fill_id, fill_datetime, price, quantity in rows:
+        if int(fill_id) in linked:
+            continue
+        entry = _fill_row_as_entry(fill_datetime, price, quantity)
+        if not derives_from(entry, exit_date=exit_date, exit_price=exit_price,
+                            shares=shares):
+            continue
+        try:
+            matches.append(PossibleDuplicateFill(
+                fill_id=int(fill_id), date=entry["date"],
+                price=round(float(price), 2), quantity=float(quantity),
+                reason=DUP_REASON_VALUE_TUPLE,
+            ))
+        except (TypeError, ValueError):
+            continue
+    return tuple(matches)
+
+
+# ---------------------------------------------------------------------------
+# D79 -- the exit RECORD FLAGS: what the exit POST must ASK before it records
+# (orchestrator K4, K5, K7.5; RD K3, K5c, K7.2; CHARC FORK 2). ONE confirm
+# shape for all of them: the POST re-renders with each flag's text and
+# identity, and records only on a ``force`` resubmit acknowledging EVERY
+# flag's identity. A flag never refuses -- the (a) refusal of an already
+# recorded order is the service's, and nothing here waives it.
+# ---------------------------------------------------------------------------
+FLAG_F1_OTHER_ORDER = "f1_matches_other_order"
+FLAG_F1_NO_CANDIDATE = "f1_matches_no_candidate"
+FLAG_VALUE_TUPLE = "value_tuple_match"
+FLAG_POSSIBLE_PARTIAL = "possible_partial"
+FLAG_UNREADABLE_ENVELOPE = "unreadable_envelope"
+_FLAG_KINDS: frozenset[str] = frozenset({
+    FLAG_F1_OTHER_ORDER, FLAG_F1_NO_CANDIDATE, FLAG_VALUE_TUPLE,
+    FLAG_POSSIBLE_PARTIAL, FLAG_UNREADABLE_ENVELOPE,
+})
+
+# The flag texts, ASCII-only (they reach CLI stdout on the (c) path; the
+# cp1252 gotcha). Each names its reason and the recovery (orchestrator K7.5).
+_F1_OTHER_TEXT = (
+    "These values ({typed}) match order {other}, not the selected order "
+    "{selected} ({sel_values}). Retype them, or confirm to record them as a "
+    "correction of order {selected}."
+)
+_F1_NONE_TEXT = (
+    "These values ({typed}) differ from order {selected}'s ({sel_values}) in "
+    "{fields}. Confirm to record them as a correction of order {selected}."
+)
+_VALUE_TUPLE_TEXT = (
+    "These values match recorded fill #{fill_id} ({date} at {price:.2f} x "
+    "{qty:g}), which carries no broker order id. Confirm only if this is a "
+    "different fill."
+)
+_PARTIAL_TEXT = (
+    "Possible partial of this order: fill #{fill_id} ({date} at {price:.2f} "
+    "x {qty:g}). Confirm only if fill #{fill_id} is not part of order "
+    "{order}."
+)
+_UNREADABLE_TEXT = (
+    "Fill #{fill_id}'s envelope cannot be read, so the framework cannot "
+    "prove order {order} is not already recorded; correct fill #{fill_id}, "
+    "or confirm to record."
+)
+#: Every flag-text template BY NAME; a test closure-checks this roster
+#: against a static walk of the module's ``_*_TEXT`` names.
+FLAG_TEXT_TEMPLATES: tuple[str, ...] = (
+    "_F1_OTHER_TEXT", "_F1_NONE_TEXT", "_VALUE_TUPLE_TEXT", "_PARTIAL_TEXT",
+    "_UNREADABLE_TEXT",
+)
+
+
+@dataclass(frozen=True)
+class ExitRecordFlag:
+    """One thing the exit POST must ask before recording.
+
+    ``identity`` (``"<kind>|<subject>"``) is what a confirmation acknowledges
+    -- never the kind alone (ledger "Plan intake"): for F1 the subject binds
+    the SELECTED order and the TYPED values, so a retype after a flag is a
+    new flag and re-asks; for (c), a possible partial and an unreadable
+    envelope it is the named fill's id.
+    """
+
+    kind: str
+    subject: str
+    text: str
+
+    def __post_init__(self) -> None:
+        if not (isinstance(self.kind, str) and self.kind in _FLAG_KINDS):
+            raise ValueError(
+                f"ExitRecordFlag.kind must be one of {sorted(_FLAG_KINDS)}; "
+                f"got {self.kind!r}"
+            )
+        if not isinstance(self.subject, str) or not isinstance(self.text, str):
+            raise ValueError("ExitRecordFlag.subject and text must be str")
+        try:
+            self.text.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise ValueError(
+                f"ExitRecordFlag.text must be ASCII; got {self.text!r}"
+            ) from exc
+
+    @property
+    def identity(self) -> str:
+        return f"{self.kind}|{self.subject}"
+
+
+def _values_text(date: Any, price: Any, quantity: Any) -> str:
+    """``'{date}, {price:.2f} x {qty}'`` -- the selected order's own values
+    beside the typed ones (orchestrator K4). A value that will not format is
+    rendered as-is rather than failing the render."""
+    try:
+        price_text = f"{float(price):.2f}"
+    except (TypeError, ValueError):
+        price_text = str(price)
+    return f"{date}, {price_text} x {quantity}"
+
+
+def _differing_fields(entry: dict, *, exit_date: str, exit_price: float,
+                      shares: int) -> str:
+    """The ``date / price / quantity`` restricted to the fields that differ,
+    each judged at ``derives_from``'s grain."""
+    fields: list[str] = []
+    if entry.get("date") != exit_date:
+        fields.append("date")
+    try:
+        if round(float(entry.get("price")), 2) != round(exit_price, 2):
+            fields.append("price")
+    except (TypeError, ValueError, OverflowError):
+        fields.append("price")
+    try:
+        if int(entry.get("quantity")) != shares:
+            fields.append("quantity")
+    except (TypeError, ValueError, OverflowError):
+        fields.append("quantity")
+    return " / ".join(fields) or "date / price / quantity"
+
+
+def exit_record_flags(
+    *,
+    typed: tuple[str, float, int],
+    selected_entry: dict | None,
+    selected_order_id: str | None,
+    candidates_map: Mapping[str, Any] | None,
+    anonymous_matches: tuple[PossibleDuplicateFill, ...],
+    unreadable_fills: tuple[RecordedExitFill, ...],
+    linked: bool,
+) -> tuple[ExitRecordFlag, ...]:
+    """The flags an exit POST must ASK before it records. PURE.
+
+    Deduplicated by identity, in the order F1, (c), possible partial,
+    unreadable envelope.
+
+    * **F1** (orchestrator K4, K7.3; RD K3): ``selected_entry`` is not None
+      and the TYPED values do not derive from it (``derives_from``, the one
+      grain). ``FLAG_F1_OTHER_ORDER`` when they derive from exactly one OTHER
+      map entry, else ``FLAG_F1_NO_CANDIDATE`` naming the differing fields.
+      The text shows the selected order's own values beside the typed ones.
+    * **(c)** (RD K5c): every ``anonymous_matches`` row, plus the selected
+      entry's map ``possible_duplicates`` items labelled value-tuple.
+    * **Possible partial** (RD K7.2): the selected entry's map items labelled
+      ``possible_partial``. CLIENT-TRUSTED on the first POST (AL-6): an item
+      is used only when it is a dict with an int ``fill_id`` and a known
+      reason, and an item whose values will not format is ignored. An item
+      with NO ``reason`` key is read as a value-tuple match -- the only
+      meaning the key's absence has ever had -- so it ASKS rather than being
+      dropped.
+    * **Unreadable envelope** (CHARC FORK 2): only when the exit is ``linked``
+      (carries an authority-read order id), one per unreadable recorded row on
+      ANY trade.
+
+    Every text is ASCII-coerced before construction: the typed date and the
+    map items are client-supplied.
+    """
+    from swing.trades.entry import ascii_safe
+
+    t_date, t_price, t_shares = typed
+    flags: list[ExitRecordFlag] = []
+    seen: set[str] = set()
+
+    def add(kind: str, subject: str, text: str) -> None:
+        flag = ExitRecordFlag(kind=kind, subject=subject, text=ascii_safe(text))
+        if flag.identity not in seen:
+            seen.add(flag.identity)
+            flags.append(flag)
+
+    order_label = selected_order_id or "this order"
+    if selected_entry is not None and not derives_from(
+            selected_entry, exit_date=t_date, exit_price=t_price,
+            shares=t_shares):
+        typed_text = _values_text(t_date, t_price, t_shares)
+        sel_text = _values_text(
+            selected_entry.get("date"), selected_entry.get("price"),
+            selected_entry.get("quantity"),
+        ) if isinstance(selected_entry, dict) else str(selected_entry)
+        subject = f"{selected_order_id}|{t_date}|{t_price:.2f}|{t_shares}"
+        others = [
+            entry for entry in (candidates_map or {}).values()
+            if entry is not selected_entry
+            and derives_from(entry, exit_date=t_date, exit_price=t_price,
+                             shares=t_shares)
+        ]
+        if len(others) == 1:
+            add(FLAG_F1_OTHER_ORDER, subject, _F1_OTHER_TEXT.format(
+                typed=typed_text, other=others[0].get("order_id"),
+                selected=order_label, sel_values=sel_text))
+        else:
+            fields = _differing_fields(
+                selected_entry if isinstance(selected_entry, dict) else {},
+                exit_date=t_date, exit_price=t_price, shares=t_shares)
+            add(FLAG_F1_NO_CANDIDATE, subject, _F1_NONE_TEXT.format(
+                typed=typed_text, selected=order_label, sel_values=sel_text,
+                fields=fields))
+
+    value_tuple_items: list[tuple[int, str]] = []
+    partial_items: list[tuple[int, str]] = []
+    for match in anonymous_matches:
+        value_tuple_items.append((match.fill_id, _VALUE_TUPLE_TEXT.format(
+            fill_id=match.fill_id, date=match.date, price=match.price,
+            qty=match.quantity)))
+    items = (selected_entry.get("possible_duplicates")
+             if isinstance(selected_entry, dict) else None)
+    for item in items if isinstance(items, list) else ():
+        if not isinstance(item, dict):
+            continue
+        fill_id = item.get("fill_id")
+        if isinstance(fill_id, bool) or not isinstance(fill_id, int):
+            continue
+        reason = item.get("reason", DUP_REASON_VALUE_TUPLE)
+        if not (isinstance(reason, str) and reason in _DUP_REASON_VALUES):
+            continue
+        try:
+            if reason == DUP_REASON_VALUE_TUPLE:
+                value_tuple_items.append((fill_id, _VALUE_TUPLE_TEXT.format(
+                    fill_id=fill_id, date=item.get("date"),
+                    price=float(item.get("price")),
+                    qty=float(item.get("quantity")))))
+            else:
+                partial_items.append((fill_id, _PARTIAL_TEXT.format(
+                    fill_id=fill_id, date=item.get("date"),
+                    price=float(item.get("price")),
+                    qty=float(item.get("quantity")), order=order_label)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    for fill_id, text in value_tuple_items:
+        add(FLAG_VALUE_TUPLE, str(fill_id), text)
+    for fill_id, text in partial_items:
+        add(FLAG_POSSIBLE_PARTIAL, str(fill_id), text)
+    if linked:
+        for row in unreadable_fills:
+            add(FLAG_UNREADABLE_ENVELOPE, str(row.fill_id),
+                _UNREADABLE_TEXT.format(fill_id=row.fill_id,
+                                        order=order_label))
+    return tuple(flags)
 
 
 def _parse_entry_date_to_utc(entry_date: str) -> datetime:

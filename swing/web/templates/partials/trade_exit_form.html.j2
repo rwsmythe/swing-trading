@@ -126,7 +126,7 @@
             <span class="muted">&mdash; date is when the ORDER WAS PLACED (execution time unusable)</span>
             {% endif %}
             {%- for dup in cand.possible_duplicates %}
-            <strong>&mdash; POSSIBLE DUPLICATE of recorded fill #{{ dup.fill_id }}
+            <strong>&mdash; {% if dup.reason == 'possible_partial' %}POSSIBLE PARTIAL of this order: recorded fill{% else %}POSSIBLE DUPLICATE of recorded fill{% endif %} #{{ dup.fill_id }}
               ({{ dup.date }} at {{ '%.2f' | format(dup.price) }} &times;
               {{ dup.quantity }} sh)</strong>
             {%- endfor %}

@@ -1410,11 +1410,19 @@ def test_r2_major4_superseded_value_match_now_flags_instead_of_filtering(
             f"{oid} matches (date, 160.50, 100) within the 2-decimal "
             f"tolerance and must carry the possible-duplicate flag"
         )
-    # Outside the tolerance, and unrelated: offered CLEAN.
-    assert by_order["ORD-B"] == (), (
+    # Outside the tolerance: NOT a value-tuple match. D79 (RD K7.2) adds a
+    # SEPARATE channel: the recorded row is dated inside ORD-B's execution
+    # window with no larger a quantity, so ORD-B carries it as a POSSIBLE
+    # PARTIAL under its own label -- never as a value-tuple match (superseded
+    # by replacement: this assertion used to require no flag at all).
+    assert [(d.fill_id, d.reason) for d in by_order["ORD-B"]] == [
+        (77, "possible_partial")], (
         "160.51 (1 cent off) exceeds 2-decimal rounding tolerance; "
-        "MUST NOT be flagged"
+        "MUST NOT be flagged as a value-tuple match"
     )
+    for oid in ("ORD-A", "ORD-D", "ORD-E"):
+        assert [d.reason for d in by_order[oid]] == ["value_tuple_match"]
+    # Unrelated: offered CLEAN.
     assert by_order["ORD-C"] == (), (
         "unrelated candidate (different date + qty) MUST NOT be flagged"
     )

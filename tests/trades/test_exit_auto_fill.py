@@ -1808,7 +1808,16 @@ def test_b_review_major3_fractional_execution_quantity_flags_its_own_row(
         ),
     )
     assert result_whole.candidates is not None
-    assert result_whole.candidates[0].possible_duplicates == (), (
+    # D79 (RD K7.2): the row is NOT a value-tuple match -- 10 recorded shares
+    # is not a 10.9-share execution, and truncating the offered side would
+    # name the wrong row -- but a same-day anonymous row with a quantity no
+    # larger than the order's IS a possible partial of it, flagged under its
+    # OWN label (superseded by replacement: this half used to assert no flag
+    # at all).
+    assert [
+        (d.fill_id, d.reason)
+        for d in result_whole.candidates[0].possible_duplicates
+    ] == [(41, "possible_partial")], (
         "10 recorded shares is not a 10.9-share execution; truncating the "
         "offered side names the wrong row"
     )
@@ -1894,7 +1903,14 @@ def test_b_review_major3_multileg_float_sum_still_flags_its_own_row(
         ),
     )
     assert result_other.candidates is not None
-    assert result_other.candidates[0].possible_duplicates == (), (
+    # D79 (RD K7.2): not a value-tuple match (a 1e-4 difference is real, not
+    # noise), but a same-day anonymous row with a smaller quantity is a
+    # possible partial under its own label (superseded by replacement: this
+    # half used to assert no flag at all).
+    assert [
+        (d.fill_id, d.reason)
+        for d in result_other.candidates[0].possible_duplicates
+    ] == [(43, "possible_partial")], (
         "10.2999 differs from 10.3 by 1e-4 -- a real difference, not noise"
     )
 
@@ -2175,12 +2191,16 @@ def test_d31_anonymous_row_with_other_values_does_not_flag(
     conn, d31_now, patch_live_state, patch_credentials,
     patch_client_factory, patch_get_orders,
 ):
-    """The flag keys on the WHOLE tuple, not the date.
+    """The VALUE-TUPLE flag keys on the WHOLE tuple, not the date.
 
     An anonymous row on the candidate's entered date but at a different price
-    is not a possible duplicate of it, and saying so would be the mirror of
-    the defect being fixed -- an assertion from a date alone, in the other
-    direction.
+    is not a value-tuple match, and calling it one would be an assertion from
+    a date alone. D79 (RD K7.2) adds a SEPARATE channel with its own label:
+    the row is dated inside the order's execution window (entered through
+    executed, inclusive) with a quantity no larger than the order's, so it is
+    flagged as a POSSIBLE PARTIAL -- an alarm the operator adjudicates, never
+    an identity claim (superseded by replacement: this test used to assert no
+    flag at all).
     """
     order = _make_sell_order(
         ticker="FTRE", price=18.40, quantity=10,
@@ -2198,7 +2218,9 @@ def test_d31_anonymous_row_with_other_values_does_not_flag(
     )
     assert result.kind == "populated"
     assert result.candidates is not None
-    assert result.candidates[0].possible_duplicates == ()
+    assert [
+        (d.fill_id, d.reason) for d in result.candidates[0].possible_duplicates
+    ] == [(41, "possible_partial")]
 
 
 def test_d31_equal_clip_scale_out_is_offered_and_flagged_not_swallowed(

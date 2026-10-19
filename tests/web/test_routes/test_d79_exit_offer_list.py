@@ -86,6 +86,7 @@ def test_t3b_a_padded_stored_id_is_anonymous_and_flags_never_excludes(world):
     assert set(offered) == {"o1", "o2"}
     dups = offered["o1"]["possible_duplicates"]
     assert [d["fill_id"] for d in dups] == [fid]
+    assert dups[0]["reason"] == "value_tuple_match"
 
 
 def test_t3c_an_id_recorded_on_the_same_trade_is_excluded_control(world):
