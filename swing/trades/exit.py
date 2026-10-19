@@ -208,13 +208,29 @@ class RecordedExitFill:
     """One recorded non-entry fill, as the identity reader returns it: the
     row's id, its trade, and the STORED values (``date`` is
     ``str(fill_datetime)[:10]``) the anomaly comparison needs, so nothing
-    issues a second query."""
+    issues a second query.
+
+    ``price`` and ``quantity`` are ``None`` when the stored value does not
+    convert to a float (Reviewer A R2, RA-01). The 0014 columns are
+    ``REAL NOT NULL CHECK (> 0)``, which a TEXT value satisfies (it compares
+    greater than any number), so the reader cannot assume a float. A ``None``
+    never derives (``exit_auto_fill.derives_from``), and the row keeps its
+    place in the identity result either way."""
 
     fill_id: int
     trade_id: int
     date: str
-    price: float
-    quantity: float
+    price: float | None
+    quantity: float | None
+
+
+def _stored_number(value: object) -> float | None:
+    """A stored ``fills`` price or quantity as a float, or ``None`` when it
+    does not convert (RA-01)."""
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -261,12 +277,19 @@ def recorded_exit_identities(conn: sqlite3.Connection) -> RecordedExitIdentities
     by_order_id: dict[str, list[RecordedExitFill]] = {}
     unreadable: list[RecordedExitFill] = []
     for fill_id, trade_id, fill_datetime, price, quantity, raw in rows:
+        # THE IDENTITY FIRST, THEN THE VALUES, AND NO VALUE CAN RAISE
+        # (Reviewer A R2, RA-01). This reader is GLOBAL: one row on any trade
+        # whose stored price or quantity does not convert would otherwise
+        # raise out of every exit-form render, exit POST and confirm, and a
+        # linked exit would roll back instead of being refused as already
+        # recorded. Such a row still groups under its id (or under
+        # ``unreadable``); only its values are ``None``.
+        identity = canonical_envelope_identity(raw)
         recorded = RecordedExitFill(
             fill_id=int(fill_id), trade_id=int(trade_id),
-            date=str(fill_datetime)[:10], price=float(price),
-            quantity=float(quantity),
+            date=str(fill_datetime)[:10], price=_stored_number(price),
+            quantity=_stored_number(quantity),
         )
-        identity = canonical_envelope_identity(raw)
         if identity.state == ENVELOPE_REFUSED:
             unreadable.append(recorded)
         elif identity.broker_order_id is not None:

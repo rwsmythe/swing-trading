@@ -265,3 +265,66 @@ def test_recorded_exit_identities_reader_shape(tmp_path):
     assert ident.by_order_id["o2"][1].price == 131.5
     assert ident.by_order_id["o2"][0].date == "2026-05-21"
     assert [u.fill_id for u in ident.unreadable] == [f3]
+
+
+# ------------------------------------------------- RA-01 (Reviewer A R2)
+def _plant_text_valued(db, trade_id: int, *, envelope: str | None,
+                       price, qty) -> int:
+    """A RAW non-entry fill whose price / quantity are TEXT. The 0014
+    ``REAL NOT NULL CHECK (> 0)`` admits them (a TEXT value compares greater
+    than any number), so the reader must not assume a float. No aggregate
+    recompute: the row exists only to be READ."""
+    c = sqlite3.connect(str(db))
+    try:
+        with c:
+            cur = c.execute(
+                "INSERT INTO fills (trade_id, fill_datetime, action, quantity, "
+                "price, fill_origin, schwab_source_value_json) "
+                "VALUES (?, '2026-05-21T16:00:00', 'trim', ?, ?, ?, ?)",
+                (trade_id, qty, price,
+                 "schwab_auto" if envelope else "operator_typed", envelope))
+        assert c.execute("SELECT typeof(price), typeof(quantity) FROM fills "
+                         "WHERE fill_id = ?", (cur.lastrowid,)).fetchone() != (
+            "real", "real")
+        return int(cur.lastrowid)
+    finally:
+        c.close()
+
+
+def test_ra01_text_valued_rows_do_not_break_the_global_reader(tmp_path):
+    """RA-01: the reader reads the IDENTITY before any value, and a value
+    that will not convert is carried as ``None``. A text-valued LINKED row
+    still groups under its id; a text-valued REFUSED row is still
+    unreadable. PRE-FIX: ``float('abc')`` raises ``ValueError`` out of the
+    reader."""
+    db = make_db(tmp_path)
+    tid = seed_trade(db, state="partial_exited", current_size=10.0)
+    linked = _plant_text_valued(db, tid, envelope=env("o2"), price="abc",
+                                qty="3")
+    refused = _plant_text_valued(db, tid, envelope=env(" 123"), price=131.0,
+                                 qty="xyz")
+    c = connect(db)
+    try:
+        got = exit_mod.recorded_exit_identities(c)
+    finally:
+        c.close()
+    [hit] = got.by_order_id["o2"]
+    assert (hit.fill_id, hit.price, hit.quantity) == (linked, None, 3.0)
+    [bad] = got.unreadable
+    assert (bad.fill_id, bad.price, bad.quantity) == (refused, 131.0, None)
+
+
+def test_ra01_a_text_valued_linked_row_still_refuses_its_order(tmp_path):
+    """RA-01: the (a) refusal still fires on a linked row whose stored
+    values are malformed, and the anomaly sentence treats them as not
+    deriving. PRE-FIX: ``ValueError`` from the reader rolls the exit back
+    instead of refusing it as already recorded."""
+    db = make_db(tmp_path)
+    tid = seed_trade(db, state="partial_exited", current_size=10.0)
+    linked = _plant_text_valued(db, tid, envelope=env("o2"), price="abc",
+                                qty="abc")
+    with pytest.raises(exit_mod.ExitOrderAlreadyRecordedError) as info:
+        record(db, exit_req(tid, shares=3, envelope=env("o2"),
+                            fill_origin="schwab_auto"))
+    assert f"#{linked}" in str(info.value)
+    assert count_exit_fills(db) == 1
