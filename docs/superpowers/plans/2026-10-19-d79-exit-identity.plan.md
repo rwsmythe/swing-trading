@@ -48,6 +48,10 @@
   - At 59 fills the cost is nothing. By K6's own reasoning there is no index to lean on.
   - Trigger to revisit: non-entry fills reaching the low thousands. Until then, do NOT build a cache or an index reflexively.
 - **AL-8, the CLI carries no Schwab envelope.** So CHARC's K1 test (v) ("CLI with a replayed id") is driven by planting the typed refusal at the service seam. The CLI cannot submit an id at all, which is also why only (c) applies there (RD K5c).
+- **AL-10, a lost commit is INDETERMINATE on the writer's connection** (CHARC's executing Fork R6-02 ruling, branch C). In CHARC's words: a raise BEFORE the commit statement means nothing was recorded; a raise FROM `conn.commit()` with no transaction open is INDETERMINATE on this connection; the (a) guard and the (c) question make a retry truthful; the settlement is a per-attempt token co-durable with the fill (D85, banked).
+  - **Why accepted:** the window is pre-arc (`618d7b04:228`'s `with conn:` behaved identically) and sub-instruction on a single-operator box, and the arc's own guards correct the one false report ("failed") on the next step: a linked retry is refused under the lock as already recorded, and an anonymous retry at the same values is asked the (c) question (route) or refused without `--confirm-duplicate` (CLI). A double record needs different values or a confirmed question.
+  - **The width is a fact, not prose:** `test_r602_ii_a_lost_commit_is_indeterminate_and_a_retry_is_refused` (`tests/trades/test_d79_record_exit_txn.py`) pins it (the original propagates, exactly one fill durable on a FRESH connection, the linked retry refused naming it), and `record_exit` writes ONE ERROR record on that path. A D85 arc turns the first leg red.
+  - **D85 (CHARC register, banked):** settlement needs a `fills` column. Triggers: a lost-commit incident in that ERROR record, the next arc adding a `fills` column, or the D39 sweep.
 
 ### Executing posture
 

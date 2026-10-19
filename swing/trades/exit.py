@@ -441,9 +441,16 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     identity guard, the writes, the derived metrics of the return value
     (realized P&L, risk-per-share, R-multiple; executing Fork A-F01) and the
     ``COMMIT`` all run under it; a refusal or any other failure raised there
-    propagates after a clean rollback, so a raise from ``record_exit`` means
-    nothing was recorded. Only the ``ExitResult`` construction follows the
-    ``COMMIT``. ACCEPTED COST (CHARC's ruling): a request refused on its
+    propagates after a clean rollback. THE CONTRACT, at its true width
+    (executing Fork R6-02, CHARC branch C): a raise BEFORE the commit
+    statement means nothing was recorded; a raise FROM ``conn.commit()``
+    with no transaction open is INDETERMINATE on this connection; the (a)
+    guard and the (c) question make a retry truthful; the settlement is a
+    per-attempt token co-durable with the fill (D85, banked). On that one
+    path the original propagates unchanged after ONE ERROR record naming
+    the trade and the order (plan AL-10). Only the ``ExitResult``
+    construction follows the ``COMMIT``. ACCEPTED COST (CHARC's ruling): a
+    request refused on its
     arguments alone now takes one ``BEGIN IMMEDIATE`` / ``ROLLBACK`` first --
     nothing on a single-operator DB, where a second spelling of the checks
     is not. A consequence of the same order: a request with BOTH a bad
@@ -483,6 +490,7 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
     # the write depends on -- the trade's state and size -- is taken AFTER the
     # write lock is held, so no concurrent writer can commit between the read
     # and the INSERT (the VISIBILITY precondition of CHARC's K1 packet).
+    commit_attempted = False
     try:
         conn.execute("BEGIN IMMEDIATE")
         trade = get_trade(conn, req.trade_id)
@@ -588,10 +596,11 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
         # return value are computed HERE, under the lock and BEFORE the
         # COMMIT, so a failure computing them (a stored ``entry_price`` or
         # ``initial_stop`` that is not a number) rolls the exit back through
-        # ``_rollback_or_raise`` like any other in-transaction failure. A
-        # raise from ``record_exit`` therefore always means nothing was
-        # recorded -- the contract the web route's 22-F guard and the CLI
-        # both read.
+        # ``_rollback_or_raise`` like any other in-transaction failure: a
+        # raise BEFORE the commit statement means nothing was recorded --
+        # the contract the web route's 22-F guard and the CLI both read. A
+        # raise FROM the commit itself is the one INDETERMINATE path
+        # (executing Fork R6-02, handled in the ``except`` below).
         pnl = compute_realized_pnl(
             entry_price=trade.entry_price,
             exit_price=req.exit_price,
@@ -610,8 +619,30 @@ def record_exit(conn: sqlite3.Connection, req: ExitRequest) -> ExitResult:
         else:
             rmult = 0.0
         fully_closed = (new_size == 0)
+        commit_attempted = True
         conn.commit()
     except BaseException as exc:  # noqa: BLE001 -- the CLASS (S-D39 / D73)
+        # D79 executing Fork R6-02 (CHARC, branch C): the commit statement
+        # raised and no transaction is open, so the commit was either
+        # durable or rolled back by SQLite, and THIS connection cannot tell
+        # which (the writer cannot quote itself). ONE ERROR record is the
+        # forensic trail; the original then propagates unchanged, an
+        # interrupt included (the D73 shape: the record first). Keyed on
+        # the commit statement as well as ``in_transaction``: a ``BEGIN
+        # IMMEDIATE`` that fails also leaves no transaction open, and there
+        # nothing was attempted, so nothing is indeterminate.
+        if commit_attempted and not conn.in_transaction:
+            from swing.trades.entry import log_contained_note
+            log_contained_note(
+                log, exc,
+                "D79: record_exit for trade %s%s: commit raised with no "
+                "transaction open; the outcome is INDETERMINATE on this "
+                "connection; check the trade's fills before re-entering "
+                "(%s: %s)",
+                req.trade_id,
+                f", order {submitted_order_id}"
+                if submitted_order_id is not None else "",
+                type(exc).__name__, exc)
         _rollback_or_raise(conn, "record_exit", exc)
         raise
 

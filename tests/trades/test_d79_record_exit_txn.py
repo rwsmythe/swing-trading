@@ -406,3 +406,149 @@ def test_af04_caller_held_check_precedes_the_envelope_authority(
     finally:
         conn.close()
     assert count_exit_fills(db) == 0
+
+
+# ----------------------------------------------------------------- R6-02
+# D79 executing Fork R6-02 (CHARC, branch C): a raise FROM ``conn.commit()``
+# with no transaction open is INDETERMINATE on the writer's connection (the
+# commit may have been durable). The contract is restated at that width
+# (``record_exit``'s docstring, plan AL-10) and PINNED here; settlement is a
+# per-attempt token co-durable with the fill (D85, banked), and the first
+# leg below is the red a D85 arc turns green.
+_R602_ENVELOPE = ('{"closed_shares": 4, "exit_date": "2026-05-21", '
+                  '"exit_price": 131.0, "schwab_order_id": "o1"}')
+
+
+def _indeterminate_records(caplog) -> list:
+    return [r for r in caplog.records
+            if r.name == "swing.trades.exit" and r.levelno >= logging.ERROR
+            and "INDETERMINATE" in r.getMessage()]
+
+
+def _lost_commit(db: Path, tid: int, raised: BaseException, caplog):
+    """Run one linked 4-share exit through a proxy whose ``commit()``
+    performs the REAL commit and THEN raises ``raised``. Returns the raised
+    exception and the writer's ``in_transaction`` after it."""
+    def lost():
+        raise raised
+
+    real = connect(db)
+    proxy = ConnProxy(real, on_commit=lost)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(BaseException) as info:
+                exit_mod.record_exit(proxy, exit_req(
+                    tid, shares=4, envelope=_R602_ENVELOPE,
+                    fill_origin="schwab_auto"))
+        return info.value, real.in_transaction
+    finally:
+        real.close()
+
+
+def test_r602_ii_a_lost_commit_is_indeterminate_and_a_retry_is_refused(
+        tmp_path, caplog):
+    """R6-02 condition (ii), the WIDTH PINNED (a PIN: green before and
+    after). Leg 1: the commit is durable and ``commit()`` then raises; the
+    ORIGINAL propagates (not swallowed, not re-typed), ``in_transaction``
+    reads False, and exactly ONE exit fill is durable, read on a FRESH
+    connection (never the writer's own -- the writer quoting itself). Leg 2:
+    the retry of that same LINKED exit is refused by the (a) guard under the
+    lock, naming the durable fill. A D85 arc (settlement) turns leg 1's
+    "the original propagates" red."""
+    db = make_db(tmp_path)
+    tid = seed_trade(db, state="managing", current_size=10.0)
+    lost = sqlite3.OperationalError("commit acknowledgement lost")
+    raised, in_tx = _lost_commit(db, tid, lost, caplog)
+    assert raised is lost
+    assert type(raised) is sqlite3.OperationalError
+    assert in_tx is False
+    fresh = sqlite3.connect(str(db))
+    try:
+        rows = fresh.execute(
+            "SELECT fill_id, quantity FROM fills WHERE action != 'entry'"
+        ).fetchall()
+    finally:
+        fresh.close()
+    assert len(rows) == 1
+    [(fill_id, quantity)] = rows
+    assert quantity == 4.0
+    retry = connect(db)
+    try:
+        with pytest.raises(exit_mod.ExitOrderAlreadyRecordedError) as info:
+            exit_mod.record_exit(retry, exit_req(
+                tid, shares=4, envelope=_R602_ENVELOPE,
+                fill_origin="schwab_auto"))
+        assert not retry.in_transaction
+    finally:
+        retry.close()
+    assert f"#{fill_id}" in str(info.value)
+    assert "o1" in str(info.value)
+    assert count_exit_fills(db) == 1
+
+
+def test_r602_iii_a_lost_commit_writes_one_error_record(tmp_path, caplog):
+    """R6-02 condition (iii): ONE ERROR record through ``log_contained_note``
+    naming the indeterminate outcome, the trade id and the order id.
+    PRE-FIX: no record (the original propagated silently)."""
+    db = make_db(tmp_path)
+    tid = seed_trade(db, state="managing", current_size=10.0)
+    lost = sqlite3.OperationalError("commit acknowledgement lost")
+    raised, _ = _lost_commit(db, tid, lost, caplog)
+    assert raised is lost
+    records = _indeterminate_records(caplog)
+    assert len(records) == 1
+    text = records[0].getMessage()
+    assert "commit raised with no transaction open" in text
+    assert "check the trade's fills before re-entering" in text
+    assert f"trade {tid}" in text
+    assert "order o1" in text
+    assert "commit acknowledgement lost" in text
+    assert count_exit_fills(db) == 1
+
+
+def test_r602_iii_an_interrupt_from_the_commit_writes_the_record_then_propagates(
+        tmp_path, caplog):
+    """R6-02 (iii), the D73 shape: an INTERRUPT raised from the commit (the
+    commit durable) writes the ONE record first, then the interrupt itself
+    propagates, unchained and untranslated. PRE-FIX: no record."""
+    db = make_db(tmp_path)
+    tid = seed_trade(db, state="managing", current_size=10.0)
+    interrupt = KeyboardInterrupt("operator stop at the commit")
+    raised, in_tx = _lost_commit(db, tid, interrupt, caplog)
+    assert raised is interrupt
+    assert in_tx is False
+    assert len(_indeterminate_records(caplog)) == 1
+    assert count_exit_fills(db) == 1
+
+
+def test_r602_iii_a_failure_before_the_commit_statement_writes_no_record(
+        tmp_path, caplog):
+    """Cell 7's intake correction, the record's own condition: ``BEGIN
+    IMMEDIATE`` failing leaves ``in_transaction`` False in the same except,
+    but nothing was attempted, so the outcome is NOT indeterminate and no
+    INDETERMINATE record is written; the original propagates and nothing is
+    recorded. NULL killed: a record keyed on ``in_transaction`` alone (it
+    would name a commit that never ran)."""
+    db = make_db(tmp_path)
+    tid = seed_trade(db, state="managing", current_size=10.0)
+    busy = sqlite3.OperationalError("database is locked")
+
+    class BusyAtBegin(ConnProxy):
+        def execute(self, sql, *args, **kwargs):
+            if sql.strip().upper().startswith("BEGIN"):
+                raise busy
+            return super().execute(sql, *args, **kwargs)
+
+    real = connect(db)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(sqlite3.OperationalError) as info:
+                exit_mod.record_exit(BusyAtBegin(real), exit_req(
+                    tid, shares=4, envelope=_R602_ENVELOPE,
+                    fill_origin="schwab_auto"))
+        assert info.value is busy
+        assert not real.in_transaction
+    finally:
+        real.close()
+    assert _indeterminate_records(caplog) == []
+    assert count_exit_fills(db) == 0
