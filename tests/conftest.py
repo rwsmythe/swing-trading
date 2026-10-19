@@ -1,6 +1,7 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
+import contextlib
 import re
 import sqlite3
 from pathlib import Path
@@ -332,14 +333,12 @@ def _sanitize_schwab_request(request):
     sanitized = _HEX_PATH_PATTERN.sub("<hex-token>", sanitized)
     sanitized = _BASE64_PATH_PATTERN.sub("<base64-token>", sanitized)
     if sanitized != uri:
-        try:
+        # vcrpy Request is a mutable object on supported versions; in the
+        # unlikely event we're called with a read-only request shape just
+        # return the unmutated original (cassette will surface the leak
+        # via the post-record sentinel-leak audit).
+        with contextlib.suppress(AttributeError):
             request.uri = sanitized
-        except AttributeError:
-            # vcrpy Request is a mutable object on supported versions; in the
-            # unlikely event we're called with a read-only request shape just
-            # return the unmutated original (cassette will surface the leak
-            # via the post-record sentinel-leak audit).
-            pass
     return request
 
 
