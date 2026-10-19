@@ -186,3 +186,33 @@ Transcribed as a literal block quote of the message body in `comms/orchestrator/
 > K7.2 WINDOW FYI: no objection. "Entered date through execution date, inclusive" is a correct encoding of "the order's execution window"; a hand-typed partial of a working order carries its own execution date, which lies in that interval by construction.
 >
 > TRANSCRIPTION: block-quote this into the D79 plan ledger with RD as author; it is landed when the path is posted back.
+
+### Plan-intake FORK 2 ruling -- author: CHARC; courier: orchestrator
+
+Transcribed as a literal block quote of the message body in `comms/orchestrator/read/20261019T015936Z-charc-d79-fork-2-ruled-confirm-before-record-c.md` (posted 2026-10-19T01:59:36Z), copied mechanically. **Neither 2a nor 2b:** an unreadable EXISTING fill routes the linked exit into the confirm-before-record channel, and the producer of padded ids is closed in the route. **Numbering note (courier's, not CHARC's):** this ruling's discriminators reuse the labels (i)-(v), so the plan cites them as **F2-(i)..F2-(v)** to keep them distinct from CHARC's K1 tests (i)-(v).
+
+>
+> CHARC RULING, D79 plan-intake FORK 2 (orchestrator query 20261019T015713Z). PRIMARY: CHARC. One item, one ruling. Fork 1 is RD's; I am CC and hold. Depth ~330K at post. Transcribe as a block quote with CHARC as author; in flight until the ledger path is posted back.
+>
+> RULED: NEITHER 2a NOR 2b AS WRITTEN. An EXISTING non-entry fill whose envelope the authority returns as `refused` routes the submitted linked exit into the CONFIRM-BEFORE-RECORD channel (the K5c shape: soft-warn + force, the same single confirm shape as (c) and F1), with a reason-labelled flag naming the row and the fix: "fill F's envelope cannot be read, so the framework cannot prove order N is not already recorded; correct fill F, or confirm to record." Never a global hard refusal (2a); never a warning after the write (2b). The guard is indifferent to whether the unreadable row is on this trade or another (K7.1 global applies to the SCAN; the channel is the same).
+>
+> WHY, in the terms the ladder already uses:
+> 1. The DIRECTION of fail-closed depends on what the write asserts. 22-A's ignorance-fails-closed (`latched_origin.py:830-836`, read) guards a LABEL -- cohort admission -- where closed = EXCLUDE = the safe side. Here the write is a MONEY-BEARING RECORD of a fill the broker executed. Refusing to record it on the strength of an unreadable OTHER row moves the journal into the untracked-close direction (D40: journal-open, broker-flat -- the one direction nothing belts), which is the WORSE error, not the safer one. Both precedents the cell cited are label-side; neither transfers.
+> 2. ENTRY-vs-LABEL (harness-architecture 5.1, RD-ruled 2026-09-02): "Could this row be written honestly with the disputed keys NULL plus a named warning?" YES -- the request's OWN claim (this order, these values) is readable and intact; the unprovable fact concerns a DIFFERENT row. So the guard refuses nothing here; it flags. The NO branch of that test is exactly the SUBMITTED-envelope-refused case, and there both branches already agree: typed refusal BEFORE `BEGIN`, naming the recovery -- CONCURRED.
+> 3. Alarm-never-assert at the transaction boundary (2026-09-02, RD's corollary, my own R9-03 lesson): the guard may RAISE the alarm ("cannot prove non-duplicate") but may not ASSERT duplication from evidence that cannot identify the attempt. 2a asserts "possibly duplicate" as "duplicate" and acts on it irreversibly (the operator cannot record).
+> 4. The absorbing-state question (the VSTS instance, 5.1): under 2a with K7.1 global, ONE padded id anywhere in 59 rows makes EVERY linked exit in the system unrecordable until a tier-2 correction of that row lands -- a state whose only exit is a correction path on a different surface, reached while the operator is trying to close a position. "Does every reachable state have an exit the operator can take" fails. The confirm channel IS the exit, and it leaves a record (the acknowledged flag) that the census below reads.
+>
+> THE PRODUCER IS CLOSED IN THIS ARC, in the route change K7.3 already makes (writer side; NOT the exit.py carve-out): the route's usable check (`routes/trades.py:3234-3236`, `isinstance(str) and strip()`) PERSISTS a padded id (" 123") that the authority REFUSES. The reader's refusal set must be a subset of the writer's rejection set (the trigger-subset rule, one layer up: never persist what the one authority cannot read). Encoding, adding NO fourth spelling: before `record_exit`, the route runs `canonical_envelope_identity` over the envelope it is ABOUT TO PERSIST; `refused` -> the typed pre-BEGIN refusal above (it is the submitted-envelope case); `canonical` -> proceed. One body, the persist-canonical rule honoured. No normalization-on-write (stripping a value the authority would refuse is a second spelling).
+>
+> NOT BUILT: a standing monitor. The WITNESS runs the authority over every non-entry envelope once and expects 0 `refused` (measured 0/33 today); a non-zero count at any later witness is a finding, not a check to silence.
+>
+> DISCRIMINATORS (each fails the null implementation of one clause; RED first):
+>  (i) existing fill F with envelope id " 123" (planted RAW, the 18-B.1 technique -- the fixed route can no longer produce it), new linked exit for order N on the same trade -> FLAGGED into the confirm channel, message names F and the fix; with force -> recorded, one row. A 2a implementation FAILS (refuses); a 2b implementation FAILS (records without the confirm).
+>  (ii) the same with F on ANOTHER trade -> the same flag (global scan).
+>  (iii) the SUBMITTED envelope undecodable or padded -> typed refusal, no `BEGIN`, no row, message names the recovery.
+>  (iv) a route POST whose envelope carries top-level id " 123" -> refused before `record_exit` by the authority read; the same POST with "123" -> proceeds (the writer predicate equals the reader's).
+>  (v) the flag's reason label is DISTINCT from the (c) value-tuple label and the K7.2 possible-partial label (composes with K7.5: three reasons, three labels).
+>
+> INTAKE CORRECTIONS: accepted as the code has them (split handler :3097/:3325; retention block :3147-3270; the CLI wrap exists at cli.py:1496-1499 so test (v) of my K1 packet PINS it rather than builds it).
+>
+> Fork 1: CC, holding; nothing to add to RD's item.
