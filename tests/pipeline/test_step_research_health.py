@@ -628,3 +628,123 @@ def test_step_emits_run_warning_on_suppress_invisible_manifest_vector(
         run_warnings=warns)
 
     assert any(w["step"] == "research_health" for w in warns)
+
+
+# ---------------------------------------------------------------------------
+# D81 -- the step tells the monitor about its OWN run: the live row's
+# data_asof_date (read by run_id off the ledger row) + the in-memory
+# run_warnings, because the run's warnings_json reaches the ledger only at
+# release, after this step has read.
+# ---------------------------------------------------------------------------
+_SKIP = {"step": "pattern_observe", "ticker": "AAA",
+         "observation_date": "2026-09-14", "reason": "no bar for observation_date"}
+
+
+def _spy_compute(monkeypatch) -> dict:
+    """Wrap the REAL compute_research_health, recording the live_run it was given
+    (and a snapshot of the list at call time). "ABSENT" = the kwarg was not
+    passed at all."""
+    from swing.monitoring import research_health as rh
+
+    seen: dict = {"live_run": "ABSENT"}
+    real = rh.compute_research_health
+
+    def _wrapper(conn, **kwargs):
+        seen["live_run"] = kwargs.get("live_run", "ABSENT")
+        lr = kwargs.get("live_run")
+        seen["snapshot"] = (lr[0], list(lr[1])) if lr else None
+        return real(conn, **kwargs)
+
+    monkeypatch.setattr(rh, "compute_research_health", _wrapper)
+    return seen
+
+
+def test_step_passes_live_run_asof_from_ledger_row_and_warnings(
+    tmp_path, monkeypatch,
+) -> None:
+    db = tmp_path / "swing.db"
+    _seed_green_db(db)
+    _seed_pipeline_run(db, 777)   # state='running', data_asof_date='2026-09-14'
+    _patch_artifact(tmp_path, monkeypatch)
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    seen = _spy_compute(monkeypatch)
+    warns = [dict(_SKIP)]
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=777, run_warnings=warns)
+
+    assert seen["live_run"] != "ABSENT"
+    asof, passed = seen["live_run"]
+    assert asof == "2026-09-14"          # the row's own value, read by run_id
+    assert passed == warns               # the in-memory run_warnings
+    assert seen["snapshot"] == ("2026-09-14", [_SKIP])
+
+
+def test_step_live_run_warnings_default_to_empty_list(tmp_path, monkeypatch) -> None:
+    db = tmp_path / "swing.db"
+    _seed_green_db(db)
+    _seed_pipeline_run(db, 777)
+    _patch_artifact(tmp_path, monkeypatch)
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    seen = _spy_compute(monkeypatch)
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=777, run_warnings=None)
+
+    assert seen["live_run"] == ("2026-09-14", [])
+
+
+def test_step_live_run_is_none_without_run_id(tmp_path, monkeypatch) -> None:
+    db = tmp_path / "swing.db"
+    _seed_green_db(db)
+    _patch_artifact(tmp_path, monkeypatch)
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    seen = _spy_compute(monkeypatch)
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=None, run_warnings=[dict(_SKIP)])
+
+    assert seen["live_run"] is None
+
+
+def test_step_live_run_is_none_when_run_id_has_no_row(tmp_path, monkeypatch) -> None:
+    db = tmp_path / "swing.db"
+    _seed_green_db(db)              # no pipeline_runs row at all
+    _patch_artifact(tmp_path, monkeypatch)
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    seen = _spy_compute(monkeypatch)
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=999, run_warnings=[dict(_SKIP)])
+
+    assert seen["live_run"] is None
+
+
+def test_step_broken_context_append_survives_live_run_plumbing(
+    tmp_path, monkeypatch,
+) -> None:
+    # The RD 8.1(b) run_warnings append is unchanged: an empty-DB read whose prior
+    # artifact witnessed detections suppresses the write AND appends the
+    # research_health entry, now with a live run supplied.
+    db = tmp_path / "swing.db"
+    ensure_schema(db).close()
+    _seed_pipeline_run(db, 104)
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    artifact = _cfg_artifact(exports_dir)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(_prior_envelope_with_count("green", 5), encoding="utf-8")
+    seen = _spy_compute(monkeypatch)
+    warns = [dict(_SKIP)]
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=104, shadow_manifest_path=None,
+        run_warnings=warns)
+
+    assert seen["live_run"][0] == "2026-09-14"
+    assert any(w["step"] == "research_health" for w in warns)
+    assert warns[0] == _SKIP

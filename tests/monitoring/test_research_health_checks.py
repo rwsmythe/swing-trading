@@ -2697,3 +2697,17 @@ def test_coverage_calib_c_live_run_threads_through_compute(
     rh.compute_research_health(conn, exports_root=tmp_path)
     rh.compute_research_health(conn, exports_root=tmp_path, live_run=live)
     assert seen == [None, live]
+
+
+def test_pipeline_run_asof_reads_the_row_and_degrades(tmp_path: Path) -> None:
+    from swing.monitoring.research_health import pipeline_run_asof
+
+    conn = _schema_conn(tmp_path)
+    _seed_pipeline_run(conn, data_asof_date="2026-06-12", state="running",
+                       lease_token="tok-asof")
+    run_id = conn.execute("SELECT id FROM pipeline_runs").fetchone()[0]
+    assert pipeline_run_asof(conn, run_id) == "2026-06-12"
+    assert pipeline_run_asof(conn, run_id + 1) is None      # no such row
+    assert pipeline_run_asof(conn, None) is None             # no run id
+    # pre-schema DB (no pipeline_runs table) degrades like pipeline_run_exists.
+    assert pipeline_run_asof(sqlite3.connect(":memory:"), 1) is None

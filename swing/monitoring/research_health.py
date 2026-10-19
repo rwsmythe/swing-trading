@@ -487,6 +487,25 @@ def pipeline_run_exists(conn: sqlite3.Connection, run_id: int | None) -> bool:
         raise
 
 
+def pipeline_run_asof(conn: sqlite3.Connection, run_id: int | None) -> str | None:
+    """The `data_asof_date` of the `pipeline_runs` row keyed by `run_id`, or None
+    (`run_id is None`, no such row, or a missing `pipeline_runs` table -- the same
+    degrade-gracefully contract as `pipeline_run_exists`). The in-run step uses it
+    to source the LIVE run's session from the run's OWN ledger row rather than a
+    runner local. Any OTHER OperationalError re-raises."""
+    if run_id is None:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT data_asof_date FROM pipeline_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return None
+        raise
+    return row[0] if row is not None else None
+
+
 # --------------------------------------------------------------------------
 # 19-B Task 5: the broken-context write-suppression guard (RD-reviewed
 # distinguisher). Machine-readable signals ONLY -- a direct DB COUNT for the

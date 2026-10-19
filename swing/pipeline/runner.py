@@ -1356,6 +1356,12 @@ def _step_research_health(
     scripts/research_health.py) -- NEVER the runner's read-write ``connect()``;
     only ``latest.json`` is written, NEVER the measurement DB.
 
+    The step also hands the monitor its OWN run as ``live_run`` (the ledger row's
+    ``data_asof_date`` read by ``run_id``, plus the in-memory ``run_warnings``),
+    because that run's ``warnings_json`` reaches ``pipeline_runs`` only at release,
+    after this step has read; no ``run_id`` or no row means ``live_run=None`` and the
+    completed ledger is read exactly as before.
+
     C-NH5 (write-nothing-on-failure): the status is COMPUTED FIRST and only on
     SUCCESS does the writer run -- any exception in the ``mode=ro`` connect or
     inside compute propagates to the ``step_guard`` BEFORE any write, leaving the
@@ -1397,11 +1403,19 @@ def _step_research_health(
     ro_uri = cfg.paths.db_path.as_uri() + "?mode=ro"  # C-NH2 (mirror the script)
     conn = sqlite3.connect(ro_uri, uri=True, timeout=2.0)
     try:
+        # D81: tell the monitor about THIS run. Its warnings_json is written at
+        # lease release, after this step reads, so the ledger cannot show them.
+        # The live asof is the run's OWN ledger row's value, read by run_id (the
+        # same value release leaves); no run_id / no row -> None (unchanged).
+        live_asof = _rh.pipeline_run_asof(conn, run_id)
+        live_run = (
+            (live_asof, run_warnings if run_warnings is not None else [])
+            if live_asof is not None else None)
         # Read the manifests from EXACTLY the root _step_shadow_expectancy just
         # wrote to (cfg.paths.exports_dir / "research"); passing it explicitly
         # de-couples correctness from the __file__ default (Codex R1).
         status = _rh.compute_research_health(
-            conn, cfg=cfg, exports_root=exports_root)
+            conn, cfg=cfg, exports_root=exports_root, live_run=live_run)
         # 19-B: query the machine-readable guard inputs + the lease proof WHILE the
         # ro conn is open (before the finally-close).
         det_count = _rh.db_detection_count(conn)
