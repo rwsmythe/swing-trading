@@ -546,6 +546,34 @@ def test_a01_an_unedited_omitted_radio_stamps_the_resolved_entry(world):
     assert persisted["other_candidate_signature_hashes"] == [o1_hash]
 
 
+
+def test_r504_a_resolved_entry_under_an_empty_key_is_stamped(world):
+    """R5-04 (Reviewer A R5): the no-selection resolution's stamp tests the
+    resolved key with ``is not None``, never by truthiness. The client-edited
+    envelope re-keys o2's entry (the unique entry naming the top-level o2)
+    under ``""`` and sends no candidate inputs; the values are unedited, so
+    the POST records -- and the persisted envelope names the resolved entry:
+    selected hash ``""``, selected order o2, the other key o1's. PRE-FIX:
+    the empty key is falsy, so it recorded with NO ``selected_*`` and no
+    ``other_candidate_signature_hashes`` stamp."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        o1_hash, o2_hash = _hash_of(env, "o1"), _hash_of(env, "o2")
+        env["candidates_map"][""] = env["candidates_map"].pop(o2_hash)
+        r = _post(tc, world.tid, dict(
+            {k: v for k, v in fd.items() if not k.startswith("candidate_")},
+            schwab_source_value_json=json.dumps(env, sort_keys=True)))
+    assert r.status_code == 200, r.text[:500]
+    [(_fid, origin, env_json, _c, _p, _q)] = _exit_rows(world.cfg)
+    persisted = json.loads(env_json)
+    assert origin == "schwab_auto"
+    assert persisted["schwab_order_id"] == "o2"
+    assert persisted["selected_candidate_signature_hash"] == ""
+    assert persisted["selected_candidate_order_id"] == "o2"
+    assert persisted["other_candidate_signature_hashes"] == [o1_hash]
+
+
 def _assert_reconfirmed(r, cfg) -> None:
     """The Fork 3 (G1) response: 400, the re-confirm text, the refresh
     notice, no flag, the FRESH map-bearing anchor, nothing recorded."""

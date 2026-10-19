@@ -3238,10 +3238,13 @@ async def exit_post(
             # consumers reading e.g. ``schwab_order_id`` from the legacy
             # single-fill shape continue to work.
             extended = dict(anchor_envelope)
-            if selected_index is None and flag_selected_signature_hash:
+            if (selected_index is None
+                    and flag_selected_signature_hash is not None):
                 # Fork D79-A-01: the RESOLVED entry (no selection was sent,
                 # so there are no submitted indices to read): its key, its
                 # order id, and every other key of the map it came from.
+                # ``is not None``, never truthiness: a client-edited map can
+                # hold the resolved entry under the key "" (R5-04).
                 extended["selected_candidate_signature_hash"] = (
                     flag_selected_signature_hash)
                 resolved_order_id = authoritative_selected.get("order_id")
