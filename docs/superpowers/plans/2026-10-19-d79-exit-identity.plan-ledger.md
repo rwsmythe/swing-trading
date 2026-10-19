@@ -133,3 +133,35 @@ These were ruled after both directors' packets landed, and each is consistent wi
 
 - **Plan dispatch:** needs the OPERATOR'S word (no standing grant). Proposed cell: `implementer-opus-high` (the writing-plans default). It runs off a FRESH worktree cut from `main` at or above this ledger's commit; `.worktrees/d79-exit-identity` (@ `072c5844`) is removed and the worktree re-cut. The plan corrects the brief's `trader.py` citation.
 - **Executing:** a separate operator word. It needs the CHARC-authorized `swing/trades/exit.py` carve-out exactly as scoped in K1, and the operator's browser witness.
+
+## Plan intake (rule 1) -- the plan cell STOPPED at two forks
+
+The cell is `implementer-opus-high`, on worktree `.worktrees/d79-plan` @ `47b3883c`. Its depth at return was 238,065, read by the orchestrator with `cell_depth.py --agent`. No plan has been written, no round has run, and nothing is committed. The orchestrator verified the forks' code facts by read: `broker_order_id_from_envelope` (`latched_origin.py:662`, reached through `canonical_envelope_identity` :891) reads only the top-level `schwab_order_id`, and `_handle_split_into_partials` is at `reconciliation_auto_correct.py:3097`, with its insert at :3325.
+
+**Routed as ONE packet** (orchestrator query, 2026-10-19), one ruler per item:
+- **FORK 1 -- RULER: RD.** K2's parenthetical "(top-level or as the map's selected entry)" cannot be read through the one authority, which reads the top-level id only.
+  - **A (the cell recommends it):** read through the authority only. A selected-only pre-arc row goes to the per-trade (c) / K7.2 flag channel. After the arc, K7.3 makes the writer stamp top-level = selected, so no new row has that shape.
+  - **B:** add a second reading of the selected entry. That is a fourth id reader, and it would refuse a picked-but-never-recorded order forever on the "non-default pick, no edit" shape.
+  - **Live:** 33/33 envelopes are canonical; 0 have a selected id but no top-level id; 0 have the two differing; 0 trades are open.
+- **FORK 2 -- RULER: CHARC.** What the K1 guard does when the authority returns `refused` for an EXISTING non-entry fill.
+  - **2a (the cell recommends it): fail closed, globally.** The refusal names the row and the fix.
+  - **2b: alarm only.** A WARNING, plus the per-trade (c) channel.
+  - **Either way,** a refused reading of the SUBMITTED envelope gets the typed refusal before BEGIN.
+  - **Live:** 0/33. A producer exists: a padded id like `" 123"` passes the retention rule's `usable` check (`routes/trades.py:3234-3236`).
+
+**Ruling facts corrected at intake, encoded as the code has them:**
+- the split handler is at :3097 / :3325, not :3218-3330;
+- the retention rationale block is at :3147-3270, and its "third case" paragraph at :3184-3194;
+- the CLI `ClickException` wrap ALREADY exists (`cli.py:1496-1499`); the new `ValueError` subclass reaches it unchanged, CHARC test (v) pins it, and no new wrap is built.
+
+**Facts that shape the plan (no fork):**
+- **RD K3(4):** a single-candidate envelope already carries a one-entry `candidates_map` (`exit_auto_fill.py:964-999`), so K3(4) is the template emitting index-0 inputs for one candidate.
+- **K5:** a fresh map at the confirm POST means a Schwab re-fetch there.
+- **Existing tests:** about 8 tests in `tests/web/test_routes/test_exit_post_audit_columns.py` pin today's "unconfirmed edit records as corrected" behaviour. Each is named and rewritten in the task that changes that behaviour.
+
+**Orchestrator, on its own K5 / K7.5 items (accepted):**
+- the confirm acknowledges flag IDENTITIES (the kind plus its subject: the typed tuple, the matched fill ids, the partial's fill id), not just kinds; a retype after a flag re-asks;
+- the CLI flag is `--confirm-duplicate` (RD K5c left the name to the implementer);
+- the (c) and partial helpers are shared in `exit_auto_fill.py`.
+
+**Sent to RD as an encoding of RD K7.2, open to objection rather than asked as a ruling:** the possible-partial window is the order's entered date through its execution date, inclusive.
