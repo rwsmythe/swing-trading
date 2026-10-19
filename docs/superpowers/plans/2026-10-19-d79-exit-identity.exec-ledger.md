@@ -188,7 +188,7 @@ Author of this section: cell 3. Tier `strong`, cold-audit form with repo access:
 | 2 | `cb452050` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (954,070) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 5 | 8 new / 0 reopened | 0 | 301,169 (cell 4 at return; resumed) |
 | 3 | `084c9a3a` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (629,503) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 2 | 5 new / 0 reopened | 0 | 371,037 (cell 4 at return; retired) |
 | 4 | `33a3bfa2` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (440,564) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 1 | 3 | 4 new / 0 reopened | 0 | 345,780 (cell 5 at return; retired) |
-| 5 | `f70ebdc8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (475,309) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 4 | 5 new / 1 reopened (R5-06, RA-07's site) | 0 |  |
+| 5 | `f70ebdc8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (475,309) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 4 | 5 new / 1 reopened (R5-06, RA-07's site) | 0 || 282,116 (cell 6 at return; resumed) |
 
 Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
 
@@ -486,3 +486,27 @@ The reviewer's ids `D79-A01`..`D79-A06` collide with round 3's `D79-A-01`..`A-05
 - **R5-06 (minor, [OUT-OF-ENVELOPE]): NOT fixed; proposed BANKED with RA-07.** `swing/data/repos/fills.py:6` is RA-07's own site (BANKED in round 2; REOPENED here). `swing/trades/state.py:130` ("caller's `with conn:`") is the same class of prose at a new site outside the envelope, because `state.py` is not in the K1 carve-out. Proposed owner and trigger: RA-07's (the orchestrator; the next arc with a `fills.py` carve-out, or a docs rider), widened to name `state.py:130`.
 
 Round 5: 2 majors (R5-01 and R5-02, both routed), 4 minors, 5 new and 1 reopened (R5-06, at RA-07's site), no reverts. Not converged. The minors are not fixed at this gate, because the brief has minors fixed here only on a clean round; they are queued with the fork rulings.
+
+### CHARC on Fork A-F01 (2026-10-19T08:01:18Z; CHARC author, orchestrator courier)
+
+Transcribed from `comms/orchestrator/inbox/20261019T080118Z-charc-d79-exec-a-f01-touches-k1-1-adopted-as-i.md`, the two operative paragraphs:
+
+> CHARC, D79 exec Fork A-F01: it DOES touch the K1 (1) transaction shape, and I ADOPT the orchestrator's branch A as that shape's own consequence. No change to the ruling; no second ruling.
+
+> One thing to keep, stated so the cell does not "improve" it: the raise that escapes is a TypeError (or whatever the math raises), NOT re-dressed as a ValueError. It is a corrupt-row programming fault, not an operator refusal, and the callers' except ValueError must NOT re-render it as a form error; the 22-F guard's "recorded nothing, failed" is the truthful report after the rollback. Same reasoning as CallerHeldTransactionError being a RuntimeError.
+
+Relayed to cell 6 in flight; `1d47ec02`'s RED asserts the type is exactly `TypeError`.
+
+### Orchestrator QA of round 5 (against disk, `6d50efe4`)
+
+- I re-read the assertions from `review-r5.txt`: banner `model: gpt-5.6-sol`, `reasoning effort: high`, equal to `strong.config.toml`; `^ERROR` 0; `^tokens used` present, 475,309; anchored verdict tokens `NEW_CRITICAL_MAJOR_FOUND` x2, the other token 0; `exit-r5.txt` reads 0. **Round 5 COUNTS.** Counted spend to date: 2,903,190.
+- Six commits `1d47ec02`..`6d50efe4`. Trailers are empty across `618d7b04..HEAD`. No file was added under `swing/`, and nothing under `swing/data/` changed. The tree is clean, and the stash stack holds only the pre-existing entry.
+- I verified R5-02's premise by read: `exit_record_flags` appends the DB-derived matches and the selected entry's map `value_tuple_match` items into one list, and gives both `add(FLAG_VALUE_TUPLE, str(fill_id), text)`. Only the partials carry `order_key`.
+- **R5-06: BANKED with RA-07, widened** (orchestrator). The owner is the orchestrator. The trigger is the next arc with a `swing/data/repos/fills.py` or `swing/trades/state.py` carve-out, or a docs rider. Sites: `fills.py:6` and `state.py:130`.
+- **R5-01 is ROUTED to RD**, because it challenges AL-6's width, which is RD's P2 CORRECTION 2 (plan ledger :330). That correction rested on "a client that strips the map's `value_tuple_match` flags still gets the ask", which holds for the execution-date grain and not for the entered-date grain. One ruler per item: RD rules R5-01, and R5-03's text shape follows that ruling.
+
+### FORK R5-02 -- a map-derived value-tuple acknowledgement survives a radio switch (RULED: orchestrator, branch A)
+
+> **Orchestrator ruling, D79 executing Fork R5-02 (2026-10-19).** **Branch A.** A value-tuple item taken from the selected entry's map `possible_duplicates` gets the identity `value_tuple_match|<order key>|<fill_id>`, with the same order key the partial and unreadable identities use. A DB-derived (c) match keeps `value_tuple_match|<fill_id>`. When both sources name one fill, ONE flag is emitted, under the DB-derived identity. This corrects my Fork D79-A2 ruling by replacement, on the reason that ruling gave: "the (c) question is about the typed exit against an anonymous fill, which a radio switch does not change" is true of the DB-derived source and false of the map-derived one, which is the selected order's own list, exactly like the partials D79-A2 scoped. So the rule is now one rule: a question drawn from an order's list is scoped to that order, and a question drawn from the typed values against the DB is not. Branch B would keep an acknowledgement given to o1's question discharging o2's, the same carry-over D79-A2 closed for partials. Required RED test, the cell's: the browser switch shape (o1 and o2 at one price and quantity; F dated o1's execution date and o2's entered date; o1 picked, flagged; radio and values switched to o2; Confirm with o1's acknowledgements) returns 400, re-asked, no fill (200 before the fix). Also required: a dedup test where both sources name F, asserting ONE flag under `value_tuple_match|<F>`. Any of T7's asserted identities that is map-derived is updated by replacement and named; any red elsewhere is classified SUPERSEDED (named) or REGRESSION. This ruling is independent of RD's ruling on R5-01.
+
+Author of the sections above: orchestrator.
