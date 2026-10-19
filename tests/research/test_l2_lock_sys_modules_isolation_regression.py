@@ -47,15 +47,23 @@ from tests.research._sys_modules_isolation import (
 # Repo root = three levels up from this file (tests/research/<this file>).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# The child run's wall-clock budget (D87; CHARC's rule: max(5x isolated, 5x
-# under the load harness), both measured, 2026-10-19). It covers interpreter
-# start, import and collection, which load inflates far more than the child's
-# own test time. Isolated (quiet box, warm bytecode, 3 runs): 5.5-6.4 s
-# -> 5x = 32 s. Under the harness (the full fast suite at -n 16 plus a
-# 16-process CPU saturator, base 9845b799, with intermittent foreign pytest
-# load on the box): 157.65 s -> 5x = 788 s. Budget 900 s. A TimeoutExpired is
-# still a failure, never a skip.
-_CHILD_BUDGET_SECONDS = 900
+# The child run's wall-clock budget (D87). CHARC's rule: the budget is
+# max(5x isolated, 5x under the load harness), where the harness figure is the
+# MAX over every harness run measured, rounded UP to a round figure only at
+# the budget. It covers interpreter start, import and collection, which load
+# inflates far more than the child's own test time. As measured:
+#   isolated (quiet box, warm bytecode, 3 runs, 2026-10-19): 5.5-6.4 s
+#     -> 5x = 32.0 s;
+#   the harness is the full fast suite at -n 16 (or -n auto, which is 16 on
+#   this box) plus a 16-process CPU saturator, with intermittent foreign
+#   pytest load on the box:
+#     2026-10-19, base 9845b799 (pre-fix): 157.65 s -> 5x = 788.25 s;
+#     2026-10-19, head 64b621af: 182.03 s -> 5x = 910.15 s.
+# Budget 1000 s, so a hung child now surfaces after about 16.7 min.
+# Re-open condition: any later harness measurement above budget/5 (200 s)
+# re-opens this constant, by the next arc that reads it, not by a flake
+# wave-through. A TimeoutExpired is still a failure, never a skip.
+_CHILD_BUDGET_SECONDS = 1000
 
 # The minimal deterministic 17-D.4 ordering (app-bind -> polluter -> victim).
 _REPRO_NODES = (
