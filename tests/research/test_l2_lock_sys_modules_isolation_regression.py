@@ -47,6 +47,16 @@ from tests.research._sys_modules_isolation import (
 # Repo root = three levels up from this file (tests/research/<this file>).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# The child run's wall-clock budget (D87; CHARC's rule: max(5x isolated, 5x
+# under the load harness), both measured, 2026-10-19). It covers interpreter
+# start, import and collection, which load inflates far more than the child's
+# own test time. Isolated (quiet box, warm bytecode, 3 runs): 5.5-6.4 s
+# -> 5x = 32 s. Under the harness (the full fast suite at -n 16 plus a
+# 16-process CPU saturator, base 9845b799, with intermittent foreign pytest
+# load on the box): 157.65 s -> 5x = 788 s. Budget 900 s. A TimeoutExpired is
+# still a failure, never a skip.
+_CHILD_BUDGET_SECONDS = 900
+
 # The minimal deterministic 17-D.4 ordering (app-bind -> polluter -> victim).
 _REPRO_NODES = (
     "tests/web/test_app_smoke.py::test_create_app_returns_fastapi",
@@ -74,7 +84,7 @@ def test_research_l2lock_del_does_not_break_web_route_exception_identity():
             cwd=str(_REPO_ROOT),
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=_CHILD_BUDGET_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
         out = (exc.stdout or b"")
@@ -84,7 +94,8 @@ def test_research_l2lock_del_does_not_break_web_route_exception_identity():
         if isinstance(err, bytes):
             err = err.decode("utf-8", "replace")
         pytest.fail(
-            "17-D.4 regression child run timed out after 300s (deadlock?).\n"
+            f"17-D.4 regression child run timed out after {_CHILD_BUDGET_SECONDS}s "
+            "(deadlock?).\n"
             "----- child stdout (tail) -----\n" + out[-3000:]
             + "\n----- child stderr (tail) -----\n" + err[-2000:]
         )

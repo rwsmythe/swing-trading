@@ -222,13 +222,19 @@ def test_diagnose_aplus_sensitivity_stdout_is_ascii_safe(
     _plant_minimal_db(conn)
     conn.close()
     out_dir = tmp_path / "out"
+    # Child budget (D87; CHARC's rule: max(5x isolated, 5x under the load
+    # harness), both measured, 2026-10-19). Isolated (quiet box, warm
+    # bytecode, 3 runs): 1.89-1.95 s -> 5x = 10 s. Under the harness (the full
+    # fast suite at -n 16 plus a 16-process CPU saturator, base 9845b799, with
+    # intermittent foreign pytest load on the box): 52.24 s -> 5x = 261 s.
+    # Budget 300 s. A TimeoutExpired is still a failure.
     proc = subprocess.run(
         [sys.executable, "-m", "swing.cli",
          "diagnose", "aplus-sensitivity",
          "--db", str(db_path),
          "--eval-runs", "5",
          "--output-dir", str(out_dir)],
-        capture_output=True, text=True, check=False, timeout=120,
+        capture_output=True, text=True, check=False, timeout=300,
     )
     assert proc.returncode == 0, (proc.stdout + proc.stderr)
     # Stdout must be cp1252-encodable (Windows safety).

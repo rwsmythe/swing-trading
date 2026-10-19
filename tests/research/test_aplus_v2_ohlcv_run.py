@@ -445,10 +445,16 @@ def test_subprocess_aplus_sensitivity_v2_help_cp1252_safe(
     """
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Child budget (D87; CHARC's rule: max(5x isolated, 5x under the load
+    # harness), both measured, 2026-10-19). Isolated (quiet box, warm
+    # bytecode, 3 runs): 1.86-2.08 s -> 5x = 10 s. Under the harness (the full
+    # fast suite at -n 16 plus a 16-process CPU saturator, base 9845b799, with
+    # intermittent foreign pytest load on the box): 55.58 s -> 5x = 278 s.
+    # Budget 300 s. A TimeoutExpired is still a failure.
     proc = subprocess.run(
         [sys.executable, "-m", "swing.cli",
          "diagnose", "aplus-sensitivity-v2", "--help"],
-        capture_output=True, text=True, check=False, timeout=60,
+        capture_output=True, text=True, check=False, timeout=300,
         env={**os.environ, "USERPROFILE": str(tmp_path), "HOME": str(tmp_path)},
     )
     assert proc.returncode == 0, (proc.stdout + proc.stderr)
