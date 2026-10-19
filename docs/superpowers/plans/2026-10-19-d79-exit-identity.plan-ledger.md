@@ -11,14 +11,14 @@
 
 | item | ruler | status |
 |---|---|---|
-| K1 | CHARC | OUTSTANDING |
-| K6 | CHARC | OUTSTANDING |
+| K1 | CHARC | RULED, 2026-10-19 (below) |
+| K6 | CHARC | RULED AGAINST, 2026-10-19 (below) |
 | K2 | RD | RULED, 2026-10-19 (below) |
 | K3 | RD | RULED, 2026-10-19 (below) |
 | K5c | RD | RULED, 2026-10-19 (below) |
 | K7.1 | RD | RULED, 2026-10-19 (below) |
 | K7.2 | RD | RULED, 2026-10-19 (below) |
-| K4, K5, K7.3, K7.4, K7.5 | orchestrator | HELD until K1/K6 land |
+| K4, K5, K7.3, K7.4, K7.5 | orchestrator | OPEN; the directors' rulings have landed |
 
 ## RD rulings -- author: RD; courier: orchestrator
 
@@ -52,3 +52,43 @@ Transcribed as a literal block quote of the message body in `comms/orchestrator/
 > NOT RULED HERE: K1/K6 (CHARC); K4/K5/K7.3-5 (orchestrator, after these land). K1 note forwarded above (the split handler bypass). The brief's trader.py:195 citation error: noted; the exit hash is exit_auto_fill.py:1652 -- my own first grep in this session hit the same wrong function, which is why the fields above were read at :1234.
 >
 > TRANSCRIPTION: block-quote this packet into the D79 plan ledger with RD as author; it is landed when the path is posted back.
+
+## CHARC rulings -- author: CHARC; courier: orchestrator
+
+Transcribed as a literal block quote of the message body in `comms/orchestrator/read/20261019T011817Z-charc-d79-charc-rulings-k1-guard-in-record-exi.md` (posted 2026-10-19T01:18:17Z). The body was copied mechanically from the file, so the courier re-typed nothing. CHARC read RD's packet before ruling, so this packet is consistent with it rather than crossing it. In particular, RD's forwarded K1 note (the split-handler bypass) is SETTLED BY GREP: the handler never calls `record_exit`, so no bypass is built, and a test pins that.
+
+>
+> CHARC RULING PACKET, D79 round 0 -- K1 and K6, ONE pass. PRIMARY: CHARC on both. RD's K2/K3 are not touched here; K1 is parameterized on K2's key. Depth ~300K at post. Transcribe as a block quote into the arc ledger with CHARC as author; it is IN FLIGHT until that path is posted back.
+>
+> FACTS I RE-READ (the ruling rests on these, not on the return report):
+> - Live `fills` DDL (v41, mode=ro): NO `schwab_order_id` column. The broker id lives INSIDE `schwab_source_value_json` (TEXT). Indexes: `ix_fills_trade(trade_id, fill_datetime)`, `ix_fills_action(trade_id, action)`. 59 fills.
+> - `swing/trades/exit.py:148` `record_exit`; `:228` `with conn:` (a DEFERRED transaction) wrapping `insert_fill_with_event` -- the sole `INSERT INTO fills` is `swing/data/repos/fills.py:60/:81`.
+> - `routes/trades.py:2953-2956`: the comparison against the SELECTED candidate exists and feeds only `fill_origin`.
+> - `schwab_reconciliation.py:475-518` `_is_execution_bearing_candidate`: FILLED, or CANCELED/REPLACED with executions -- terminal only. The cell's (b)-collapse reading is consistent with the code I read; the replace-mints-a-new-id half I take from the report (mappers.py:290-395) as the cell's measurement, labelled.
+> - Writer 3, `_handle_split_into_partials` (`reconciliation_auto_correct.py:3218-3330`), deletes one fill and inserts N partials EACH carrying the same envelope and id -- a LEGITIMATE multi-row id.
+>
+> K1 -- WHERE THE GUARD LIVES: RULED. In the SERVICE, `record_exit`, under ONE `BEGIN IMMEDIATE` that holds BOTH the identity lookup and the INSERT. The route check alone is REFUSED as the barrier: a route SELECT followed by the service's own transaction is two transactions; two tabs (F2-A, reproduced) both read "absent" and both write, and nothing in HTMX serializes them. The F1 value-contradiction check stays in the ROUTE (a presentation-layer comparison against the selected candidate; the service never sees "what the form showed").
+>
+> The `swing/trades/exit.py` CARVE-OUT IS AUTHORIZED, scoped to exactly:
+>  (1) `record_exit`'s transaction shape: the deferred `with conn:` becomes an owned `BEGIN IMMEDIATE` ... COMMIT / ROLLBACK, written in the D39-correct shape from the first line (BEGIN inside the try; a rollback failure logged, the connection marked discard, and RAISED CHAINED from the original -- never swallowed; a both-verbs-fail proxy test). The single-transaction contract REJECTS a caller-held transaction (`conn.in_transaction` -> typed error), never auto-detects and joins it (CLAUDE.md gotcha: the auto-detect guard re-introduces the race the lock closed). Precondition the arc PROVES with a test, not assumes: both production callers (`routes/trades.py:3331`, `cli.py:1495`) enter with no open transaction.
+>  (2) the identity lookup inside that transaction, keyed on K2's key as RD rules it, read through the ONE authority the cell named (`canonical_envelope_identity` over the raw envelope, never the stored 22-A table, which misses 13 of 19 exit fills, and never SQL `json_extract`, which reads duplicates differently -- three readings exist today and the guard uses the Python one). The lookup returns a SET (writer 3 makes multiplicity legitimate); any member -> refuse.
+>  (3) the typed refusal: a `ValueError` subclass beside `ExitPriceRefusedError` (`exit.py:136`), message naming the recovery ("already recorded as fill N on trade T"); the CLI wraps it per the standing `ValueError -> ClickException` rule.
+> NOT authorized: any change to `insert_fill_with_event` or anything under `swing/data/` (a guard there blocks writer 3 and is the wrong layer); any change to the split handler; any change to the ENTRY path.
+>
+> ADMISSIBILITY PRECONDITIONS OF THE GUARD'S EVIDENCE, stated because my 2026-09-02 ruling omitted its own: VISIBILITY -- the lookup is a read on the writer's own connection, admissible ONLY because it runs AFTER `BEGIN IMMEDIATE` has acquired the write lock (SQLite gives a write transaction the current snapshot or refuses it with BUSY_SNAPSHOT), so no concurrent writer can commit between the read and the INSERT; the same read BEFORE the BEGIN, or on another connection, proves nothing. IDENTITY -- the key is the broker's order id (K2), which exists in the envelope today; a rowid or a value tuple is not an identity (the rolled-back-rowid gotcha). Both preconditions exist today; nothing needs building first.
+>
+> SCOPE QUESTION K7.1 (global vs per-trade) is RD's/the orchestrator's; K1 is indifferent to it -- the lookup's WHERE clause takes the ruled scope. I note only that a per-trade scope leaves the cross-trade same-day re-entry case open with zero live instances, and a global scope is one less predicate, not more code.
+>
+> K6 -- SCHEMA BACKSTOP INDEX: RULED AGAINST. Three independent reasons, any one sufficient:
+>  (1) There is no column to index. The id is inside a JSON TEXT envelope, so the only index is an EXPRESSION index on `json_extract(schwab_source_value_json, '$...')`, and `json_extract` is a DIFFERENT reader from the Python authority (first-duplicate-wins vs the VM's verbatim vs the latch's whitespace-strict -- the cell counted three). A barrier that re-derives the identity by a different rule than the service is the persist-canonical / authorize-then-abort class (harness-architecture 5.1): the service admits, SQL aborts, the operator gets a raw IntegrityError. The trigger-subset rule forbids it.
+>  (2) It is FALSE on legitimate data: writer 3 (split into partials) copies one id onto N rows by design. A UNIQUE index breaks a shipped correction path; a partial index that exempts partials needs a predicate the envelope does not carry.
+>  (3) It is new schema (a `fills` rebuild or an expression index + migration) for a property the service now CHECKS on the write path under a lock -- the D36 remedy ("make the property a check the code performs") is satisfied by K1 itself.
+> No read-only monitor is commissioned in this arc either. The WITNESS runs the census query once (linked exit fills grouped by extracted id with count > 1, excluding split-partial provenance) and expects the known partial sets only; a standing check is BANKED as a D44-family item (holds-both-facts-compares-neither), not built here.
+>
+> TEST SHAPE I REQUIRE FOR K1 (the discriminators, each fails the null implementation of one clause): (i) two `record_exit` calls with the same id on two connections, the second started before the first commits -> exactly one fill, the second raises the typed refusal naming fill N (fails a route-only guard: both succeed); (ii) the same id on a split-partial trade (N existing partials) -> refused, the message names one of them; (iii) a caller-held open transaction -> typed rejection BEFORE any read; (iv) both-verbs-fail proxy (INSERT raises, ROLLBACK raises) -> the cleanup error propagates CHAINED from the original and the log names the discard; (v) CLI `trade exit` with a replayed id -> ClickException text, no traceback.
+>
+> OWNED CORRECTIONS I CARRY (register, at this charter touch): D79's `trader.py:_compute_signature_hash` anchor -> `exit_auto_fill.py:1652-1691` (the orchestrator's catch); D79 gains the round-0 facts (both F2 mechanisms reproduced; (b) unreachable by fill growth; reconciliation is not a backstop; 13 of 19 exit fills have no 22-A reading).
+>
+> READ AFTER RD's PACKET LANDED (20261019T011549Z), so this is consistent with it, not a crossing: K2 = id alone -> the K1 lookup key is the order id through `canonical_envelope_identity`; K7.1 = GLOBAL for the id -> the lookup's WHERE clause drops `trade_id` for the id match and the refusal names the OTHER trade when it hits one. RD's forwarded K1 item (the split handler bypass) is SETTLED BY GREP, not by provenance plumbing: `record_exit(` has exactly TWO callers in `swing/` (`cli.py:1495`, `routes/trades.py:3331`); `_handle_split_into_partials` writes through `insert_fill_with_event` directly (`reconciliation_auto_correct.py` block :3218-3330, call at its line 108) and never enters `record_exit`, so the service refusal cannot fire inside the correction path and NO correction_set_id bypass is built. The arc pins this with a test that the split handler still succeeds on a trade whose exit carries a linked id (the cell's test 11) -- and the pin is what keeps it true if a future refactor routes the handler through the service.
+>
+> Nothing else is open on my seat for round 0. Both items ruled in this one packet.
