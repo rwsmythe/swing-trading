@@ -214,7 +214,13 @@ def test_t4f_no_second_spelling_of_the_grain(tmp_path, monkeypatch):
     db = make_db(tmp_path)
     tid = seed_trade(db, state="partial_exited")
     plant_exit_fill(db, tid, envelope=None)
-    monkeypatch.setattr(eaf, "derives_from", lambda *a, **k: False)
+    calls: list[int] = []
+
+    def counting_stub(*a, **k):
+        calls.append(1)
+        return False
+
+    monkeypatch.setattr(eaf, "derives_from", counting_stub)
     c = connect(db)
     try:
         assert anonymous_fill_matches(
@@ -222,6 +228,9 @@ def test_t4f_no_second_spelling_of_the_grain(tmp_path, monkeypatch):
             shares=3) == ()
     finally:
         c.close()
+    # B-06: the patch must have FIRED, or ``== ()`` is vacuous (an
+    # implementation carrying its own comparison, or none, would also pass).
+    assert len(calls) >= 1
 
 
 # ----------------------------------------------------------------- T4-g
