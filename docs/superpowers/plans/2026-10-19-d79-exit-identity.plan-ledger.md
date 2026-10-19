@@ -229,7 +229,8 @@ The plan is `docs/superpowers/plans/2026-10-19-d79-exit-identity.plan.md`. It is
 | round | model (asserted = profile) | effort (asserted = profile) | `^ERROR` | `^tokens used` footer | verdict (anchored) | findings: reviewer severity / cell class | new / reopened | tokens used | transcript | context depth |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 1 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2: codex-cli emits the final message twice); the other token 0 | 2 major / 2 task-bearing; 0 instrument | 2 / 0 | 90,269 | `.codex-review-r1.txt`, 497,877 B; prompt `.codex-prompt-r1.md`, 4,820 B | 317,138 (orchestrator, `cell_depth --agent`, at the round-1 gate) |
-| 2 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2); the other token 0 | 2 major / 2 task-bearing (R2-02 contested-class rule: it changes a test's specification); 0 instrument | 2 / 0 | 57,131 | `.codex-review-r2.txt`, 248,967 B; prompt `.codex-prompt-r2.md`, 4,820 B | (orchestrator fills) |
+| 2 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2); the other token 0 | 2 major / 2 task-bearing (R2-02 contested-class rule: it changes a test's specification); 0 instrument | 2 / 0 | 57,131 | `.codex-review-r2.txt`, 248,967 B; prompt `.codex-prompt-r2.md`, 4,820 B | 328,477 (orchestrator, at the round-2 gate) |
+| 3 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2); the other token 0 | 1 major / 1 task-bearing; 0 instrument | 1 / 0 | 89,143 | `.codex-review-r3.txt`, 468,323 B; prompt `.codex-prompt-r3.md`, 4,820 B; stdin ledger `stdin-ledger-r3.md` | (orchestrator fills) |
 
 **Round 1, process checks.**
 - The codex process exited: the runner's exit file reads `rc=0`, and it is written only after `codex exec` returns.
@@ -271,4 +272,25 @@ The plan is `docs/superpowers/plans/2026-10-19-d79-exit-identity.plan.md`. It is
   - **T6-c now specifies that shape:** the first GET's form, o1 picked, o1's exact values retyped, no `force`. The service refuses it, and one o1 row remains.
   - **The d2 void path is assigned explicitly** to T7-c and T7-f. The fix changes a test's specification and no mechanism.
 
-**Next:** round 3 at `fast` (counted 3 of 3), then the uncounted self-sweep. Per the orchestrator's budget note, round 3 may run in a fresh cell off this committed ledger and the plan file on disk.
+**Round 3, process checks.**
+- The codex process exited (`rc=0`).
+- Stdin carried the ledger with "Plan review" stripped, regenerated before the round.
+- A transcript grep for `R1-0|R2-0` gives 1 hit. It is a code comment from another arc ("CHARC R2-05") that Codex read from source, not a prior-round finding.
+
+**Round 3 adjudication**
+- **R3-01, major. TASK-BEARING. ACCEPTED, fixed.** A legacy claimed envelope with no `candidates_map` had no `selected_entry`, so F1 could not fire, and an edited legacy submission still reached the corrected branch without confirmation. That contradicts orchestrator K7.3 ("an unconfirmed contradiction writes NOTHING").
+  - **Fix (T6 item 2):** the route synthesizes the `selected_entry` from the top-level quartet, so the mismatch raises `FLAG_F1_NO_CANDIDATE`.
+  - **New test T6-g (roster 31a).**
+
+**THE COUNTED LOOP ENDS HERE** (3 of 3; a fourth needs the orchestrator's written authorization). The cell does NOT request a fourth round:
+- R3-01 was one omitted SHAPE, fixed with a test;
+- the self-sweep below found the one residual of that fix (SS-3) by reading, and it resolves to the ruled d2 behaviour without a new mechanism;
+- the executing `strong` review with repo access is the next net.
+
+**Uncounted self-sweep** (no Codex, no effect on convergence):
+- **SS-1:** T4's F1 rule now points at the T6 synthesis for legacy envelopes, so T4 does not read as gated on a map entry.
+- **SS-2:** T6's retention rule names the legacy top-level quartet as "the entry naming the id" (the existing branch at `routes/trades.py:3255-3264`).
+- **SS-3, the R3-01 fix's own residual:** a legacy envelope's CONFIRM can never pass d2, because `_exit_candidates_maps_equal` returns False with no map (`routes/trades.py:2443-2444`). So T6-g's confirm is specified as VOID (refresh notice, a fresh map-bearing anchor, no fill), not as recorded. A legacy envelope never records a correction. That is the safe direction for a shape the current resolver never emits (`exit_auto_fill.py:964-999`).
+- **SS-4, residual greps:** `sleep`, `strictly less`, `tuple[int, int]`, "six anonymous" and the R2 pair-shape all return no live site. The roster has 47 rows (1-46 plus 31a), counted by an anchored grep for table rows.
+
+**Plan committed once at convergence of the counted loop.**
