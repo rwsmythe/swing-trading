@@ -27,7 +27,9 @@ SELL-side mirror of test_entry_post_audit_columns.py. Per plan §G.5 T-B.2.3
 """
 from __future__ import annotations
 
+import html
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -141,6 +143,64 @@ def _post_exit(client: TestClient, trade_id: int, **fields: Any):
 
 # ============================================================================
 # (a) Unchanged auto-populated values -> fill_origin='schwab_auto'.
+
+# ============================================================================
+# D79 T7 -- the confirm protocol (orchestrator K5). A claimed POST whose typed
+# values do not derive from the SELECTED entry is ASKED (the F1 flag) and
+# records nothing; Confirm resubmits with ``force=true`` and every rendered
+# flag identity. This world is SANDBOX, where the re-render's fresh fetch is
+# never ``populated``, so under executing FORK 3 (G1) a claimed anchor's
+# flags would be DROPPED; the tests that need F1 to render stub
+# ``_exit_candidates_maps_equal`` True (T7-f's technique) and each says so.
+# ============================================================================
+
+
+def _stub_restorable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "swing.web.routes.trades._exit_candidates_maps_equal",
+        lambda vm, submitted_envelope: True,
+    )
+
+
+def _ack_identities(body: str) -> list[str]:
+    return [html.unescape(v) for v in re.findall(
+        r'name="acknowledged_flag" value="([^"]*)"', body)]
+
+
+def _ask_then_confirm(client: TestClient, trade_id: int, **fields: Any):
+    """The first POST (asked: 400, nothing recorded), then the Confirm of
+    the same submission with every rendered acknowledgement."""
+    first = _post_exit(client, trade_id, **fields)
+    assert first.status_code == 400, first.text
+    assert "Confirm or retype before recording." in first.text
+    assert _exit_fill_count(client) == 0
+    acks = _ack_identities(first.text)
+    assert acks, "the asked re-render must carry the flag identities"
+    base = {
+        "exit_date": "2026-05-19", "exit_price": "120.50", "shares": "10",
+        "reason": "manual", "notes": "",
+    }
+    base.update({k: ("" if v is None else str(v)) for k, v in fields.items()})
+    base["force"] = "true"
+    base["acknowledged_flag"] = acks
+    second = client.post(f"/trades/{trade_id}/exit", data=base,
+                         headers={"HX-Request": "true"})
+    return first, second
+
+
+
+
+def _exit_fill_count(client: TestClient) -> int:
+    cfg = client.app.state.cfg
+    conn = connect(cfg.paths.db_path)
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE action != 'entry'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
 # ============================================================================
 
 
@@ -207,28 +267,32 @@ def test_a_unchanged_auto_fill_persists_schwab_auto(seeded_db, monkeypatch):
 # ============================================================================
 
 
-def test_b_edited_price_flips_to_then_operator_corrected(
+def test_b_edited_price_is_asked_then_confirmed_as_a_correction_of_the_selected_order(
     seeded_db, monkeypatch,
 ):
-    """Operator edits exit_price from 120.50 -> 121.00. fill_origin flips
-    + operator_corrected_value_json carries submitted values.
+    """SUPERSEDED by replacement (D79 T7; orchestrator K4, K5; RD K3 (iv)).
+    Was ``test_b_edited_price_flips_to_then_operator_corrected``, which
+    recorded the correction on the FIRST POST and DROPPED the order id.
 
-    The envelope is re-stamped with the original keys INTACT except one:
-    ``schwab_order_id`` is DROPPED, because the persisted 121.00 no longer
-    derives from the candidate that id names (RD, 2026-08-11; orchestrator B
-    review MAJOR 1). Keeping it would assert a link the operator never made,
-    and the next render reads a top-level id as PROVEN IDENTITY. This
-    assertion used to loop over every original key including that one.
+    Operator edits exit_price from 120.50 -> 121.00 on the single candidate.
+    The first POST ASKS (F1 names the differing field) and records nothing;
+    the Confirm records ``schwab_auto_then_operator_corrected`` with the
+    typed values in ``operator_corrected_value_json``. The envelope keeps
+    every original key INCLUDING ``schwab_order_id``: the link is now
+    established by selection plus an explicit confirmation (RD K3 (iv)), so
+    the id is no longer residue. Sandbox: F1 renders only with the maps
+    stubbed equal (FORK 3).
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
     _patch_price_cache(monkeypatch)
+    _stub_restorable(monkeypatch)
     anchor = _make_anchor(
         exit_date="2026-05-19", exit_price=120.50, closed_shares=10,
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        resp = _post_exit(
+        first, resp = _ask_then_confirm(
             client, trade_id,
             exit_price="121.00",  # edited
             schwab_source_value_json=anchor,
@@ -238,6 +302,7 @@ def test_b_edited_price_flips_to_then_operator_corrected(
             candidate_order_id_0="order-xyz",
             candidate_index="0",
         )
+    assert "in price." in html.unescape(first.text)
     assert resp.status_code == 200, resp.text
 
     conn = connect(cfg.paths.db_path)
@@ -251,18 +316,11 @@ def test_b_edited_price_flips_to_then_operator_corrected(
     finally:
         conn.close()
     assert row[0] == "schwab_auto_then_operator_corrected"
-    # Re-stamped envelope carries original keys + provenance fields, minus
-    # the now-unsupported identity claim.
     persisted = json.loads(row[1])
     original = json.loads(anchor)
     for k, v in original.items():
-        if k == "schwab_order_id":
-            continue
         assert persisted[k] == v
-    assert persisted.get("schwab_order_id") is None, (
-        "the edited price derives from no candidate, so the id the envelope "
-        f"arrived with is residue; got {persisted.get('schwab_order_id')!r}"
-    )
+    assert persisted["schwab_order_id"] == "order-xyz"
     assert row[2] is not None
     corrected = json.loads(row[2])
     assert corrected["exit_price"] == 121.00
@@ -367,7 +425,10 @@ def test_d_post_does_not_emit_new_schwab_api_call_audit_row(
 def test_e_malformed_anchor_with_claim_rejects_with_400_and_clears_anchor(
     seeded_db, monkeypatch,
 ):
-    """4-tier rejection (a): malformed JSON + claim -> 400.
+    """Malformed JSON + claim -> 400. Since D79 executing Fork R6-01 this is
+    answered by the RAW RUNG (the authority refuses a document it cannot
+    decode) before tier (a) is reached; tier (a) is pinned by
+    ``test_e_json_null_anchor_with_claim_is_rejected_at_tier_a``.
 
     Recovery form anchor-clear discipline (T3.SB1 R3 M#2 BINDING): the
     rejected anchor must NOT be echoed back into the recovery form, so
@@ -395,6 +456,39 @@ def test_e_malformed_anchor_with_claim_rejects_with_400_and_clears_anchor(
         "(T3.SB1 R3 M#2 anchor-clear discipline)"
     )
     # No exit fill should have been written.
+    conn = connect(cfg.paths.db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE action != 'entry'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 0
+
+
+def test_e_json_null_anchor_with_claim_is_rejected_at_tier_a(
+    seeded_db, monkeypatch,
+):
+    """4-tier rejection (a), the one document it still answers after the raw
+    rung (self-sweep SS-2): a JSON ``null`` decodes, the authority reads it
+    as naming no order (canonical), and ``json.loads`` yields ``None``. With
+    a claim -> 400 with tier (a)'s text, the anchor cleared, no fill. A PIN:
+    the malformed-JSON test above no longer reaches tier (a), so without this
+    nothing does. NULL killed: deleting tier (a) as "covered by the raw
+    rung" (measured: the POST then records)."""
+    cfg, cfg_path = seeded_db
+    trade_id = _seed_open_trade(cfg, "NVDA")
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = _post_exit(
+            client, trade_id,
+            schwab_source_value_json="null",
+            auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+            fill_origin_at_form_render="schwab_auto",
+        )
+    assert resp.status_code == 400, resp.text
+    assert "is malformed, unparseable, or not a JSON object" in resp.text
     conn = connect(cfg.paths.db_path)
     try:
         n = conn.execute(
@@ -760,27 +854,32 @@ def test_f_empty_audit_at_form_field_persists_null_not_empty_string(
 # ============================================================================
 
 
-def test_g_multi_partial_selects_non_default_candidate_and_preserves_others(
+def test_g_multi_partial_legacy_envelope_non_default_pick_records_nothing_and_its_confirm_is_void(
     seeded_db, monkeypatch,
 ):
-    """Form rendered with 3 candidates (chronological c0, c1, c2; default
-    chosen is c2 most-recent). Operator selects c1 instead (candidate_index=1).
+    """SUPERSEDED by replacement (D79 T7; executing FORK 3, G1). Was
+    ``test_g_multi_partial_selects_non_default_candidate_and_preserves_others``,
+    which recorded a correction on the FIRST POST.
 
-    POST handler:
-      * persists exit_date/exit_price/shares per the submitted form
-        (which the form pre-populated from c1's selection).
-      * the persisted ``schwab_source_value_json`` envelope's
-        ``signature_hash`` field maps to c1's hash (operator-selected).
-      * ``other_candidate_signature_hashes`` field carries [c0.sig, c2.sig]
-        (the non-selected candidates) for audit history.
+    The form-render envelope here is LEGACY: no ``candidates_map``. The
+    operator picks c1 and types c1's values, which do not derive from the
+    top-level quartet (c2's), so the POST would ask F1 -- but a map-less
+    anchor is never restorable, so the flags are DROPPED: 400, nothing
+    recorded, the refresh notice, no flag text, and a message that the list
+    must be re-confirmed. A Confirm of the ORIGINAL submission with a
+    test-built identity takes the SAME re-confirm response and records
+    nothing. A legacy envelope never records a correction.
+
+    SUPERSEDED again, by replacement (D79 executing Fork RA-02, branch A):
+    the submission carries an explicit selection (``candidate_index=1``) on
+    a map-less envelope, which the server cannot resolve, so EVERY such POST
+    -- the confirm included -- takes the Fork 3 G1 re-confirm response
+    before the d2 check is reached. The confirm leg asserted the d2 VOID
+    text; it now asserts the re-confirm text and the refresh notice.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
     _patch_price_cache(monkeypatch)
-    # The form-render envelope (from T-B.2.2) - per-fill candidate identities
-    # in candidate_signature_hash_<i> + candidate_order_id_<i> hidden inputs.
-    # We submit c1's values (selected = candidate_index=1) and the chosen
-    # candidate's signature_hash must be embedded in the persisted envelope.
     form_render_envelope = json.dumps(
         {
             "exit_date": "2026-05-19",
@@ -792,64 +891,38 @@ def test_g_multi_partial_selects_non_default_candidate_and_preserves_others(
         },
         sort_keys=True,
     )
-    audit_at = "2026-05-19T14:30:00.000000+00:00"
+    fields = dict(
+        exit_date="2026-05-17",   # c1's date
+        exit_price="115.50",      # c1's price
+        shares="4",               # c1's quantity
+        schwab_source_value_json=form_render_envelope,
+        auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
+        fill_origin_at_form_render="schwab_auto",
+        candidate_index="1",      # operator picked c1
+        candidate_signature_hash_0="sig-cand-0",
+        candidate_order_id_0="order-0",
+        candidate_signature_hash_1="sig-cand-1",
+        candidate_order_id_1="order-1",
+        candidate_signature_hash_2="sig-cand-2",
+        candidate_order_id_2="order-2",
+    )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        resp = _post_exit(
-            client, trade_id,
-            exit_date="2026-05-17",   # c1's date
-            exit_price="115.50",      # c1's price
-            shares="4",               # c1's quantity
-            schwab_source_value_json=form_render_envelope,
-            auto_fill_audit_at=audit_at,
-            fill_origin_at_form_render="schwab_auto",
-            candidate_index="1",      # operator picked c1
-            candidate_signature_hash_0="sig-cand-0",
-            candidate_order_id_0="order-0",
-            candidate_signature_hash_1="sig-cand-1",
-            candidate_order_id_1="order-1",
-            candidate_signature_hash_2="sig-cand-2",
-            candidate_order_id_2="order-2",
+        first = _post_exit(client, trade_id, **fields)
+        void = _post_exit(
+            client, trade_id, **fields, force="true",
+            acknowledged_flag="f1_matches_no_candidate|order-2|2026-05-17|115.50|4",
         )
-    assert resp.status_code == 200, resp.text
-    conn = connect(cfg.paths.db_path)
-    try:
-        row = conn.execute(
-            "SELECT fill_origin, schwab_source_value_json, "
-            "operator_corrected_value_json, quantity, price, fill_datetime "
-            "FROM fills WHERE action != 'entry' "
-            "ORDER BY fill_id DESC LIMIT 1"
-        ).fetchone()
-    finally:
-        conn.close()
-    assert row is not None
-    # Architectural decision (V1): the template emits per-candidate
-    # signature_hash + order_id but NOT per-candidate price/date/quantity,
-    # so the POST-handler comparison is against the form-render envelope's
-    # defaults (the chosen=most-recent candidate's values, i.e. c2). The
-    # operator selecting c1 + submitting c1's values DIFFERS from those
-    # defaults -> flip to schwab_auto_then_operator_corrected. The
-    # selected_candidate_signature_hash field documents which candidate
-    # the operator actually picked, providing full audit clarity.
-    assert row[0] == "schwab_auto_then_operator_corrected", (
-        f"non-default candidate selection differs from anchor envelope "
-        f"defaults; expected then_operator_corrected, got {row[0]!r}"
-    )
-    persisted = json.loads(row[1])
-    assert persisted.get("selected_candidate_signature_hash") == "sig-cand-1"
-    assert persisted.get("selected_candidate_order_id") == "order-1"
-    others = persisted.get("other_candidate_signature_hashes")
-    assert others is not None
-    assert sorted(others) == sorted(["sig-cand-0", "sig-cand-2"])
-    # Operator-corrected envelope carries submitted values.
-    assert row[2] is not None
-    corrected = json.loads(row[2])
-    assert corrected["exit_date"] == "2026-05-17"
-    assert corrected["exit_price"] == 115.50
-    assert corrected["closed_shares"] == 4
-    # Persisted exit fill carries c1's values (rounded to fill-row precision).
-    assert float(row[4]) == 115.50
-    assert float(row[3]) == 4.0
+        assert _exit_fill_count(client) == 0
+    assert first.status_code == 400, first.text
+    assert "must be re-confirmed" in first.text
+    assert "auto-fill selection was refreshed" in first.text
+    assert "differ from order" not in html.unescape(first.text)
+    assert _ack_identities(first.text) == []
+    assert void.status_code == 400, void.text
+    assert "must be re-confirmed" in void.text
+    assert "auto-fill selection was refreshed" in void.text
+    assert _ack_identities(void.text) == []
 
 
 def test_h_critical1_unedited_default_radio_picks_authoritative_default(
@@ -924,33 +997,26 @@ def test_h_critical1_unedited_default_radio_picks_authoritative_default(
     assert persisted["selected_candidate_signature_hash"] == "sig-cand-2"
 
 
-def test_h_critical1_non_default_radio_without_visible_edits_flips_corrected(
+def test_h_critical1_non_default_radio_without_visible_edits_is_asked_then_confirmed(
     seeded_db, monkeypatch,
 ):
-    """Codex R1 Critical #1 — operator picks OLDER candidate (index 0)
-    without editing visible inputs.
+    """SUPERSEDED by replacement (D79 T7; orchestrator K7.3; RD K3). Was
+    ``test_h_critical1_non_default_radio_without_visible_edits_flips_corrected``,
+    which recorded on the FIRST POST with the DEFAULT's top level.
 
-    The template's radio inputs do NOT rebind visible inputs client-side,
-    so the operator's submitted exit_date/exit_price/shares are STILL the
-    default candidate's values (index 2 = most-recent). The authoritative
-    lookup via candidates_map[sig-cand-0] returns the OLDER candidate's
-    values; the visible inputs DIFFER from authoritative; fill_origin =
-    schwab_auto_then_operator_corrected. The persisted fill row carries
-    the visible-input values (most-recent default's values, since
-    operator did not edit) — semantically honest given the lack of
-    client-side rebind. Envelope records the operator's actual
-    selected_candidate_signature_hash for audit.
-
-    Pre-fix: the comparison was against the envelope's top-level default
-    (most-recent), which MATCHES submitted visible inputs, so fill_origin
-    would have stayed schwab_auto + the radio selection was semantically
-    meaningless. Post-fix: comparison routes through the AUTHORITATIVE
-    selected candidate; the delta flips fill_origin and the audit trail
-    reflects reality.
+    The operator picks the OLDER c0 by radio and leaves the visible inputs at
+    the default c2's values (the radio does not rebind them). The values
+    match c2, not the selected c0, so the first POST ASKS (F1 "match order
+    ord-2, not the selected order ord-0") and records nothing. The Confirm
+    records the correction of ord-0: the top level names ord-0 with c0's own
+    values, the typed values ride in ``operator_corrected_value_json``, and
+    the fill row carries the typed values. Sandbox: maps stubbed equal
+    (FORK 3).
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
     _patch_price_cache(monkeypatch)
+    _stub_restorable(monkeypatch)
     candidates_map = {
         "sig-cand-0": {
             "date": "2026-05-15", "price": 110.00, "quantity": 3,
@@ -972,11 +1038,8 @@ def test_h_critical1_non_default_radio_without_visible_edits_flips_corrected(
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        resp = _post_exit(
+        first, resp = _ask_then_confirm(
             client, trade_id,
-            # Visible inputs still carry the DEFAULT (most-recent) values
-            # — because the template's radio doesn't rebind them client-
-            # side. The operator picked an OLDER candidate via radio.
             exit_date="2026-05-19", exit_price="120.50", shares="3",
             schwab_source_value_json=envelope,
             auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
@@ -989,6 +1052,7 @@ def test_h_critical1_non_default_radio_without_visible_edits_flips_corrected(
             candidate_signature_hash_2="sig-cand-2",
             candidate_order_id_2="ord-2",
         )
+    assert "match order ord-2, not the selected order ord-0" in first.text
     assert resp.status_code == 200, resp.text
     conn = connect(cfg.paths.db_path)
     try:
@@ -1000,24 +1064,20 @@ def test_h_critical1_non_default_radio_without_visible_edits_flips_corrected(
         ).fetchone()
     finally:
         conn.close()
-    # Post-fix: authoritative lookup vs visible inputs differs → flip.
-    assert row[0] == "schwab_auto_then_operator_corrected", (
-        "operator's non-default radio selection without visible-input "
-        "edits MUST flip fill_origin (visible inputs reflect the default "
-        "candidate, not the operator's selected one)"
-    )
+    assert row[0] == "schwab_auto_then_operator_corrected"
     persisted = json.loads(row[1])
     assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
     others = persisted["other_candidate_signature_hashes"]
     assert sorted(others) == sorted(["sig-cand-1", "sig-cand-2"]), (
         "non-selected candidates' hashes preserved for audit"
     )
-    # Operator-corrected envelope carries the visible-input values that
-    # were actually persisted (the default candidate's values, NOT c0's).
+    assert persisted["schwab_order_id"] == "ord-0"
+    assert (persisted["exit_date"], persisted["exit_price"],
+            persisted["closed_shares"]) == ("2026-05-15", 110.00, 3)
     corrected = json.loads(row[2])
     assert corrected["exit_price"] == 120.50
     assert corrected["closed_shares"] == 3
-    # Persisted fill row carries the visible-input values.
+    # The fill row carries the typed (visible-input) values.
     assert float(row[4]) == 120.50
     assert float(row[3]) == 3.0
 
@@ -1267,19 +1327,19 @@ def test_g_multi_partial_invalid_candidate_index_rejects_with_400(
 def test_h_major2_authoritative_selected_candidate_order_id_from_envelope(
     seeded_db, monkeypatch,
 ):
-    """Codex R2 Major #2 — when the operator submits a
+    """Codex R2 Major #2 -- when the operator submits a
     candidate_signature_hash that maps to a candidates_map entry, the
     persisted ``selected_candidate_order_id`` MUST come from that entry's
-    ``order_id`` field — NOT from the separately-submitted
+    ``order_id`` field -- NOT from the separately-submitted
     ``candidate_order_id_<i>`` hidden input. Reading ONE source keeps the
     persisted id consistent with the values compared against; both inputs are
     client-editable, so this is consistency rather than provenance (D31).
 
-    Threat: a tampered POST could submit a valid signature_hash AND a
-    forged candidate_order_id_<i>; without this fix, the persisted
-    envelope's ``selected_candidate_order_id`` would carry the forged
-    value, poisoning the VM-dedupe field (M3) so future exit forms would
-    incorrectly skip the real Schwab order (or surface a phantom one).
+    SUPERSEDED by replacement in its recording step only (D79 T7): the
+    submitted values are cand_1's while cand_0 is selected, so the first POST
+    now ASKS (F1) and records nothing; the assertion is made on the CONFIRMED
+    record. Sandbox: maps stubbed equal (FORK 3). The name still states what
+    is asserted.
 
     Scenario: 2 candidates with order_ids A + B. Submit valid
     signature_hash for cand_0 (order A) but a forged
@@ -1289,6 +1349,7 @@ def test_h_major2_authoritative_selected_candidate_order_id_from_envelope(
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
     _patch_price_cache(monkeypatch)
+    _stub_restorable(monkeypatch)
     candidates_map = {
         "sig-cand-0": {
             "date": "2026-05-15", "price": 110.00, "quantity": 3,
@@ -1306,17 +1367,15 @@ def test_h_major2_authoritative_selected_candidate_order_id_from_envelope(
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        resp = _post_exit(
+        _first, resp = _ask_then_confirm(
             client, trade_id,
-            # Visible inputs match the DEFAULT (most-recent) candidate's
-            # values; operator picked cand_0 via radio.
             exit_date="2026-05-19", exit_price="120.50", shares="3",
             schwab_source_value_json=envelope,
             auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
             fill_origin_at_form_render="schwab_auto",
             candidate_index="0",  # operator picked cand_0
             candidate_signature_hash_0="sig-cand-0",
-            # FORGED order_id — should NOT be persisted; authoritative
+            # FORGED order_id -- should NOT be persisted; authoritative
             # envelope's order_id ('REAL-ORDER-A') must win.
             candidate_order_id_0="FAKE_FORGED_ID",
             candidate_signature_hash_1="sig-cand-1",
@@ -1333,7 +1392,6 @@ def test_h_major2_authoritative_selected_candidate_order_id_from_envelope(
         conn.close()
     assert row is not None
     persisted = json.loads(row[0])
-    # Authoritative envelope value wins — forged client input ignored.
     assert persisted["selected_candidate_order_id"] == "REAL-ORDER-A", (
         "Codex R2 M#2: selected_candidate_order_id must come from "
         "the envelope's candidates_map[sig-cand-0]['order_id'], NOT "
@@ -1498,25 +1556,24 @@ def test_h_r3m1_regression_default_radio_no_edit_top_level_unchanged(
     assert persisted["selected_candidate_signature_hash"] == "sig-cand-1"
 
 
-def test_h_r3m1_regression_non_default_radio_no_edit_top_level_unchanged(
+def test_h_r3m1_non_default_radio_no_edit_confirmed_top_level_names_the_picked_order(
     seeded_db, monkeypatch,
 ):
-    """Codex R3 M#1 regression — operator picks NON-DEFAULT candidate via
-    radio but submits the DEFAULT's visible values (no client-side rebind).
+    """SUPERSEDED by replacement (D79 T7; orchestrator K7.3; RD K3). Was
+    ``test_h_r3m1_regression_non_default_radio_no_edit_top_level_unchanged``,
+    which asserted that the top-level ``schwab_order_id`` STAYED at the
+    form-render default ord-2 -- the link round 0 measured going to an order
+    the operator did not pick (Item 2).
 
-    Pre-+post-fix behavior MUST agree: fill_origin flips to
-    ``schwab_auto_then_operator_corrected`` (visible inputs ≠ authoritative
-    selected); top-level ``schwab_order_id`` stays at form-render default
-    ('ord-2'). The brief's matrix specifies that for the corrected branch,
-    top-level reflects "what Schwab proposed" (the default), which IS the
-    values actually persisted (since visible = default values).
-
-    Mirrors test_h_critical1_non_default_radio_without_visible_edits_flips_corrected
-    + adds top-level schwab_order_id assertion.
+    Non-default pick c0, visible inputs left at the default's values: the
+    first POST ASKS and records nothing; on the Confirm the top level names
+    the PICKED order ord-0 (``selected_candidate_*`` agree). Sandbox: maps
+    stubbed equal (FORK 3).
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
     _patch_price_cache(monkeypatch)
+    _stub_restorable(monkeypatch)
     candidates_map = {
         "sig-cand-0": {
             "date": "2026-05-15", "price": 110.00, "quantity": 3,
@@ -1538,9 +1595,8 @@ def test_h_r3m1_regression_non_default_radio_no_edit_top_level_unchanged(
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        resp = _post_exit(
+        _first, resp = _ask_then_confirm(
             client, trade_id,
-            # Visible inputs still carry the DEFAULT values.
             exit_date="2026-05-19", exit_price="120.50", shares="3",
             schwab_source_value_json=envelope,
             auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
@@ -1565,40 +1621,28 @@ def test_h_r3m1_regression_non_default_radio_no_edit_top_level_unchanged(
         conn.close()
     assert row[0] == "schwab_auto_then_operator_corrected"
     persisted = json.loads(row[1])
-    # Top-level stays default (R3 M#1 fix does NOT rewrite on
-    # operator-corrected branch — the persisted values match the default's,
-    # so "default was the source" remains semantically true).
-    assert persisted["schwab_order_id"] == "ord-2", (
-        "R3 M#1 regression: operator-corrected branch keeps top-level "
-        "schwab_order_id at form-render default; got "
-        f"{persisted.get('schwab_order_id')!r}"
-    )
+    assert persisted["schwab_order_id"] == "ord-0"
+    assert persisted["selected_candidate_order_id"] == "ord-0"
     assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
 
 
 def test_h_r3m1_regression_default_radio_manual_edit_top_level_unchanged(
     seeded_db, monkeypatch,
 ):
-    """SUPERSEDED (RD, 2026-08-11; orchestrator B review MAJOR 1) — the
-    default-radio override now DROPS the top-level ``schwab_order_id``.
-
-    This test used to assert the opposite, on the ground that "the default IS
-    the 'source' the operator started from before overriding". That is exactly
-    the residue RD's ruling names: an id that arrived as a display default and
-    survived edits pointing elsewhere asserts a link the operator never made.
-    The persisted values here (121.25) derive from NO candidate, so the id
-    describes nothing that was recorded -- and the next render would read it as
-    PROVEN IDENTITY, suppressing ord-1's never-recorded Schwab order while the
-    fill that WAS recorded stayed out of the flag channel.
-
-    The name is kept so the R3 M#1 lineage stays greppable; the contract is the
-    2026-08-11 one. ``selected_candidate_order_id`` still records what the
-    operator picked -- the audit trail survives, only the counterfeit proof
-    goes.
+    """SUPERSEDED by replacement (D79 T7; RD K3 (iv)) -- the contract moved
+    a second time. The 2026-08-11 version asserted the default's id was
+    DROPPED, because an edit away from it, recorded with no question asked,
+    asserted a link the operator never made. D79 asks that question: the
+    default-radio override is now F1 (``in price``), records nothing until
+    confirmed, and the Confirm IS the operator affirmatively linking the
+    row to ord-1. So the top-level id is KEPT (unchanged), with the typed
+    121.25 in ``operator_corrected_value_json``. The name is true again.
+    Sandbox: maps stubbed equal (FORK 3).
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
     _patch_price_cache(monkeypatch)
+    _stub_restorable(monkeypatch)
     candidates_map = {
         "sig-cand-0": {
             "date": "2026-05-15", "price": 110.00, "quantity": 3,
@@ -1616,10 +1660,8 @@ def test_h_r3m1_regression_default_radio_manual_edit_top_level_unchanged(
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        resp = _post_exit(
+        first, resp = _ask_then_confirm(
             client, trade_id,
-            # Operator manually edited visible inputs to custom values
-            # matching NO candidate (different price).
             exit_date="2026-05-19", exit_price="121.25", shares="3",
             schwab_source_value_json=envelope,
             auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
@@ -1630,11 +1672,13 @@ def test_h_r3m1_regression_default_radio_manual_edit_top_level_unchanged(
             candidate_signature_hash_1="sig-cand-1",
             candidate_order_id_1="ord-1",
         )
+    assert "in price." in html.unescape(first.text)
     assert resp.status_code == 200, resp.text
     conn = connect(cfg.paths.db_path)
     try:
         row = conn.execute(
-            "SELECT fill_origin, schwab_source_value_json "
+            "SELECT fill_origin, schwab_source_value_json, "
+            "operator_corrected_value_json "
             "FROM fills WHERE action != 'entry' "
             "ORDER BY fill_id DESC LIMIT 1"
         ).fetchone()
@@ -1642,16 +1686,9 @@ def test_h_r3m1_regression_default_radio_manual_edit_top_level_unchanged(
         conn.close()
     assert row[0] == "schwab_auto_then_operator_corrected"
     persisted = json.loads(row[1])
-    # The persisted 121.25 derives from no candidate, so the default's id is
-    # residue and is DROPPED. The row degrades to the honest evidence state.
-    assert persisted.get("schwab_order_id") is None, (
-        "an id that arrived as the display default and survived edits "
-        "pointing elsewhere is residue, not a link; got "
-        f"{persisted.get('schwab_order_id')!r}"
-    )
-    # What the operator PICKED is still recorded -- dropping the top-level id
-    # is not data loss.
+    assert persisted["schwab_order_id"] == "ord-1"
     assert persisted["selected_candidate_order_id"] == "ord-1"
+    assert json.loads(row[2])["exit_price"] == 121.25
 
 
 # ============================================================================
@@ -1661,36 +1698,30 @@ def test_h_r3m1_regression_default_radio_manual_edit_top_level_unchanged(
 # ============================================================================
 
 
-def test_b_review_major1_non_default_radio_plus_edits_drops_the_order_id(
+def test_b_review_major1_non_default_radio_plus_edits_confirmed_keeps_the_selected_order_id(
     seeded_db, monkeypatch,
 ):
-    """The reachable third case, and the flag channel it must reach instead.
+    """SUPERSEDED by replacement (D79 T7; RD K3 (iv)). Was
+    ``test_b_review_major1_non_default_radio_plus_edits_drops_the_order_id``.
 
     The operator picks c0 by radio AND edits the visible inputs to values
-    matching NEITHER c0 NOR the default c2. Origin resolves to
-    ``schwab_auto_then_operator_corrected``, and the branch used to keep the
-    DEFAULT's order id -- while the persisted values traced back to no
-    candidate at all.
+    matching NEITHER c0 NOR the default c2. That case used to record with no
+    question and DROP the id (the row entering the flag channel), because
+    nothing evidenced a link. D79 asks: the first POST is F1 and records
+    nothing; the Confirm is the operator affirmatively linking the row to
+    ord-0, so the top-level id is ord-0 and the selection agrees.
 
-    RD's semantics, encoded at the write site: a top-level ``schwab_order_id``
-    asserts that the operator affirmatively LINKED this row to that broker
-    order, by selecting it or by accepting its unedited render. Any path where
-    the persisted values cease to derive from the id's own candidate DROPS the
-    id.
-
-    THE SECOND HALF IS THE POINT AND IS ASSERTED END-TO-END. Dropping the id
-    matters only because of what the next render then does: the row must enter
-    the flag channel (``existing_anonymous_fills``) rather than be read as
-    PROVEN IDENTITY. Pre-fix, ord-2's never-recorded Schwab order was silently
-    suppressed AND the recorded fill never reached the alarm. A test asserting
-    only that the branch condition widened would pass under a fix that still
-    leaves a fourth case; this one asserts the evidence state that results.
+    THE SECOND HALF, END-TO-END, as before but inverted: the NEXT render
+    reads ord-0 as recorded (excluded from the offer list), and the recorded
+    fill is NOT in the anonymous flag channel -- it names its order.
+    Sandbox: maps stubbed equal (FORK 3).
     """
     from swing.trades.exit_auto_fill import ExitAutoFillResult
 
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
     _patch_price_cache(monkeypatch)
+    _stub_restorable(monkeypatch)
     candidates_map = {
         "sig-cand-0": {
             "date": "2026-05-15", "price": 110.00, "quantity": 3,
@@ -1712,7 +1743,7 @@ def test_b_review_major1_non_default_radio_plus_edits_drops_the_order_id(
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        resp = _post_exit(
+        _first, resp = _ask_then_confirm(
             client, trade_id,
             # Matches NEITHER the picked c0 (2026-05-15 / 110.00) NOR the
             # default c2 (2026-05-19 / 120.50).
@@ -1740,11 +1771,7 @@ def test_b_review_major1_non_default_radio_plus_edits_drops_the_order_id(
             conn.close()
         assert row[0] == "schwab_auto_then_operator_corrected"
         persisted = json.loads(row[1])
-        assert persisted.get("schwab_order_id") is None, (
-            "the retained id described no persisted value; it must be "
-            f"dropped, got {persisted.get('schwab_order_id')!r}"
-        )
-        # Not data loss: the pick is still on the record.
+        assert persisted["schwab_order_id"] == "ord-0"
         assert persisted["selected_candidate_order_id"] == "ord-0"
         assert persisted["selected_candidate_signature_hash"] == "sig-cand-0"
 
@@ -1769,42 +1796,40 @@ def test_b_review_major1_non_default_radio_plus_edits_drops_the_order_id(
         )
     assert form.status_code == 200, form.text
     assert len(calls) == 1
-    assert calls[0]["existing_fill_order_ids"] is None, (
-        "no order id was proven, so nothing may be excluded; got "
-        f"{calls[0]['existing_fill_order_ids']!r}"
+    assert "ord-0" in (calls[0]["existing_fill_order_ids"] or ()), (
+        "the confirmed link names ord-0, so the next offer list excludes it"
     )
-    anon = calls[0]["existing_anonymous_fills"]
-    assert anon is not None, (
-        "the recorded fill must reach the flag channel -- pre-fix "
-        "order_id_found was already True and it never got there"
-    )
-    assert ("2026-05-16", 118.25, 3.0) in {
+    anon = calls[0]["existing_anonymous_fills"] or ()
+    assert ("2026-05-16", 118.25, 3.0) not in {
         (r.date, r.price, r.quantity) for r in anon
-    }, f"got {anon!r}"
+    }, f"a linked fill is not anonymous; got {anon!r}"
 
 
-def test_b_review_major1_present_but_empty_candidates_map_drops_the_order_id(
+def test_b_review_major1_present_but_empty_candidates_map_is_reconfirmed(
     seeded_db, monkeypatch,
 ):
     """Codex R1 major on the MAJOR 1 fix -- absent map != present empty map.
 
-    The retention gate's legacy fallback is justified by what
-    ``resolve_exit_auto_fill`` emits: the top-level date/price/shares/order_id
-    quartet all come from ONE chosen candidate, so on an envelope with NO
-    ``candidates_map`` key the top-level values ARE the id's own candidate's
-    values. That justification does not extend to an envelope that CARRIES the
-    key and declares it EMPTY: a populated resolver never emits an empty map,
-    so such an envelope asserts a candidate manifest containing nothing, and an
-    id naming no candidate in it evidences no link at all.
+    The legacy path is justified by what ``resolve_exit_auto_fill`` emits:
+    the top-level date/price/shares/order_id quartet all come from ONE chosen
+    candidate, so on an envelope with NO ``candidates_map`` key the top-level
+    values ARE the id's own candidate's values. That justification does not
+    extend to an envelope that CARRIES the key and declares it EMPTY: a
+    populated resolver never emits an empty map, so such an envelope asserts
+    a candidate manifest containing nothing.
 
-    A first version of the gate tested ``if candidates_map:``, which conflates
-    the two and would keep the id here -- suppressing that order silently on
-    the next render. The gate now branches on KEY PRESENCE, so the map governs
-    whenever it is present and the legacy path is reachable only by absence.
+    D79 executing Fork D79-A-01 (orchestrator, branch B) SUPERSEDES, by
+    replacement, this test's earlier expectation (recorded ``schwab_auto``
+    with the id dropped). A claim that carries a ``candidates_map`` and no
+    selection is resolved to the unique map entry naming the top-level id
+    and quartet; an EMPTY map holds zero such entries, so the POST takes the
+    Fork 3 (G1) re-confirm and records NOTHING. The synthesis of the
+    top-level quartet is for the MAP-LESS shape only.
 
-    Discriminating: the submitted values equal the top-level quartet exactly,
-    so the falsy-test version keeps 'ord-9'; the presence-test version drops
-    it.
+    Discriminating: the submitted values equal the top-level quartet
+    exactly, so a gate that tested ``if candidates_map:`` (conflating the
+    empty map with an absent one) would synthesize the entry and record;
+    the presence-test version re-confirms.
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
@@ -1831,22 +1856,16 @@ def test_b_review_major1_present_but_empty_candidates_map_drops_the_order_id(
             auto_fill_audit_at="2026-05-19T14:30:00.000000+00:00",
             fill_origin_at_form_render="schwab_auto",
         )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
+    assert "must be re-confirmed" in resp.text
     conn = connect(cfg.paths.db_path)
     try:
-        row = conn.execute(
-            "SELECT fill_origin, schwab_source_value_json "
-            "FROM fills WHERE action != 'entry' "
-            "ORDER BY fill_id DESC LIMIT 1"
-        ).fetchone()
+        rows = conn.execute(
+            "SELECT fill_id FROM fills WHERE action != 'entry'"
+        ).fetchall()
     finally:
         conn.close()
-    assert row[0] == "schwab_auto", "no edit vs the top-level values"
-    persisted = json.loads(row[1])
-    assert persisted.get("schwab_order_id") is None, (
-        "an envelope declaring an EMPTY candidate manifest names no candidate "
-        f"for its top-level id; got {persisted.get('schwab_order_id')!r}"
-    )
+    assert rows == [], "an empty candidate manifest records nothing"
 
 
 def test_b_review_major1_legacy_envelope_without_a_map_keeps_a_matching_id(
@@ -2124,19 +2143,18 @@ def test_h_r4m2_execution_grain_price_template_round_trip_stays_schwab_auto(
 def test_h_r4m2_real_operator_edit_at_1_cent_flips_to_corrected(
     seeded_db, monkeypatch,
 ):
-    """Codex R4 Major #2 — operator makes a REAL edit (120.99 vs 120.50).
+    """Codex R4 Major #2 -- operator makes a REAL edit (120.99 vs 120.50).
 
-    Different 2-decimal rounded values → ``price_diff = True`` →
-    ``fill_origin = schwab_auto_then_operator_corrected``. The fix does
-    NOT regress the case where the operator genuinely edited the price.
-
-    Discriminating: post-fix this asserts True correctly; the test
-    confirms a real edit is still detected after switching from epsilon
-    to 2-decimal rounding.
+    Different 2-decimal rounded values -> the edit is detected. SUPERSEDED by
+    replacement in its recording step only (D79 T7): a detected edit is now
+    the F1 question, so the first POST asks and records nothing, and the
+    CONFIRMED record is ``schwab_auto_then_operator_corrected``. The name
+    still states what is asserted. Sandbox: maps stubbed equal (FORK 3).
     """
     cfg, cfg_path = seeded_db
     trade_id = _seed_open_trade(cfg, "NVDA")
     _patch_price_cache(monkeypatch)
+    _stub_restorable(monkeypatch)
     candidates_map = {
         "sig-cand-0": {
             "date": "2026-05-19", "price": 120.50,
@@ -2150,7 +2168,7 @@ def test_h_r4m2_real_operator_edit_at_1_cent_flips_to_corrected(
     )
     app = create_app(cfg, cfg_path)
     with TestClient(app) as client:
-        resp = _post_exit(
+        first, resp = _ask_then_confirm(
             client, trade_id,
             # Real edit: 120.99 vs authoritative 120.50.
             exit_date="2026-05-19", exit_price="120.99", shares="3",
@@ -2161,6 +2179,7 @@ def test_h_r4m2_real_operator_edit_at_1_cent_flips_to_corrected(
             candidate_signature_hash_0="sig-cand-0",
             candidate_order_id_0="ord-real",
         )
+    assert "in price." in html.unescape(first.text)
     assert resp.status_code == 200, resp.text
     conn = connect(cfg.paths.db_path)
     try:
@@ -2171,11 +2190,11 @@ def test_h_r4m2_real_operator_edit_at_1_cent_flips_to_corrected(
         ).fetchone()
     finally:
         conn.close()
-    # CRITICAL R4 M#2 ASSERTION: real edit (different 2-decimal rounds)
-    # still correctly flips to operator_corrected.
     assert row[0] == "schwab_auto_then_operator_corrected", (
         "Codex R4 M#2 regression: real operator edit (120.99 vs 120.50) "
         f"must flip fill_origin to operator_corrected; got {row[0]!r}"
     )
     corrected = json.loads(row[1])
     assert corrected["exit_price"] == 120.99
+
+

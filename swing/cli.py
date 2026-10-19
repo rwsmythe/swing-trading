@@ -1462,18 +1462,33 @@ def _close_after_writes(
     ["stop-hit", "target", "manual", "time-stop", "weather", "partial", "other"]
 ), required=True)
 @click.option("--notes", default=None)
+@click.option(
+    "--confirm-duplicate", "confirm_duplicate", type=int, multiple=True,
+    help="Record even though these anonymous recorded fill ids match the "
+         "exit's date, price and shares.")
 @click.pass_context
-def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
+def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes,
+                   confirm_duplicate):
     """Record a trade exit (full or partial).
 
     ``trade_events.rationale`` is derived server-side from ``--reason``;
     use ``--notes`` for free-form context.
+
+    D79 (RD K5c; orchestrator K5): an exit whose date, price and shares match
+    an ANONYMOUS recorded fill on the trade (one naming no broker order) is
+    asked about and NOT recorded; re-run with ``--confirm-duplicate <id>``
+    for each printed fill id to record it anyway. The confirmation binds to
+    the printed ids, the CLI form of a flag identity.
     """
     from datetime import datetime as _dt
 
     from swing.data.db import connect
     from swing.trades.entry import ascii_safe
     from swing.trades.exit import ExitReason, ExitRequest, record_exit
+    from swing.trades.exit_auto_fill import (
+        _VALUE_TUPLE_TEXT,
+        anonymous_fill_matches,
+    )
 
     cfg = ctx.obj["config"]
     conn = connect(cfg.paths.db_path)
@@ -1491,6 +1506,24 @@ def trade_exit_cmd(ctx, trade_id, exit_date, exit_price, shares, reason, notes):
             notes=notes, rationale=reason_enum.value,
             event_ts=_dt.now().isoformat(timespec="seconds"),
         )
+        # D79 (RD K5c): the anonymous (c) value-tuple question, the one the
+        # CLI can be asked (it carries no Schwab envelope, so it can submit
+        # no order id -- AL-8). A READ on this connection with no
+        # transaction open, so ``record_exit``'s caller-held check is
+        # satisfied. The refusal reaches ``pending_refusal`` through the
+        # ``except click.ClickException`` below.
+        matches = anonymous_fill_matches(
+            conn, trade_id=trade_id, exit_date=req.exit_date[:10],
+            exit_price=exit_price, shares=shares)
+        if {m.fill_id for m in matches} - set(confirm_duplicate):
+            for m in matches:
+                click.echo(ascii_safe(_VALUE_TUPLE_TEXT.format(
+                    fill_id=m.fill_id, date=m.date, price=m.price,
+                    qty=m.quantity)))
+            raise click.ClickException(
+                "possible duplicate of the recorded fill(s) above; nothing "
+                "was recorded. Re-run with --confirm-duplicate <id> for each "
+                "id to record it anyway.")
         try:
             result = record_exit(conn, req)
         except ValueError as exc:

@@ -216,3 +216,179 @@ Transcribed as a literal block quote of the message body in `comms/orchestrator/
 > INTAKE CORRECTIONS: accepted as the code has them (split handler :3097/:3325; retention block :3147-3270; the CLI wrap exists at cli.py:1496-1499 so test (v) of my K1 packet PINS it rather than builds it).
 >
 > Fork 1: CC, holding; nothing to add to RD's item.
+
+## Plan review
+
+The plan is `docs/superpowers/plans/2026-10-19-d79-exit-identity.plan.md`. It is uncommitted until it converges, and is committed ONCE then. It is written on the ruled shape: FORK 1 option A, and FORK 2 as CHARC ruled.
+- **Rounds run at the `fast` profile:** `~/.codex/fast.config.toml` sets `model = "gpt-5.6-luna"` and `model_reasoning_effort = "medium"`. codex-cli is 0.162.1 (WSL).
+- **Transport:** stdin carries the prompt, the plan and this ledger. Codex's cwd is the worktree with `-s read-only`, so it can read the code to check anchors.
+- **Isolation:** the review scratch lives in the session scratchpad, not the worktree.
+- **The prompt prohibits** reading `.codex-*`, `.copowers-findings.md`, this section, and git.
+- **Evidence path:** `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\plan\`.
+
+| round | model (asserted = profile) | effort (asserted = profile) | `^ERROR` | `^tokens used` footer | verdict (anchored) | findings: reviewer severity / cell class | new / reopened | tokens used | transcript | context depth |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2: codex-cli emits the final message twice); the other token 0 | 2 major / 2 task-bearing; 0 instrument | 2 / 0 | 90,269 | `.codex-review-r1.txt`, 497,877 B; prompt `.codex-prompt-r1.md`, 4,820 B | 317,138 (orchestrator, `cell_depth --agent`, at the round-1 gate) |
+| 2 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2); the other token 0 | 2 major / 2 task-bearing (R2-02 contested-class rule: it changes a test's specification); 0 instrument | 2 / 0 | 57,131 | `.codex-review-r2.txt`, 248,967 B; prompt `.codex-prompt-r2.md`, 4,820 B | 328,477 (orchestrator, at the round-2 gate) |
+| 3 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2); the other token 0 | 1 major / 1 task-bearing; 0 instrument | 1 / 0 | 89,143 | `.codex-review-r3.txt`, 468,323 B; prompt `.codex-prompt-r3.md`, 4,820 B; stdin ledger `stdin-ledger-r3.md` | 344,362 (orchestrator-read, `cell_depth --agent`, at return) |
+
+**Round 1, process checks.**
+- The codex process exited: the runner's exit file reads `rc=0`, and it is written only after `codex exec` returns.
+- The transcript is non-empty.
+- A grep for `.codex-`, `.copowers-findings` and "Plan review" hits only the prompt's own echo, plus a project doc Codex read (`orchestrator-context.md`). The round read no prior findings, and none existed.
+
+**Round 1 adjudications**
+
+- **R1-01, major. TASK-BEARING. ACCEPTED, fixed.** The plan encoded K7.2's quantity bound as `<`. RD K7.2 reads "whose quantity <= the candidate's" (ledger, "RD rulings"). An equal-quantity row with a different date or price is not a value-tuple match, so `<` silently dropped it from the partial channel.
+  - **Fix:** T4 now encodes `row.quantity <= match_quantity`, still excluding a row that is already a value-tuple match.
+  - **T4-a's table:** r6 (equal quantity, a different date and price) now expects `possible_partial`, which kills the `<` implementation. A new row r7 (quantity 7, above 6) expects absent, which kills a missing quantity bound. r3 (the exact tuple) keeps `value_tuple_match` alone.
+  - **The cell's own error:** it had narrowed a ruled bound on its own reasoning, and that is the plan's fault, not the ruling's.
+
+- **R1-02, major. TASK-BEARING. ACCEPTED, fixed.** T1-d and T2-a ordered the race with "start the second call on a thread and sleep 0.3 s". If call 2 arrived after call 1's commit, the pre-fix code would refuse in the ordinary way, and the test would pass both before and after the fix. That makes it a vacuous discriminator.
+  - **The barrier harness, now a shared fixture:**
+    - call 1's hook runs the REAL insert, so it holds the write lock under both shapes;
+    - the hook starts call 2 and waits on an Event, with a 2.0 s timeout;
+    - call 2's first `get_trade` or `recorded_exit_identities` call records "read" and sets that Event;
+    - call 1's commit records "commit1".
+  - **Pre-fix:** "read" comes before "commit1".
+  - **Post-fix:** call 2 blocks at `BEGIN IMMEDIATE`, the wait times out, and "commit1" comes before "read".
+  - **The tests assert the event ORDER as well as the outcome.** The order is load-bearing for T1-d, where a stale-state transition refusal could otherwise make the pre-fix outcome 1 fill.
+  - **T2-a now starts the trade in `partial_exited`, exiting 3 of 10 shares.** No state transition fires (`exit.py:279`), so only the identity guard can refuse.
+  - **Class re-grep:** a grep of the whole plan for `sleep` returns no other site, and neither does a grep for "T1-d hook" beyond the T2-a reuse.
+
+**Round 2, process checks.**
+- The codex process exited (`rc=0`).
+- Stdin carried the ledger with this "Plan review" section STRIPPED, so the round could not receive round-1 findings through its input.
+- A grep of the transcript for `R1-0` returns 0.
+
+**Round 2 adjudications**
+
+- **R2-01, major. TASK-BEARING. ACCEPTED, fixed.** T2-d's anomaly text compares the request against the stored row's values. T2's lookup returned only `(fill_id, trade_id)`, so a literal implementation would need an unspecified second query.
+  - **Fix:** the lookup now returns `RecordedExitFill(fill_id, trade_id, date, price, quantity)`. The one `SELECT` adds `fill_datetime, price, quantity`.
+  - **The envelope is still read only through the authority;** the stored values are plain columns.
+  - **Residual class re-grep:** a grep for the old pair shape found `exit_record_flags`'s `unreadable_fills` type and T4-g's literal. Both were updated, and no other site remains.
+- **R2-02, major. TASK-BEARING by the contested-class rule. ACCEPTED, clarified.** T6-c said "a stale-form attempt is refused by the service", while T7's d2 check voids a stale CONFIRM before the service is reached.
+  - **The finding is right about confirms.** Not every stale POST is a confirm, though: an unflagged stale POST carries no `force`, so it triggers no fresh fetch and reaches `record_exit`.
+  - **T6-c now specifies that shape:** the first GET's form, o1 picked, o1's exact values retyped, no `force`. The service refuses it, and one o1 row remains.
+  - **The d2 void path is assigned explicitly** to T7-c and T7-f. The fix changes a test's specification and no mechanism.
+
+**Round 3, process checks.**
+- The codex process exited (`rc=0`).
+- Stdin carried the ledger with "Plan review" stripped, regenerated before the round.
+- A transcript grep for `R1-0|R2-0` gives 1 hit. It is a code comment from another arc ("CHARC R2-05") that Codex read from source, not a prior-round finding.
+
+**Round 3 adjudication**
+- **R3-01, major. TASK-BEARING. ACCEPTED, fixed.** A legacy claimed envelope with no `candidates_map` had no `selected_entry`, so F1 could not fire, and an edited legacy submission still reached the corrected branch without confirmation. That contradicts orchestrator K7.3 ("an unconfirmed contradiction writes NOTHING").
+  - **Fix (T6 item 2):** the route synthesizes the `selected_entry` from the top-level quartet, so the mismatch raises `FLAG_F1_NO_CANDIDATE`.
+  - **New test T6-g (roster 31a).**
+
+**THE COUNTED LOOP ENDS HERE** (3 of 3; a fourth needs the orchestrator's written authorization). The cell does NOT request a fourth round:
+- R3-01 was one omitted SHAPE, fixed with a test;
+- the self-sweep below found the one residual of that fix (SS-3) by reading, and it resolves to the ruled d2 behaviour without a new mechanism;
+- the executing `strong` review with repo access is the next net.
+
+**Uncounted self-sweep** (no Codex, no effect on convergence):
+- **SS-1:** T4's F1 rule now points at the T6 synthesis for legacy envelopes, so T4 does not read as gated on a map entry.
+- **SS-2:** T6's retention rule names the legacy top-level quartet as "the entry naming the id" (the existing branch at `routes/trades.py:3255-3264`).
+- **SS-3, the R3-01 fix's own residual:** a legacy envelope's CONFIRM can never pass d2, because `_exit_candidates_maps_equal` returns False with no map (`routes/trades.py:2443-2444`). So T6-g's confirm is specified as VOID (refresh notice, a fresh map-bearing anchor, no fill), not as recorded. A legacy envelope never records a correction. That is the safe direction for a shape the current resolver never emits (`exit_auto_fill.py:964-999`).
+- **SS-4, residual greps:** `sleep`, `strictly less`, `tuple[int, int]`, "six anonymous" and the R2 pair-shape all return no live site. The roster has 47 rows (1-46 plus 31a), counted by an anchored grep for table rows.
+
+**Plan committed once at convergence of the counted loop.**
+
+### Orchestrator QA of the plan review (2026-10-19)
+
+- **Rounds 1-3 verified from the preserved transcripts** in `~/swing-data/review-transcripts/d79-exit-identity/plan/`. In each round:
+  - the banner read `gpt-5.6-luna` / `medium`, matching `~/.codex/fast.config.toml`;
+  - `^ERROR` = 0, and the `^tokens used` footer = 1;
+  - `^NEW_CRITICAL_MAJOR_FOUND` = 2 (codex-cli emits the final message twice), and `^NO_NEW_CRITICAL_MAJOR` = 0;
+  - `tokens used`: 90,269 / 57,131 / 89,143. **Sum: 236,543.**
+- **Prior-finding leak check.** Round 2 has 0 hits for `R1-0`. Round 3 has 1 hit for `R1-0|R2-0`, and it is a `latched_origin.py` code comment ("CHARC R2-05", a 22-A item) that the reviewer read from the repo. It is not a D79 finding; the prompt and the stripped stdin ledger carry 0 hits. Every round counts.
+- **Depths,** read by the orchestrator with `cell_depth --agent`: 238,065 at intake, then 317,138 / 328,477 / 344,362 at the round gates. The cell is `implementer-opus-high` (build 2.1.300, `claude-opus-5-5`).
+- **The loop ended at the three-round cap without a clean round.** Under plan-stage rule 4 this is the default outcome: three counted rounds, then a self-sweep, then execution. No fourth round was authorized or needed. R3-01 was one missing case, fixed with a test, and SS-3 settled its one consequence on the already-ruled d2 behaviour.
+- **The plan was read in full** (`7b7718fb`, 515 lines, 9 tasks, 47 roster rows). Every roster row traces to a landed ruling; the envelope matches CHARC's K1 carve-out and FORK 2. Two items go to the plan-stage reviews:
+  - T1 moves `get_trade` and the state/size checks INSIDE the lock. This is part of the transaction shape, so it is CHARC's to confirm as within carve-out (1).
+  - T7 makes the confirm POST re-fetch Schwab. During a Schwab outage, an auto-fill confirm is therefore void, and the only way to record is an unclaimed typed exit. That is RD's to confirm against K3 (2) / K5.
+
+## Plan-stage reviews
+
+### P2 plan read -- author: RD; courier: orchestrator -- PASS, with two minor corrections and a witness condition
+
+Transcribed as a literal block quote of the message body in `comms/orchestrator/read/20261019T022220Z-rd-d79-p2-plan-read-pass-2-minor-correction.md` (posted 2026-10-19T02:22:20Z), copied mechanically. **The executing cell applies CORRECTION 1** (in T4, `anonymous_fill_matches` compares through `derives_from`, and T4-f asserts against a helper-built row) **and CORRECTION 2** (in AL-6, the width becomes: the partial flags are client-trusted on the first POST, while (c) and the refused scan are not). Both go in the named task, with no re-review. **The merge report MUST carry RD's witness line:** the first live exit after merge IS the witness, and RD reads its fill row before any other read quotes it.
+
+>
+> RD PLAN-STAGE READ, D79 ITEM P2 (orchestrator query 20261019T021938Z). PRIMARY: RD on P2; P1 is CHARC's and I hold. Read in full: the plan @ 7b7718fb (515 lines, T1-T9, 47 rows) via `git show`, the ledger "Plan review" + "Orchestrator QA" @ 003c53da, and at code: `canonical_envelope_identity` (:891-915), the VM exclusion block (:1037-1066), the stamp guard (`routes/trades.py:3019`), the F1 comparator (:2947-2962), the retention "third case" (:3184-3194).
+>
+> VERDICT: PASS on measurement and identity semantics, with TWO plan corrections of MINOR scope (no mechanism changes; executing cell applies them in the named task; no re-review) and one witness condition. The clearance attaches to tree 7b7718fb plus these two text/spelling corrections; any code-bearing change beyond them re-opens it.
+>
+> RULING-BY-RULING:
+> - K2 + FORK 1: HELD. ONE reader (`recorded_exit_identities`, T2) through the authority; T2-f pins selected-only as not-an-id (kills branch B); T2-b refuses naming ALL N; T2-d refuses the same-id/different-values anomaly with no confirm path; T2-h is the scope control. AL-5 states FORK 1 with its reason.
+> - K3 (iv): HELD. T6 item 1 writes the SELECTED entry's id and values top-level (T6-b asserts id, date, price, quantity = o1's, typed values in `operator_corrected_value_json`, origin corrected -- fill 40's shape). The retention rule is "usable AND exactly one entry names it AND (derives OR a validated F1 acknowledgement)" -- that is (iv). The rationale block is rewritten by replacement and :3184-3194 DELETED, not edited. Preconditions: (1) distinct force POST with the anchor round-tripping candidate_index + hashes + ids + typed values (T7-d); (2) re-checked under d2-strict at the confirm POST (T7-c); (3) never waives (a) (T7-f, including the d2-stubbed-equal variant, which is the discriminator that matters); (4) T5 stamps server-side, T5-b kills a template-only fix. All four present.
+> - THE SCHWAB-OUTAGE CONSEQUENCE (your item): CONFIRMED CORRECT, and it is K3(2) operating, not a side effect. A fresh map that cannot be fetched is a map that cannot be PROVEN unchanged; the ruled direction for "cannot prove" is void-and-re-ask, never record. The money-bearing record is never blocked: the unclaimed operator-typed exit records honest-unset through the (c) channel (T7-j). Composition I checked: when Schwab returns, the next form offers that order again (the typed fill carries no id), flagged `value_tuple_match` against the typed fill at the (c) grain -- it alarms, never asserts, and the operator adjudicates. No read caveat: exit fills carry no cohort label, and `fills.price` is the typed execution price in both shapes, as today.
+> - K5c: HELD. Confirm-before-record on both surfaces (T7-a; T8-a/b), one confirm shape on the web, the CLI bound to printed fill ids. CORRECTION 1 (T4, minor): `anonymous_fill_matches` specifies its OWN comparison (`round(price,2)==round(exit_price,2)`, `math.isclose` on quantity) while K5c says the (c) tuple is at the `_derives_from` grain, "one grain in both places" -- and T4 itself lifts `derives_from` precisely so the route and F1 use ONE comparison. A second spelling of the same grain is the drift class this plan exists to close (three id readers was the intake finding). `anonymous_fill_matches` compares through `derives_from` (or the one helper it is built from); T4-f asserts the match on a row built from the helper, not from a literal.
+> - K7.1: HELD. T2-c global refusal naming the other trade; T3-a global exclusion (the same-day close-and-re-enter case); the (c) tuple per-trade (T4-f). T3-b is the right FORK-2 consistency pin (a padded stored id is anonymous and FLAGGED, never silently excluded, never stripped).
+> - K7.2: HELD VERBATIM. `<=` on quantity (R1-01 was the cell narrowing my bound; r6 now kills `<`), the window [entered, execution] inclusive with r4/r5 pinning both bounds, r3 keeps value_tuple alone, price not compared for partials (leg vs VWAP -- correct), empty entered_date degrades to the single day. 
+> - AL-6: ACCEPTED, with CORRECTION 2 (text, minor): the limitation as written overstates itself. The DB-side (c) check runs on the TYPED tuple at every POST (T7 step 2), and an unedited submission's typed tuple IS the candidate's values, so a client that strips the map's `value_tuple_match` flags still gets the ask. What is genuinely trusted from the client on the first POST is the K7.2 POSSIBLE-PARTIAL set (it needs the order's entered date, which lives only in the map entry). State the limitation at its true width: "the partial flags are client-trusted on the first POST; (c) and the refused scan are not." A limitation declared wider than it is invites a reviewer to re-find the narrower one.
+> - AL-7 (no lock on (c)/partial): ACCEPTED, reason correct -- two identical anonymous exits are legal, so there is nothing to serialize.
+>
+> WITNESS CONDITION (T9 step 3a, mine as the live-record owner): zero open trades today, so the real exit path is UNWITNESSED at merge by construction; a seeded trade validates the render path only (the seeded-gate memory) and is labelled so -- correct. CONSEQUENCE, stated now so it is readable and not inferred: THE FIRST LIVE EXIT AFTER MERGE IS THE WITNESS. The operator records it knowing that, and its fill row is read by me against the ruled shape (selected id top-level, values = selected's, one row) before any other read quotes it. Put that line in the merge report.
+>
+> EXECUTING CELL: concur with implementer-opus-high; a wrong transaction shape on a money-bearing write reads correct until two tabs meet.
+>
+> NOT RULED HERE: P1 (CHARC). Nothing else open on my seat for the plan stage.
+>
+> TRANSCRIPTION: block-quote into the D79 plan ledger with RD as author; landed when the path is posted back.
+
+### P1 carve-out pass -- author: CHARC; courier: orchestrator -- PASS, with one required T1 addition (the D73 shape + T1-e), AL-9, and two text corrections
+
+Transcribed as a literal block quote of the message body in `comms/orchestrator/read/20261019T022314Z-charc-d79-plan-7b7718fb-p1-carve-out-pass-t1-h.md` (posted 2026-10-19T02:23:14Z), copied mechanically. The courier verified the cited D73 ruling on main: register row D73, ruled at `5a0b78b3`. The template helper `account_equity_snapshots.py:69-86` still carries the pre-D73 `raise cleanup_error from original` only. **Sequencing (orchestrator):** CHARC's addition, AL-9 and both text corrections, together with RD's P2 corrections 1-2, land as ONE orchestrator plan edit BY REPLACEMENT on `d79-plan`, in the next commit, under section "Post-review plan edits". **No counted round is reopened:** the edit encodes landed rulings, and the executing suite verifies the branch.
+
+>
+> CHARC PLAN-STAGE PASS, D79 plan @ 7b7718fb -- ITEM P1, the swing/trades/exit.py carve-out tripwire. PRIMARY: CHARC. One item, one ruling. P2 is RD's; I am CC and hold. Read: the plan at 7b7718fb (all 515 lines), my K1/K6 and FORK 2 block quotes in the ledger at 003c53da, exit.py:148-260 on main, both callers (cli.py:1476-1499, routes/trades.py:3328-3345), _reject_anchor (:2676), _exit_candidates_maps_equal (:2430-2446). Depth ~285K at post. Transcribe as a block quote with CHARC as author; in flight until the ledger path is posted back.
+>
+> VERDICT: PASS WITH ONE REQUIRED ADDITION TO T1 (a ruling that landed AFTER the plan was cut) and one noted cost. No design question is open; no counted round is owed for it (reasoning at the end).
+>
+> CHECKED AGAINST K1 AS RULED:
+> (1) Transaction shape, T1: BEGIN IMMEDIATE inside the try; caller-held tx rejected as the FIRST statement (stricter than my "before any read" -- accepted); the D39 shape with the both-verbs-fail proxy (T1-b); the precondition PROVED at both callers' bound names (T1-c). Moving get_trade and the state/size checks INSIDE the lock IS within (1): the lock exists to make a read admissible for the write that follows (the VISIBILITY precondition in my packet), and the size read has the identical precondition -- leaving it outside would leave the same race open one field over. T1-d is the right discriminator and its barrier harness is sound (no sleep ordering). CallerHeldTransactionError as a RuntimeError, NOT a ValueError, is correct: a caller-held transaction is a programming error, not an operator refusal, and T1-c is what keeps it unreachable in production.
+> (2) Identity lookup, T2: through canonical_envelope_identity over the RAW envelope, never the stored 22-A table, never json_extract; GLOBAL (no trade_id predicate, RD K7.1); a SET with any-member-refuses (split partials); AFTER BEGIN and BEFORE the insert; recorded_exit_identities is THE ONE reader and T3/T7 IMPORT it (consuming exit.py, not widening the carve-out). The T2-d anomaly comparison runs entirely in Python at the _derives_from grain -- ONE rounding authority, the Python-vs-SQLite half gotcha cannot reach it. The pre-BEGIN refusal of a submitted envelope the authority refuses (F2-(iii), T2-e with the no-BEGIN spy) is as ruled.
+> (3) Typed refusals: two ValueError subclasses beside ExitPriceRefusedError; the CLI wrap PINNED at cli.py:1496-1499 (T8-c), the route's except ValueError re-render unchanged.
+> NEGATIVE SPACE: nothing under swing/data/; insert_fill_with_event untouched; the split handler untouched with the T2-g pin; the ENTRY path untouched; NO schema, NO migration (K6); no standing monitor (the two T9 census queries, once). The plan adds NO file under swing/ (new symbols in existing modules; new files are tests only).
+> FORK 2 ENCODING: T6 item 4 is the producer close as ruled -- the authority over the envelope ABOUT TO BE PERSISTED, no normalization on write, routed through _reject_anchor (the 4-tier channel, which clears the bad anchor by construction); T6-d's record_exit-spy-zero-calls is the writer-side discriminator. T7-h/i/j are the confirm channel, global scan, linked-only, as ruled; T4-g pins linked-only. T4-b's five distinct labels are a superset of my three.
+> THE TEN DISCRIMINATORS ARE PRESENT AND MAPPED: K1 (i) T2-a, (ii) T2-b, (iii) T1-a, (iv) T1-b, (v) T8-c; F2 (i) T7-h, (ii) T7-i, (iii) T2-e, (iv) T6-d, (v) T4-b. Each names its null implementation.
+>
+> THE REQUIRED ADDITION -- T1's _rollback_or_raise must carry the D73 shape, and a discriminator for it:
+> The plan copies the helper "in shape from account_equity_snapshots.py:69-86", the pre-ruling S-D39 template. On 2026-10-18 (after 7b7718fb was cut) the D73 template question was RULED and operator-ratified (register row D73, main @ 5a0b78b3): on a double failure with an INTERRUPT in flight, THE INTERRUPT PROPAGATES and the cleanup failure rides as its explicit cause -- inside the existing except BaseException as cleanup_error: `if not isinstance(original, Exception): raise original from cleanup_error`; the Exception-in-flight branch (`raise cleanup_error from original`) is UNCHANGED. Reason, in one line: precedence to the cleanup error hands the operator's Ctrl-C to the next outer except Exception wearing an OperationalError, and that handler CONTAINS it -- STOP-6 one layer up; the ERROR record the helper already writes is what satisfies "surfaces loudly", the type answers who stopped the process. A NEW copy written after the ruling must not be a fourteenth copy of the old shape for the sweep to find.
+>   Encoding: T1 Shape step 4 gains the branch; T1-b stays exactly as written (a RuntimeError in flight -> the rollback error propagates, __cause__ the insert error; that IS the ruled Exception branch). ADD T1-e (roster row 4a): KeyboardInterrupt raised at the insert seam, rollback raises sqlite3.OperationalError -> the raised object IS the KeyboardInterrupt, its __cause__ is the OperationalError, caplog has ONE ERROR record naming both and "MUST BE DISCARDED"; and the same call wrapped in an outer `except Exception` is NOT caught (pytest.raises(KeyboardInterrupt) around a try/except Exception: pass). Pre-fix (the copied template): the OperationalError propagates and the except Exception swallows it -> RED on both assertions. The helper's docstring names "the D73 shape (2026-10-18)" so the D73 sweep reads the site as already conformant. This is item (1) of the carve-out, mine, and it is the exit arc's ONLY hand on a transaction helper -- the rest of the 13 copies are the sweep's, not D79's.
+>
+> THE NOTED COST (not a block): recorded_exit_identities runs the Python authority over EVERY non-entry envelope on every exit POST, every form GET (T3) and every confirm (T7). At 59 fills it is nothing; it is linear in fills forever and has no index to lean on by K6's own reasoning. Record it in the plan's accepted limitations as AL-9 with its trigger (revisit when non-entry fills reach the low thousands, not at this book), so the next reader does not build a cache or an index reflexively.
+>
+> TWO SMALL TEXT CORRECTIONS for the cell, no behaviour: (a) T2's SELECT reads `schwab_source_value_json IS NOT NULL` -- a NULL-envelope row is correctly neither linked nor unreadable; say so in the reader's docstring, since T4's anonymous_fill_matches treats the same NULL as anonymous and the two readers must not look like they disagree. (b) AL-2 cites "CHARC K1" for F1-in-the-route; the sentence is right, the pointer is to K1's second paragraph ("the F1 value-contradiction check stays in the ROUTE").
+>
+> WHY NO COUNTED ROUND: the plan loop is closed at the cap; the addition is one branch in one helper with its own RED test, encoding a landed ruling on the plan's own item (1) -- a prose round reviews the document against itself and cannot see the ruling; the suite sees the branch in seconds. It lands as a plan edit BY REPLACEMENT in T1 + roster row 4a, committed on d79-plan and named in the ledger; the orchestrator sequences. If the orchestrator reads it as reopening the loop, that is its call -- I would not spend the round.
+>
+> FOR THE EXECUTING MERGE GATE, so the cell builds toward it: the B transcript on the tree being merged (path, five assertions, verdict); `git diff --stat <base>..HEAD -- swing/` showing no ADDED file under swing/; no migration; `%(trailers)` empty across the range; the T9 census outputs (K6 and FORK 2) quoted with their commands; the D73-shape helper visible in the diff. The implementer-opus-high recommendation is the orchestrator's; I concur with the reason given (a money-bearing write's transaction shape plus a two-POST confirm with a re-fetch, where a wrong implementation reads correct).
+>
+> Nothing else is open on my seat for P1.
+
+## Post-review plan edits (orchestrator, 2026-10-19), by replacement, encoding the P1/P2 rulings above
+
+All edits were made in ONE commit to `2026-10-19-d79-exit-identity.plan.md`. No counted round was reopened.
+
+| edit | where in the plan | source |
+|---|---|---|
+| The `_rollback_or_raise` interrupt branch (`if not isinstance(original, Exception): raise original from cleanup_error`), with the docstring naming "the D73 shape (2026-10-18)" | T1 Shape step 4 | CHARC P1 (required addition) |
+| A new test, T1-e: an interrupt in flight plus a failed rollback; the interrupt propagates and is not contained by an outer `except Exception` | T1 RED tests | CHARC P1 |
+| Roster row 4a | Test roster | CHARC P1 |
+| AL-9, the linear identity reader, with its revisit trigger | Accepted limitations | CHARC P1 (noted cost) |
+| The NULL-envelope sentence in the reader's docstring | T2 | CHARC P1 text (a) |
+| The AL-2 pointer to K1's second paragraph | AL-2 | CHARC P1 text (b) |
+| `anonymous_fill_matches` compares through `derives_from`, with no comparison of its own | T4 | RD P2 correction 1 |
+| T4-f asserts against a helper-built row, plus a `derives_from` monkeypatch discriminator | T4 RED tests | RD P2 correction 1 |
+| AL-6 restated at its true width (partial flags client-trusted on the first POST; (c) and the refused scan are not) | AL-6 | RD P2 correction 2 |
+
+**Both plan-stage reviews PASSED**, and their clearance attaches to this edited plan. RD's clearance covers the plan at `7b7718fb` plus these corrections; any code-bearing change beyond them re-opens it.
+
+**Owed by the merge report:**
+- RD's line: "the first live exit after merge IS the witness, and RD reads its fill row before any other read quotes it";
+- CHARC's merge-gate list: the B transcript with its five assertions; `git diff --stat <base>..HEAD -- swing/` showing no ADDED file under `swing/`; no migration; empty trailers across the range; the two T9 census outputs quoted with their commands; the D73-shape helper visible in the diff.
+
+**Executing:** needs the operator's word. The recommended cell is `implementer-opus-high`; both directors concur.

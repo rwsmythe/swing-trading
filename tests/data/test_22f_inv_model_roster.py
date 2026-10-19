@@ -25,6 +25,12 @@ three roster members named by ``triage.py`` rather than by the pattern
 (``NAME_LISTED``) are checked for existence only.  A NEW raising validator
 lands in neither list and turns this RED: its author must classify it.
 
+LATER-ARC ADDITIONS.  ``ROSTER`` stays exactly the pinned 118; a raising
+validator an arc ADDS after the pin is classified by that arc in
+``LATER_ARC_ROSTER`` (same ``persisted``/``computed`` vocabulary, each entry
+with the arc and the constructing site in a comment), and the closure reads
+the union.
+
 DECLARED BOUND (a limit, not an exemption): the ``UNREACHED`` reasons are
 verified by the census instrument (``escape_census.py``, outside the repo) at
 commit time, not by this test.  This test proves MEMBERSHIP, not
@@ -171,6 +177,15 @@ ROSTER: dict[str, str] = {
     "web.view_models.watchlist.WatchlistVM.__post_init__": "computed",
 }
 
+# Raising validators ADDED after the pinned triage (see the module docstring).
+LATER_ARC_ROSTER: dict[str, str] = {
+    # D79 T4: built only by `exit_auto_fill.exit_record_flags` from the exit
+    # POST's typed values and the submitted map (computed, never from a DB
+    # row); reached from the web exit POST only (the CLI `trade exit` formats
+    # the value-tuple text directly and never constructs the flag).
+    "trades.exit_auto_fill.ExitRecordFlag.__post_init__": "computed",
+}
+
 UNREACHED: dict[str, str] = {
     "cli._validate_diagnose_db_path": _UNREACHED_REASON,
     "data.models.EntryIntentAttestation.__post_init__": _UNREACHED_REASON,
@@ -275,6 +290,9 @@ def test_roster_and_unreached_are_well_formed() -> None:
     assert len(UNREACHED) == 53
     assert set(ROSTER.values()) <= {"persisted", "computed"}
     assert not set(ROSTER) & set(UNREACHED)
+    assert set(LATER_ARC_ROSTER.values()) <= {"persisted", "computed"}
+    assert not set(LATER_ARC_ROSTER) & (set(ROSTER) | set(UNREACHED))
+    assert _pattern_members(LATER_ARC_ROSTER) == set(LATER_ARC_ROSTER)
     assert NAME_LISTED <= set(ROSTER)
     assert set(ROSTER) - _pattern_members(ROSTER) == NAME_LISTED
     assert _pattern_members(UNREACHED) == set(UNREACHED)
@@ -283,7 +301,8 @@ def test_roster_and_unreached_are_well_formed() -> None:
 
 def test_every_roster_and_unreached_key_resolves_to_a_real_function() -> None:
     _raising, every = _walk()
-    stale = sorted((set(ROSTER) | set(UNREACHED)) - every)
+    stale = sorted((set(ROSTER) | set(UNREACHED) | set(LATER_ARC_ROSTER))
+                   - every)
     assert not stale, (
         "roster/UNREACHED entries that no longer name a function in swing/ "
         f"(remove or re-point them): {stale}")
@@ -291,13 +310,16 @@ def test_every_roster_and_unreached_key_resolves_to_a_real_function() -> None:
 
 def test_raising_validator_set_equals_roster_union_unreached() -> None:
     raising, _every = _walk()
-    declared = _pattern_members(ROSTER) | set(UNREACHED)
+    declared = (_pattern_members(ROSTER) | set(UNREACHED)
+                | set(LATER_ARC_ROSTER))
     unclassified = sorted(raising - declared)
     no_longer_raising = sorted(declared - raising)
     assert not unclassified, (
-        "NEW raising validator(s) in neither ROSTER nor UNREACHED -- classify "
-        "each (persisted with its CHECK/trigger quote, or computed -> FND-4; "
-        f"or UNREACHED with the census reason): {unclassified}")
+        "NEW raising validator(s) not classified -- ROSTER is the pinned 118 "
+        "and is never extended; classify each into LATER_ARC_ROSTER "
+        "(persisted with its CHECK/trigger quote, or computed -> FND-4), with "
+        "the adding arc and the constructing site in a comment, or into "
+        f"UNREACHED with the census reason: {unclassified}")
     assert not no_longer_raising, (
         "declared validator(s) that no longer raise (or no longer match the "
         f"pattern): {no_longer_raising}")

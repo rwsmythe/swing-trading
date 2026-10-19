@@ -346,21 +346,21 @@ def test_full_arc_get_then_post_persists_schwab_auto_exit_fill(
         assert anchor_dict["exit_date"] == "2026-05-19"
         assert anchor_dict["schwab_instrument_symbol"] == "AAPL"
         assert anchor_dict["candidate_count"] == 1
-        # Defense-in-depth: single-fill case (length-1 candidates list)
-        # MUST NOT emit per-candidate hidden inputs or the radio fieldset
-        # per the template gate `{% if vm.auto_fill_candidates|length > 1 %}`.
-        # Mirrors test_exit_form_auto_fill.py::test_a negative-assertion.
-        assert 'candidate_signature_hash_' not in body, (
-            "single-fill case must not emit per-candidate hidden inputs"
-        )
+        # Single-fill case (length-1 candidates list): no radio fieldset
+        # (the template gate `length > 1`), but the index-0 per-candidate
+        # hidden inputs DO travel (D79, RD K3 precondition (4); superseded by
+        # replacement: this used to assert they were absent).
+        # Mirrors test_exit_form_auto_fill.py::test_a.
+        assert 'name="candidate_signature_hash_0"' in body
         assert 'type="radio"' not in body, (
             "single-fill case must not render radio fieldset"
         )
 
-        # Step 4 -- POST form unchanged. Single-fill case: no per-candidate
-        # hidden inputs, no candidate_index. POST handler's selected_index
-        # falls through to None (per route line ~1891), so the persisted
-        # envelope carries no selected_candidate_* provenance fields.
+        # Step 4 -- POST form unchanged, submitted BARE (no per-candidate
+        # hidden inputs, no candidate_index). D79 (RD K3 precondition (4)):
+        # the POST infers the selection server-side from the one-entry
+        # candidates_map, so the persisted envelope DOES carry the
+        # selected_candidate_* provenance fields.
         payload = {
             "exit_date": "2026-05-19",
             "exit_price": "120.50",
@@ -406,23 +406,20 @@ def test_full_arc_get_then_post_persists_schwab_auto_exit_fill(
     assert fill_row is not None, "exit fill should be persisted"
     assert fill_row[0] == "schwab_auto"
     # Original envelope keys round-trip verbatim through the POST handler's
-    # provenance-stamping branch. Single-fill case: no per-candidate hidden
-    # inputs were emitted (template gate at length > 1), so the POST
-    # handler's selected_index stays None and the persisted envelope does
-    # NOT carry selected_candidate_* provenance fields (per route logic at
-    # ~lines 1886-1962). T-B.2.3 test_a synthesizes the multi-partial-shaped
-    # hidden inputs to exercise the provenance-stamping branch; this E2E
-    # exercises the genuine GET -> POST round-trip flow.
+    # provenance-stamping branch, and the single candidate is stamped as the
+    # selection (D79, RD K3 precondition (4); superseded by replacement: this
+    # used to assert NO selected_candidate_* fields for the single-fill case).
     persisted = json.loads(fill_row[1])
     original = json.loads(anchor_json)
     for k, v in original.items():
         assert persisted[k] == v, (
             f"original envelope key {k!r} must round-trip verbatim"
         )
-    assert "selected_candidate_signature_hash" not in persisted, (
-        "single-fill GET emits no per-candidate hidden inputs, so POST "
-        "handler should not stamp selected_candidate_signature_hash"
-    )
+    [only_sig] = original["candidates_map"]
+    assert persisted["selected_candidate_signature_hash"] == only_sig
+    assert persisted["selected_candidate_order_id"] == (
+        original["candidates_map"][only_sig]["order_id"])
+    assert persisted["other_candidate_signature_hashes"] == []
     assert fill_row[2] is None, (
         "operator_corrected_value_json must be NULL on unchanged submit"
     )
