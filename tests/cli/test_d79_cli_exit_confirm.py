@@ -137,3 +137,25 @@ def test_t8d_cli_flag_output_survives_the_real_cp1252_encoder(tmp_path):
     assert "UnicodeEncodeError" not in err, err
     assert proc.returncode == 1, (out, err)
     assert f"#{fid}" in out + err
+
+
+def test_ra06_cli_every_printed_fill_id_must_be_confirmed(tmp_path):
+    """RA-06 (Reviewer A round 2), orchestrator K5 (CLI form): TWO matching
+    anonymous fills. Confirming either id alone refuses and records
+    nothing; confirming both records. NULL killed: accepting ANY one of
+    several printed ids."""
+    runner, cfg = _setup(tmp_path)
+    _entry(runner, cfg)
+    first = _plant_anonymous_exit(_db(tmp_path))
+    second = _plant_anonymous_exit(_db(tmp_path))
+    asked = runner.invoke(main, _args(cfg))
+    assert asked.exit_code == 1, asked.output
+    assert f"#{first}" in asked.output and f"#{second}" in asked.output
+    for one in (first, second):
+        r = runner.invoke(main, _args(cfg, "--confirm-duplicate", str(one)))
+        assert r.exit_code == 1, r.output
+        assert _exit_fill_count(_db(tmp_path)) == 2
+    ok = runner.invoke(main, _args(cfg, "--confirm-duplicate", str(first),
+                                   "--confirm-duplicate", str(second)))
+    assert ok.exit_code == 0, ok.output
+    assert _exit_fill_count(_db(tmp_path)) == 3
