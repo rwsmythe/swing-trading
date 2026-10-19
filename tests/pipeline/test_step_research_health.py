@@ -677,8 +677,40 @@ def test_step_passes_live_run_asof_from_ledger_row_and_warnings(
     assert seen["live_run"] != "ABSENT"
     asof, passed = seen["live_run"]
     assert asof == "2026-09-14"          # the row's own value, read by run_id
-    assert passed == warns               # the in-memory run_warnings
+    assert passed is warns               # the very run_warnings list object (B-2)
     assert seen["snapshot"] == ("2026-09-14", [_SKIP])
+
+
+def test_step_live_asof_is_selected_by_run_id_not_by_warning_or_latest(
+    tmp_path, monkeypatch,
+) -> None:
+    # Reviewer B-1. Only ONE state='running' row can exist (partial unique index
+    # ux_pipeline_one_running), so the "other" row is a later, higher-id
+    # state='failed' row. The step runs under the NON-latest id; the warning's
+    # observation_date differs from BOTH row dates. Only a read of the run's OWN
+    # row by run_id yields 2026-09-14: taking the date from run_warnings[0]
+    # gives 2026-09-01, taking the latest row gives 2026-09-30.
+    db = tmp_path / "swing.db"
+    _seed_green_db(db)
+    _seed_pipeline_run(db, 500)   # state='running', data_asof_date='2026-09-14'
+    conn = ensure_schema(db)
+    conn.execute(
+        "INSERT INTO pipeline_runs (id, started_ts, trigger, data_asof_date,"
+        " action_session_date, state, lease_token) VALUES"
+        " (600, '2026-10-01T00:00:00', 'manual', '2026-09-30', '2026-10-01',"
+        " 'failed', 'tok-other')")
+    conn.commit()
+    conn.close()
+    _patch_artifact(tmp_path, monkeypatch)
+    exports_dir = tmp_path / "exports"
+    _seed_fresh_manifest(exports_dir / "research")
+    seen = _spy_compute(monkeypatch)
+    warns = [{**_SKIP, "observation_date": "2026-09-01"}]
+
+    runner._step_research_health(
+        cfg=_Cfg(db, exports_dir), run_id=500, run_warnings=warns)
+
+    assert seen["live_run"][0] == "2026-09-14"
 
 
 def test_step_live_run_warnings_default_to_empty_list(tmp_path, monkeypatch) -> None:
