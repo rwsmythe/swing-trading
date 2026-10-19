@@ -258,9 +258,9 @@ def sentinel_registered() -> Any:
     the sentinel as ``access_token``, and the success path registers it. Run
     alone, or first on an xdist worker, the test red deterministically (the
     Phase-12 bundle-B report's item 2). Registering it here makes the
-    precondition the test's own. The registry is process-global and
-    never-narrowed in production, so the prior contents are restored in place
-    at teardown (the snapshot/restore shape of the ladder-integration tests).
+    precondition the test's own. The registry is a process-global set
+    (``client.py:80``), so the prior contents are restored in place at
+    teardown (the snapshot/restore shape of the ladder-integration tests).
     """
     from swing.integrations.schwab import client as schwab_client_module
     from swing.integrations.schwab.client import register_schwab_secrets
@@ -281,9 +281,10 @@ def test_setup_auth_failure_audit_status_and_sentinel_redaction(
     auth_failed, sentinel bytes never appear in stdout OR audit row error.
 
     DISCRIMINATING per plan: an unredacted implementation that interpolates
-    the exception arg verbatim would fail this test. The sentinel is a
-    secret the process has already seen (``sentinel_registered``), which is
-    the state production's Layer-0 redaction depends on.
+    the exception arg verbatim would fail this test. The sentinel's
+    underscores defeat both Layer-1 regexes (``client.py:116-128``), so only
+    a registered secret is redacted, and this test registers it
+    (``sentinel_registered``).
     """
     sentinel = _SENTINEL_ACCESS_TOKEN  # would-be leaked bytes
     _patch_schwabdev(
