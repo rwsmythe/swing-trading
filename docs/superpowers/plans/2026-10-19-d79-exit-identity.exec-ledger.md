@@ -187,6 +187,7 @@ Author of this section: cell 3. Tier `strong`, cold-audit form with repo access:
 | 1 | `c55b55b8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (403,744) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 1 | 3 new / 0 reopened | 0 | 378,356 (cell 3 at return; retired) |
 | 2 | `cb452050` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (954,070) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 5 | 8 new / 0 reopened | 0 | 301,169 (cell 4 at return; resumed) |
 | 3 | `084c9a3a` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (629,503) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 2 | 5 new / 0 reopened | 0 | 371,037 (cell 4 at return; retired) |
+| 4 | `33a3bfa2` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (440,564) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 1 | 3 | 4 new / 0 reopened | 0 |  |
 
 Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
 
@@ -344,3 +345,65 @@ Round 3: 3 majors, all new, none reopened, no reverts. Not converged.
 > **Orchestrator ruling, D79 executing Fork D79-A-01 (2026-10-19).** **Branch B.** A claimed envelope that carries a `candidates_map` and no selection is NOT synthesized. Its selected entry IS the unique map entry whose `order_id` equals the top-level `schwab_order_id` and whose values derive from the top-level quartet at the ONE grain (`derives_from`; no second comparator). That entry is then treated exactly as a picked candidate: its map-side flags (`possible_duplicates`) are asked; its order id scopes the flag identities; and the persisted envelope stamps its map key as `selected_candidate_signature_hash`, its order id as `selected_candidate_order_id`, and the other keys as `other_candidate_signature_hashes`. With zero or several such entries, the POST gets the Fork 3 G1 response: 400, the refresh notice, the fresh anchor, the typed values kept, nothing recorded. The Fork 2 synthesis remains ONLY for the map-less, no-selection shape, and the comment at the one synthesis site says so. This narrows Fork 2 by replacement a second time, after Fork RA-02. Reason: branch A builds one entry from two sources, values from the top level and flags from the map, which must then be kept in agreement; branch B reads one source, the map entry. That is the direction the route already took for the order id (Codex R2 Major #2: "Reading ONE source") and the direction of RD's K3 precondition (4): a confirmation with no selected id is anonymous. Under branch A, the no-radio multi-entry confirm would still persist no selected hash. Under branch B it persists the default it showed. Required RED test, the cell's: a default o2 carrying a possible partial, submitted with the radio omitted, returns 400 with the partial asked and no fill. Also required: T6-h, the bare multi-entry shape, is re-run. Its three legs and its confirm leg are expected green unchanged, because the resolved entry equals the quartet it used to synthesize. A red there is classified SUPERSEDED (named) or REGRESSION. Any other red from the change is found by a run of `tests/web/test_routes/` and classified the same way.
 
 Author of the sections above: orchestrator.
+
+## Cell 5 (implementer-opus-high, dispatched off `df7a74e7`)
+
+Author of this section and of the round-4 records below: cell 5.
+
+| Commit | Item | Note |
+|---|---|---|
+| `38dfca51` | D79-A-01 | Fork D79-A-01 branch B: a map-bearing claim with no selection resolves to the unique map entry whose `order_id` equals the top-level id and whose values the top-level quartet derives from; it is a picked candidate (flags asked, identities scoped, hashes stamped, the re-render checks its radio); zero or several -> the G1 re-confirm; synthesis only for the map-less no-selection shape, its comment rewritten by replacement. RED, all four red before: the ruled partial case (radio omitted, and again with no candidate inputs: 200 -> 400 asking `possible_partial\|o2\|F`, its confirm stamping o2), the unedited radio-omitted stamping, zero matches (top-level o9), several matches (a client-edited map with two keys carrying o2's identical entry; the POST never recomputes a key, so the map CAN carry them). T6-h and its confirm leg green UNCHANGED. 1 SUPERSEDED (named in the body), no regression |
+| `9e83c421` | D79-A-02 | `_exit_values_well_formed` catches `OverflowError` -> not well formed; RED at both callers (tier (d), the selected-entry check), each a 500 before |
+| `cbb44c82` | D79-A-03 | the "exceeds" bound is `req.shares > trade.current_size` (no `float(req.shares)`), same text; RED: a helper test and a route caller test, both `OverflowError` before |
+| `6268fabd` | D79-A-04 | the F1 comparator comment names the `isclose` grain; the prose re-grep's hits are listed in the body |
+| `33a3bfa2` | D79-A-05 | the `candidate_orders` fallback and its write-only collection removed; the retention drop's coverage paragraph and the presence comment rewritten by replacement; two more stale `candidate_order_id_<i>` comments fixed (the route signature comment, `build_exit_form_vm`) |
+
+- **A-01 supersession** (`tests/web/test_routes/` in full, 1189 passed after the rewrite): SUPERSEDED, rewritten by replacement: `test_exit_post_audit_columns.py::test_b_review_major1_present_but_empty_candidates_map_drops_the_order_id`, now `..._is_reconfirmed`. Encoding 18 below is why. REGRESSION: none.
+- **Encodings cell 5 made without a fork** (round 4's prompt carried each, challenge invited; round 4 raised none of them):
+  18. "Carries a `candidates_map`" is KEY PRESENCE (the retention rule's own test), so a no-selection claim with an EMPTY map resolves to zero entries and re-confirms instead of recording with the id dropped.
+  19. The resolved entry's `other_candidate_signature_hashes` are the other MAP keys (the bare shape sends no per-candidate inputs); a picked candidate's stay the other submitted hashes.
+  20. The resolution compares the top-level id with `==` after `.get`, so a null or absent top-level id matches an entry with no order id. `resolve_exit_auto_fill` writes both from the same chosen candidate, and such an entry links nothing (a non-string or blank selected id pops the top-level id).
+  21. The POST no longer collects `candidate_order_id_<i>` (its only reader was the removed fallback); the template still emits the inputs.
+- Full fast suite on `33a3bfa2`, read off the saved output: **15475 passed, 13 skipped, 0 failed** (1019.20 s) = 15467 + the 8 new tests. `ruff check swing/` clean; `%(trailers)` empty across `618d7b04..HEAD`; no added file under `swing/`; nothing under `swing/data/`.
+
+### Round 4
+
+Same form: `codex exec -p strong -s read-only --skip-git-repo-check -` from the worktree, runner `~/d79r4/run_r4.sh` (literal paths; `file` reports ASCII; the output and exit files pre-created). The prompt was rebuilt on `33a3bfa2`:
+- the claim list rewritten for D79-A-01 (item 3), A-02 (item 8) and A-03 (item 1);
+- the envelope; AL-1..AL-9 with their reasons;
+- SEVEN rulings (exec ledger lines 1-179, 206-218, 293-295 and 344; the D79-A-01 ruling under a neutral heading);
+- choices 1-4 and 6-21, challenge invited;
+- the `618d7b04..HEAD` diff with this ledger excluded, and no prior finding text.
+
+- **Attempt 1 DID NOT COUNT (capacity abort):** exit 1, 1,037,635 bytes, two `^ERROR: Selected model is at capacity`, footer 229,482, NO verdict token. Preserved as `review-r4-attempt1-capacity.txt` with `exit-r4-attempt1.txt`. Re-run after a five-minute wait.
+- **Attempt 2 COUNTS:**
+  - banner `model: gpt-5.6-sol`, `reasoning effort: high`, equal to `~/.codex/strong.config.toml` (`model = "gpt-5.6-sol"`, effort `high`);
+  - `^ERROR` 0; `^tokens used` 1 (440,564);
+  - `^NEW_CRITICAL_MAJOR_FOUND` 2 (the CLI's double emission), `^NO_NEW_CRITICAL_MAJOR` 0;
+  - exit file 0, written after codex returned, and no `codex exec` process alive when the transcript was read.
+- **Prior-findings reach: none.** The hits for the forbidden names are prose: the prompt echo, one diff line, and `docs/orchestrator-context.md` text Codex read. Its one search command excluded the `*review*` and `*findings*` globs. The response says no prohibited artifact and not the ledger was opened. **Content-filter events:** none ("The prompt was not rewritten or refused").
+- **Evidence:** `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\` holds `review-r4.txt` (1,474,226 bytes), `prompt-r4.md` (417,985 bytes), `exit-r4.txt`, and the disqualified attempt, copied once the assertions passed.
+- **Spend:** counted rounds 403,744 + 954,070 + 629,503 + 440,564 = **2,427,881**. Disqualified attempts burned a further 205,483 (round 3) and 229,482 (round 4).
+
+### Round 4 adjudication (premises re-checked at `33a3bfa2`)
+
+- **A-F01 (major, tagged [OUT-OF-ENVELOPE] by the reviewer): ACCEPTED as real; ROUTED for a scope ruling, not fixed.**
+  - The defect, verified by read: `record_exit` COMMITs (`swing/trades/exit.py:583`) and only then computes `compute_realized_pnl`, `compute_initial_risk_per_share` and `compute_r_multiple` (`:588-605`). `get_trade`'s mapper (`swing/data/repos/trades.py:827-855`) passes `entry_price` and `initial_stop` through unconverted. Both columns are `REAL NOT NULL` with no type CHECK, so a TEXT value is storable (SQLite keeps an unconvertible string in a REAL column as TEXT; RA-01 measured the same for `fills`). The math then raises `TypeError` AFTER the exit is durable. The route's 22-F guard sees `result is None` and re-raises, and the CLI likewise reports failure: the operator is told a durable exit failed, which is the double-exit direction. `r_multiple`'s own `ValueError` is unreachable (`rps > 0` and `shares >= 1`).
+  - **Pre-arc:** `618d7b04:281-298` carries the identical post-commit math. The arc rewrote the transaction around it and left it after `commit`.
+  - **Envelope:** the reviewer tags it out of envelope, but the code a fix would change is `record_exit`'s transaction shape, inside CHARC's K1 carve-out.
+  - **Branch A (fix in the carve-out):** compute the three metrics inside the `try`, before `conn.commit()`, so a raise there takes `_rollback_or_raise` like any other in-transaction failure; only the `ExitResult` construction stays after the commit. RED: plant `trades.entry_price = 'bad'` by raw UPDATE and call `record_exit`. Before the fix it raises after COMMIT with one exit fill; after it, it raises with zero. Cost: about ten moved lines and no new read. The "post-commit; pure math" comment is rewritten by replacement.
+  - **Branch B (BANK):** the defect predates the arc and is premised on a TEXT value in a REAL column. A service-prevention citation needs the writer enumeration WITH its search, plus the live incidence, and this cell cannot complete either:
+    - the static writers include two dynamic-SQL updaters whose value types must be read: `swing/data/repos/trades.py:965` (a `set_clauses` builder) and `swing/trades/reconciliation_auto_correct.py:2350` (the PRAGMA-allowlist corrector);
+    - the incidence is a data read outside this cell's authorization: `SELECT typeof(entry_price), typeof(initial_stop), COUNT(*) FROM trades GROUP BY 1, 2`, `mode=ro`.
+    - Proposed owner: the orchestrator. Proposed trigger: the next arc with a `record_exit` carve-out.
+  - The cell does not choose. Its lean, for the record: A. The 22-F guard's contract ("once `record_exit` RETURNS the exit is DURABLE") assumes the converse as well, and a raise after COMMIT breaks it on a path the arc's own transaction rewrite owns.
+- **A-F02 (minor): ACCEPTED, to fix without a round.** Verified: `_exit_values_well_formed` (`routes/trades.py:2493-2495`) checks only `isinstance(shares_value, int)`, so a `closed_shares` or a selected entry's `quantity` of `10**400` is well formed. That contradicts the predicate's new docstring sentence and round 4's claim 8 (the cell wrote claim 8 too broadly). Downstream it reaches a different 400 (the resolution's zero-match re-confirm, or F1 through `derives_from`'s caught overflow), never a 500. But a tampered selected entry could persist a huge `closed_shares` in the audit envelope after a confirmed F1. Fix: the quantity gets the same `float()` / `OverflowError` / finiteness test; RED at both callers.
+- **A-F03 (minor): ACCEPTED, to fix without a round.** Every site verified:
+  - `routes/trades.py:2991-2992` (the reviewer cited `:2986`, the start of the block): the omitted-radio comment still says "takes the Fork 2 synthesis". This cell's A-01 re-grep searched the route for the fallback prose, not for "synthesis".
+  - `tests/web/test_routes/test_d79_exit_identity.py`: T6-h's name and docstring and its confirm leg's name ("synthesizes the default"), and RA-03's docstring (`:514`).
+  - plan `:335`: T6-g's first leg still says it returns the F1 flag, superseded by Fork 3 (G1).
+  - `trade_exit_form.html.j2:102-106`: the comment still says `candidate_order_id_<i>` lets the POST check the selection. This cell's A-05 re-grep covered the route and the view model, not the template.
+  - The test renames are a naming change only, to land apart from any behaviour change.
+- **A-F04 (minor): ACCEPTED, test to add.** Verified: T1-a (`tests/trades/test_d79_record_exit_txn.py:170`) spies only `get_trade` and passes no envelope. A caller-held check moved after `_normalize_trade_event_date_to_iso` and `canonical_envelope_identity` (`exit.py:464-475`) but before `get_trade` would still pass it. Add a caller-held call carrying an envelope, with the authority spied, asserting `CallerHeldTransactionError` and zero authority calls.
+
+Round 4: 1 major (A-F01, routed), 3 minors, all new, none reopened, no reverts. Not converged. Per the brief this is the last round before the round-5 check-in, so no round 5 is started.
