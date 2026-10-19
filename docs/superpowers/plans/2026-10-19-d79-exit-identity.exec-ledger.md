@@ -734,3 +734,30 @@ Retro-check of the #39 citation valve: RA-01 (a stored fill price) and A-F01 (a 
   - If CHARC rules a fix that changes behaviour the loop examined, a self-sweep and ONE confirming round follow. Otherwise the outcome is **stopped-and-routed**, and the merge report says so.
 
 Author of the sections above: orchestrator, except the block quote (CHARC).
+
+### CHARC's rulings on Forks R7-01 and R7-02 (2026-10-19T11:36:02Z; CHARC author, orchestrator courier)
+
+Transcribed as a literal block quote of the message body in `comms/orchestrator/inbox/20261019T113602Z-charc-d79-r7-ruled-r7-01-c-r7-02-b-one-banked.md`, copied mechanically.
+
+> CHARC RULINGS, D79 executing round 7 (R7-01, R7-02). PRIMARY: CHARC on both. Verified on d79-exec: `_normalize_trade_event_date_to_iso` is DEFINED in exit.py:99 and IMPORTED by entry.py:1172 (and named by entry_date_correction.py:1206) -- shared, as you say; the third refusal is `if not (req.exit_price > 0)` at exit.py:397; Python: `date.fromisoformat("20261019")` and `"2026-W01-1"` both parse, `float("inf") > 0` is True, `math.isfinite(inf)` is False. Live incidence zero on all three counts (your mode=ro reads). The stop classification under branch 2 is CORRECT: both are pre-arc in class, neither is a residual of the loop's fixes nor behaviour this arc introduced. No counted round 8. Transcribe as block quotes with CHARC as author.
+>
+> R7-01 -- RULING: BRANCH C, accepted as AL-11, with the shared-helper fix BANKED. Reasons: A would give exit a stricter date grammar than entry through one shared helper -- the two-path divergence class by construction; B widens a STOPPED loop's envelope onto the entry path, which no round of this loop reviewed. The AL text names the consequence, not just the acceptance: a compact or week date stores as e.g. `20261019T16:00:00`, which the `substr(fill_datetime, 1, 10)` date matches downstream (tos_import reconciliation, journal close-date aggregation) read as a different day -- the same family the normaliser was written to prevent. Cross-reference: my register already holds this FACT as D80 instance (f) (2026-10-18: the D81 brief named `"20261016"` as non-canonical and the cell measured that 3.14 parses it). I recorded it as my method slip and not as the helper's defect; the reviewer has now made it the defect. The bank carries that provenance.
+>
+> R7-02 -- RULING: BRANCH B, accepted as AL-12, banked with R7-01 as ONE item. The fix is one predicate (`math.isfinite(x) and x > 0`) in the third refusal's fixed position, but it changes examined behaviour and one of Fork 1's fixed texts at a stopped loop, so it costs a self-sweep and a confirming round (~450K) for an operator-typed `"inf"` with zero live incidence on a pre-arc predicate the entry path shares in class. The AL text states the domain as the code measures it (D80's method): "the third refusal admits an infinite price: `> 0` is true of `inf`; NaN is refused; `fills.price CHECK (price > 0)` stores `inf`." The six-refusal contract of `check_exit_preconditions` is unchanged.
+>
+> THE BANKED ITEM (D86, mine, written at the next charter touch beside D85): "THE TRADE-EVENT INPUT DOMAIN IS WIDER THAN ITS CONTRACT AT BOTH RECORD SERVICES: the shared normaliser accepts compact and week ISO forms (D80 (f)); the price refusals accept `inf`. One fix at the shared helper and at `record_entry` / `record_exit` together, never one side alone (two-path divergence)." Owner CHARC. Trigger: the next `swing/trades/` carve-out, or the D39 sweep (which already touches both services' transaction helpers), whichever first. Its discriminators are the reviewer's own cases: compact date -> typed refusal naming the canonical form; week date likewise; `"inf"` price -> the third refusal; entry and exit each.
+>
+> OUTCOME: D79 is STOPPED-AND-ROUTED at round 7 under the bounded rule's branch 2 -- stated in those words in the ledger and the merge report, never "converged". Routed items: R7-01 (AL-11 + D86), R7-02 (AL-12 + D86), both to CHARC, both dispositioned here. SS-1..SS-8 stay uncounted and quoted beside the seven rounds. Proceed: the full suite on the final head (read the result; the earlier 5-red-under-load tree is not green until reproduced and classified, as you said), Reviewer B's cold audit, the operator-witnessed T9 browser check (step by step), the two census queries with the CORRECTED census-4 SQL (the plan's `oid` alias reads as the rowid), the return report, then my merge gate as listed in the brief's section 4 plus the round-6 additions. Read my depth before the gate: 335K now; if the return lands past the trigger, the gate is the successor's and `docs/charc-state.md` @ 51ee7147 already carries the list.
+>
+> Nothing else open on my seat for round 7.
+
+### D79 review OUTCOME: STOPPED-AND-ROUTED at round 7
+
+Under the bounded rule's branch 2, confirmed by CHARC. This is never "converged".
+- Seven counted rounds; counted spend 3,793,351 tokens (plus 434,965 in disqualified capacity attempts).
+- The self-sweep SS-1..SS-8 is uncounted.
+- Routed items: R7-01 (AL-11 plus D86) and R7-02 (AL-12 plus D86), both ruled by CHARC.
+- Banked items: RA-07 and R5-06 (owner: orchestrator); D85 and D86 (owner: CHARC).
+- AL-11 and AL-12 are added to the plan by the orchestrator, in this commit, from CHARC's text.
+
+Author of the frame and the outcome: orchestrator. Author of the block quote: CHARC.
