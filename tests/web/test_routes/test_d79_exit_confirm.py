@@ -652,6 +652,9 @@ def test_al6_first_post_client_trust_width(world, case):
         r_present = _post(tc, world.tid, fd)
         assert r_present.status_code == 400, r_present.text[:500]
         assert _acks(r_present.text) == [f"{reason}|o1|{fid}"]
+        if case == "entered_date_value_tuple":  # R5-03's text
+            assert "the order's ENTERED date" in _text(r_present)
+            assert "These values match" not in _text(r_present)
         assert len(_exit_rows(world.cfg)) == 1  # the planted F alone
         entry["possible_duplicates"] = []
         r_stripped = _post(tc, world.tid, dict(

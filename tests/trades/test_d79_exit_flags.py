@@ -382,3 +382,30 @@ def test_r502_a_fill_named_by_both_sources_is_one_flag_under_the_db_identity():
     flags = _flags(("2026-05-20", 130.0, 4), selected=s1, selected_id="o1",
                    cmap={"h1": s1, "h2": O2}, anonymous=anon)
     assert [f.identity for f in flags] == [f"{FLAG_VALUE_TUPLE}|7"]
+
+
+
+def test_r503_an_entered_date_match_says_so_and_never_these_values_match():
+    """R5-03 (RD's Fork R5-01 ruling): a map value-tuple item whose date is
+    NOT the selected entry's (execution) date matched on the order's
+    ENTERED date. Its text says the price and quantity match and that the
+    fill's date is the order's ENTERED date -- never "These values match",
+    which is false when the typed date is the execution date. An item on
+    the execution date keeps the value-tuple text. PRE-FIX: both rendered
+    "These values match recorded fill #N"."""
+    entered = {"fill_id": 7, "date": "2026-05-19", "price": 130.0,
+               "quantity": 4.0, "reason": DUP_REASON_VALUE_TUPLE}
+    executed = dict(entered, fill_id=8, date="2026-05-20")
+    s1 = dict(O1, possible_duplicates=[entered, executed])
+    flags = _flags(("2026-05-20", 130.0, 4), selected=s1, selected_id="o1",
+                   cmap={"h1": s1, "h2": O2})
+    by_id = {f.identity: f.text for f in flags}
+    assert set(by_id) == {f"{FLAG_VALUE_TUPLE}|o1|7",
+                          f"{FLAG_VALUE_TUPLE}|o1|8"}
+    text7 = by_id[f"{FLAG_VALUE_TUPLE}|o1|7"]
+    assert "These values match" not in text7
+    assert "order o1's price and quantity" in text7
+    assert "the order's ENTERED date" in text7
+    assert "fill #7 (2026-05-19 at 130.00 x 4)" in text7
+    assert by_id[f"{FLAG_VALUE_TUPLE}|o1|8"].startswith(
+        "These values match recorded fill #8")

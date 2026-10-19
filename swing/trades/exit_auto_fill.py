@@ -1962,6 +1962,15 @@ _VALUE_TUPLE_TEXT = (
     "{qty:g}), which carries no broker order id. Confirm only if this is a "
     "different fill."
 )
+# A map value-tuple item dated on the order's ENTERED date, not its
+# execution date (R5-03, RD's Fork R5-01 ruling): the typed values are dated
+# the execution date, so "These values match" would state a false equality.
+_VALUE_TUPLE_ENTERED_TEXT = (
+    "Recorded fill #{fill_id} ({date} at {price:.2f} x {qty:g}), which "
+    "carries no broker order id, has order {order}'s price and quantity, "
+    "and its date is the order's ENTERED date. Confirm only if this is a "
+    "different fill."
+)
 _PARTIAL_TEXT = (
     "Possible partial of this order: fill #{fill_id} ({date} at {price:.2f} "
     "x {qty:g}). Confirm only if fill #{fill_id} is not part of order "
@@ -1975,8 +1984,8 @@ _UNREADABLE_TEXT = (
 #: Every flag-text template BY NAME; a test closure-checks this roster
 #: against a static walk of the module's ``_*_TEXT`` names.
 FLAG_TEXT_TEMPLATES: tuple[str, ...] = (
-    "_F1_OTHER_TEXT", "_F1_NONE_TEXT", "_VALUE_TUPLE_TEXT", "_PARTIAL_TEXT",
-    "_UNREADABLE_TEXT",
+    "_F1_OTHER_TEXT", "_F1_NONE_TEXT", "_VALUE_TUPLE_TEXT",
+    "_VALUE_TUPLE_ENTERED_TEXT", "_PARTIAL_TEXT", "_UNREADABLE_TEXT",
 )
 
 
@@ -2186,10 +2195,18 @@ def exit_record_flags(
             continue
         try:
             if reason == DUP_REASON_VALUE_TUPLE:
-                map_value_tuple_items.append((fill_id, _VALUE_TUPLE_TEXT.format(
+                # The resolver matches a value tuple on the candidate's
+                # execution date (the entry's own ``date``) or on its order's
+                # ENTERED date; an item dated otherwise than the entry is the
+                # entered-date match, and its text says so (R5-03).
+                template = (
+                    _VALUE_TUPLE_TEXT
+                    if item.get("date") == selected_entry.get("date")
+                    else _VALUE_TUPLE_ENTERED_TEXT)
+                map_value_tuple_items.append((fill_id, template.format(
                     fill_id=fill_id, date=item.get("date"),
                     price=float(item.get("price")),
-                    qty=float(item.get("quantity")))))
+                    qty=float(item.get("quantity")), order=order_label)))
             else:
                 partial_items.append((fill_id, _PARTIAL_TEXT.format(
                     fill_id=fill_id, date=item.get("date"),
