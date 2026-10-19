@@ -27,7 +27,10 @@ the pre-fix holders hold until the test releases them (``_PRE_FIX_HOLD_BOUND``
 is a hang guard, not a duration): a holder that times out on its own while a
 loaded main thread is still on its way to the audit write is the same race
 from the other side. The 1 ms ``busy_timeout`` is the tests' design (the
-pre-fix shape) and is unchanged.
+pre-fix shape) and is unchanged. The post-fix test keeps its holder's 0.5 s
+self-release (that release is its premise), but the holder starts the 0.5 s
+only once the audit connection's BEGIN has started, so a main thread that is
+late to the write still meets the lock instead of passing without contention.
 """
 import sqlite3
 import threading
@@ -84,11 +87,19 @@ class _StubClient:
 
 
 def _external_lock_holder(db: Path, hold_seconds: float, release_evt: threading.Event,
-                          held_evt: threading.Event, errors: list[BaseException]):
+                          held_evt: threading.Event, errors: list[BaseException],
+                          begun_evt: threading.Event | None = None):
     """Hold the SQLite write lock (simulating a candidates/archive/evaluate
     writer) until `release_evt` is set or `hold_seconds` pass, so an audit
     BEGIN IMMEDIATE must wait. `held_evt` is set only once BEGIN IMMEDIATE has
     RETURNED, i.e. once this connection owns RESERVED.
+
+    With `begun_evt` (the post-fix test), the `hold_seconds` countdown starts
+    only once the audit connection's BEGIN has started (`_begin_tracer`), so
+    the audit write always meets the lock. That wait is bounded by `_HELD_WAIT`;
+    on expiry the holder still releases and records the failure in `errors`.
+    At release the holder also records a failure if the audit BEGIN has not
+    started yet, i.e. if it released with no contention.
 
     Any exception raised in this thread is appended to `errors`, and the
     connection is closed in ``finally``. An exception escaping a thread is only
@@ -98,13 +109,37 @@ def _external_lock_holder(db: Path, hold_seconds: float, release_evt: threading.
         conn = open_connection(db, busy_timeout_ms=30000)
         conn.execute("BEGIN IMMEDIATE")  # RESERVED write lock; blocks other writers
         held_evt.set()
-        release_evt.wait(timeout=hold_seconds)
+        if begun_evt is not None and not _await_audit_begin(begun_evt):
+            errors.append(AssertionError(
+                f"the audit connection's BEGIN did not start within {_HELD_WAIT}s"))
+        else:
+            release_evt.wait(timeout=hold_seconds)
+            if begun_evt is not None and not begun_evt.is_set():
+                errors.append(AssertionError(
+                    "the holder released before the audit BEGIN started: no contention"))
         conn.commit()
     except BaseException as exc:  # noqa: BLE001 -- surfaced to the test via `errors`
         errors.append(exc)
     finally:
         if conn is not None:
             conn.close()
+
+
+def _begin_tracer(begun_evt: threading.Event):
+    """A trace callback for the audit connection: sets `begun_evt` when a
+    statement beginning ``BEGIN`` starts. SQLite traces a statement when it
+    starts running, before its busy handler waits; if it traced only after the
+    wait, the post-fix holder would never release on it and that test would
+    fail with ``database is locked`` at its 30 s busy_timeout. The body only
+    sets the event: no SQL, no assertion, no logging."""
+    def _trace(statement: str) -> None:
+        if statement.lstrip().upper().startswith("BEGIN"):
+            begun_evt.set()
+    return _trace
+
+
+def _await_audit_begin(begun_evt: threading.Event) -> bool:
+    return begun_evt.wait(timeout=_HELD_WAIT)
 
 
 def _wait_held(held: threading.Event) -> None:
@@ -200,24 +235,36 @@ def test_forced_finish_lock_leaves_in_flight_row(tmp_path):
 
 def test_post_fix_30s_all_attempts_complete(tmp_path):
     # POST-FIX: 30s busy_timeout + external holder that releases within budget ->
-    # the audit writes drain and complete; no OperationalError.
+    # the audit writes drain and complete; no OperationalError. The holder's
+    # 0.5 s starts only once the audit BEGIN IMMEDIATE has started (traced on
+    # the audit connection), so the drain is exercised however late the main
+    # thread reaches the write.
     db = _db(tmp_path)
     audit_conn = open_connection(db, busy_timeout_ms=30000, check_same_thread=False)
+    begun = threading.Event()
+    audit_conn.set_trace_callback(_begin_tracer(begun))
     release = threading.Event()
     held = threading.Event()
     holder_errors: list[BaseException] = []
     holder = threading.Thread(
-        target=_external_lock_holder, args=(db, 0.5, release, held, holder_errors))
+        target=_external_lock_holder, args=(db, 0.5, release, held, holder_errors),
+        kwargs={"begun_evt": begun})
     holder.start()
     try:
         _wait_held(held)  # the holder owns RESERVED before the audit write starts
-        # Should NOT raise -- waits up to 30s, holder releases at 0.5s.
-        result = marketdata.get_price_history(
-            _StubClient(), audit_conn, "NVDA",
-            period_type="year", period=5, frequency_type="daily", frequency=1,
-            start_dt=None, end_dt=None, surface="pipeline",
-            environment="production", pipeline_run_id=None,
-        )
+        # Should NOT raise -- waits up to 30s, holder releases 0.5s after the
+        # audit BEGIN has started.
+        try:
+            result = marketdata.get_price_history(
+                _StubClient(), audit_conn, "NVDA",
+                period_type="year", period=5, frequency_type="daily", frequency=1,
+                start_dt=None, end_dt=None, surface="pipeline",
+                environment="production", pipeline_run_id=None,
+            )
+        finally:
+            # DID-IT-FIRE, checked even when the call raised: a handshake that
+            # never fired is reported as itself, not as the lock timeout it causes.
+            assert begun.is_set(), "the audit connection's BEGIN was never traced"
         assert result is not None
         rows = audit_conn.execute(
             "SELECT status FROM schwab_api_calls WHERE endpoint='marketdata.pricehistory'"
