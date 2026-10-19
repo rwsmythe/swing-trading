@@ -177,3 +177,19 @@ PY
 ```
 
 Note on census 4 as a reader: `json_extract` is a different reader from the authority (AL-1's reason), so a padded id groups under its padded text there; census 5 is the authority's count.
+
+## Review (Reviewer A)
+
+Author of this section: cell 3. Tier `strong`, cold-audit form with repo access: `codex exec -p strong -s read-only --skip-git-repo-check -` run from the worktree (`/mnt/c/.../.worktrees/d79-exec`), the prompt (brief list + envelope + AL-1..AL-9 with reasons + the four rulings and choices 1-4, 6-16 via this ledger + the `618d7b04..HEAD` diff) on stdin, output to WSL `$HOME/d79r/` (scratch kept OUT of the worktree). Pre-review full fast suite on `c55b55b8`, read off the saved output: **15455 passed, 13 skipped, 0 failed** (945.11 s); `ruff check swing/` clean.
+
+| Round | Head reviewed | Model / effort (asserted) | `^ERROR` | Footer (`tokens used`) | Verdict token | Crit | Major | Minor | New / reopened | Reverts | Depth (orchestrator) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | `c55b55b8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (403,744) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 1 | 3 new / 0 reopened | 0 | |
+
+Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
+
+### Round 1 adjudication
+
+- **D79-A1 (major): ACCEPTED, to fix.** `derives_from` truncates the quantity with `int()`, so a stored anonymous 5.9-share fill "matches" a typed 5-share exit. Verified by execution (`derives_from({..., 'quantity': 5.9}, shares=5)` is `True`). The truncation came over from the pre-arc route comparator, where map quantities are ints by tier (d); the arc newly applies the grain to STORED fills (`fills.quantity REAL NOT NULL CHECK (quantity > 0)`, migration 0014:13) in `anonymous_fill_matches` (route and CLI) and in the service's anomaly sentence. Fix: compare the quantity as a float at the resolver's established `isclose` grain inside `derives_from` and `_differing_fields`, and add a literal 5.9-vs-5 discriminator (T4-f's expected value is computed through `derives_from` itself, so it cannot see this).
+- **D79-A2 (major, tagged [AGAINST-RULING]): ROUTED AS A FORK, not fixed.** The possible-partial and unreadable-envelope identities are `"<kind>|<fill_id>"`, while their texts name the SELECTED order. On a multi-candidate form where two candidates both list fill #F (a possible partial), an operator shown the o1 question can switch the radio and values to o2 and press Confirm; the map is unchanged so d2 passes, and o2's identical `possible_partial|F` is satisfied by the o1 acknowledgement. The same holds for `unreadable_envelope|F` across linked orders. Verified by read (`exit_record_flags` subjects). The fill-id-only subject is the orchestrator-accepted plan-intake encoding ("the partial's fill id"), so changing it is not the cell's call.
+- **D79-A3 (minor): ACCEPTED, to fix without a round.** Supersession residue in `exit_auto_fill.py`: the `PossibleDuplicateFill` docstring and `resolve_exit_auto_fill`'s docs still describe value-tuple-only matching and per-trade recorded ids.
