@@ -186,6 +186,7 @@ Author of this section: cell 3. Tier `strong`, cold-audit form with repo access:
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | `c55b55b8` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (403,744) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 2 | 1 | 3 new / 0 reopened | 0 | 378,356 (cell 3 at return; retired) |
 | 2 | `cb452050` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (954,070) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 5 | 8 new / 0 reopened | 0 | 301,169 (cell 4 at return; resumed) |
+| 3 | `084c9a3a` | `gpt-5.6-sol` / `high` (= `strong.config.toml`) | 0 | 1 (629,503) | `NEW_CRITICAL_MAJOR_FOUND` (x2, the CLI's double emission); other token 0 | 0 | 3 | 2 | 5 new / 0 reopened | 0 | |
 
 Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\review-r1.txt` (1,547,419 bytes), `prompt-r1.md` (367,520 bytes), `copowers-findings.md`. Exit file 0; the process exited before the transcript was read. Prior-findings reach: none (round 1).
 
@@ -296,3 +297,38 @@ Round 2 has 3 majors (RA-01, RA-02, RA-03), all new, none reopened, no reverts. 
 RA-03 (accepted by the cell) lands in the same block: index 0 is inferred only for a ONE-entry map; a multi-entry map with no radio takes the Fork 2 synthesis.
 
 Author of the sections above: orchestrator.
+
+## Cell 4, resumed off `770f9105`
+
+Author of this section and of the round-3 records below: cell 4.
+
+| Commit | Item | Note |
+|---|---|---|
+| `270587c6` | RA-01 | the identity is read before any value; `RecordedExitFill.price` / `quantity` are float or `None` (`_stored_number`); RED: two tests raised `ValueError` before the fix; live incidence zero (orchestrator) |
+| `fcf4d001` | RA-02 | branch A: an explicit selection on a map-less claim gets the G1 re-confirm before anything else; the synthesis-site comment narrowed; RED 200 -> 400; 1 SUPERSEDED: `test_exit_post_audit_columns.py::test_g_multi_partial_legacy_envelope_non_default_pick_records_nothing_and_its_confirm_is_void` (its force leg now reaches the re-confirm before d2); no regression |
+| `11a828a8` | RA-03 | index 0 inferred only for a one-entry map; RED 400 -> 200 (o2, `schwab_auto`); no red in `tests/web/test_routes` |
+| `10e7e6c1` | RA-04 | `_EXIT_VM_NOT_PREFETCHED` sentinel; RED two builds -> one |
+| `24c16829` | RA-05 | two-flag test; discrimination measured by mutation (the intersect null fails it alone) |
+| `853d7bd0` | RA-06 | two-id CLI test; discrimination measured by mutation (the any-one null fails it alone) |
+| `084c9a3a` | RA-08 | plan census alias `linked_id` and the nine superseded tests, by replacement |
+
+- Full fast suite on `084c9a3a`, read off the saved output: **15467 passed, 13 skipped, 0 failed** (591.51 s) = 15460 + the 7 new tests. `ruff check swing/` clean; `%(trailers)` empty across `618d7b04..HEAD`; no added file under `swing/`; nothing under `swing/data/`.
+
+### Round 3
+
+Same form, runner `~/d79r3/run_r3.sh`. The prompt was rebuilt on `084c9a3a`: the six rulings (exec ledger lines 1-179, 204-218 and 292-294), encoding choice 17 (RA-03) added, the claim list extended (the no-selection / re-confirm rule; the reader's identity-first read), the ledger diff cut out, no prior finding text.
+
+- **Two attempts DID NOT COUNT (capacity aborts):** attempt 1 (exit 1, 387,932 bytes, two `^ERROR: Selected model is at capacity`, no footer, no verdict) and attempt 2 (exit 1, 964,222 bytes, two capacity `^ERROR` lines, footer 205,483, NO verdict token -- the 2026-09-06 shape). Both are preserved as `review-r3-attempt1-capacity.txt` / `review-r3-attempt2-capacity.txt` with their exit files.
+- **Attempt 3 COUNTS:** banner `gpt-5.6-sol` / `high` (= `strong.config.toml`); `^ERROR` 0; `^tokens used` 1 (629,503); `^NEW_CRITICAL_MAJOR_FOUND` 2, `^NO_NEW_CRITICAL_MAJOR` 0; exit file 0, written after codex returned. Prior-findings reach: none (hits are prose: a plan line, CLAUDE.md and docs text). No content-filter event.
+- **Evidence:** `review-r3.txt` (1,583,336 bytes), `prompt-r3.md` (387,519 bytes), `exit-r3.txt`, and the two disqualified attempts, in `C:\Users\rwsmy\swing-data\review-transcripts\d79-exit-identity\exec\`.
+- **Spend:** counted rounds 403,744 + 954,070 + 629,503 = **1,987,317**; the disqualified attempt 2 burned a further 205,483 (attempt 1 printed no footer).
+
+### Round 3 adjudication (premises re-checked at `084c9a3a`)
+
+- **D79-A-01 (major): ACCEPTED as real; ROUTED for a ruling on the shape, because the fix changes what Fork 2's synthesized entry is.** The synthesized entry (`routes/trades.py:3134` region) carries only the top-level quartet and order id, so a no-selection submission on a multi-entry map drops the default candidate's map `possible_duplicates`: a K7.2 possible partial of the default order (o2) is never asked, and the DB-derived (c) scan does not recover a partial or an entered-date value-tuple match. RA-03 widened the shape (an omitted radio is now no selection), but the bare Fork 2 shape (T6-h, no candidate inputs) had the same gap. **Branch A:** keep the synthesis, and give the synthesized entry the `possible_duplicates` of the UNIQUE map entry whose `order_id` equals the top-level `schwab_order_id` and whose values equal the top-level quartet; with zero or several such entries, take the G1 re-confirm. **Branch B:** with a map present and no selection, there is no synthesis at all: the selected entry IS that unique map entry (by order id and values), so every map-side flag applies as for a picked candidate; zero or several -> G1 re-confirm. Synthesis then stays for the map-less no-selection shape only. RED test either way: a default o2 carrying a possible partial, submitted with the radio omitted -> 400, the partial asked, no fill.
+- **D79-A-02 (major): ACCEPTED, to fix.** `_exit_values_well_formed` (`:2483`) calls `float(price_value)` on a JSON int; a 401-digit int parses (verified: `json.loads` returns an `int`) and `float()` raises `OverflowError` (verified), so tier (d) and the selected-entry check 500 instead of 400. Catch `OverflowError` -> not well formed.
+- **D79-A-03 (major): ACCEPTED, to fix.** `check_exit_preconditions` (`exit.py:407`) computes `float(trade.current_size) - float(req.shares)`, which raises `OverflowError` for a huge int, so the sixth refusal ("exceeds") is not the raised error. The pre-arc `record_exit` had the same subtraction (`618d7b04:182`), so this is pre-existing, carried into the pure helper whose contract is "exactly the six refusals". Fix: compare without float conversion of `req.shares` (or translate the overflow into the existing "exceeds" text); helper test plus one caller test.
+- **D79-A-04 (minor): ACCEPTED, to fix without a round.** `routes/trades.py:3154` still says "quantity as an int"; a residual of D79-A1 that the A1 class re-grep missed (it searched for `int(`, not the prose).
+- **D79-A-05 (minor): ACCEPTED, to fix without a round.** The `candidate_orders` legacy fallback (`:3196` region) and the retention-rule coverage list (`:3274` region) describe a map-less selected envelope that RA-02's early return makes unreachable; remove the fallback and rewrite the list by replacement.
+
+Round 3: 3 majors, all new, none reopened, no reverts. Not converged.
