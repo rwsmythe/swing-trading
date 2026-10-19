@@ -294,3 +294,17 @@ The plan is `docs/superpowers/plans/2026-10-19-d79-exit-identity.plan.md`. It is
 - **SS-4, residual greps:** `sleep`, `strictly less`, `tuple[int, int]`, "six anonymous" and the R2 pair-shape all return no live site. The roster has 47 rows (1-46 plus 31a), counted by an anchored grep for table rows.
 
 **Plan committed once at convergence of the counted loop.**
+
+### Orchestrator QA of the plan review (2026-10-19)
+
+- **Rounds 1-3 verified from the preserved transcripts** in `~/swing-data/review-transcripts/d79-exit-identity/plan/`. In each round:
+  - the banner read `gpt-5.6-luna` / `medium`, matching `~/.codex/fast.config.toml`;
+  - `^ERROR` = 0, and the `^tokens used` footer = 1;
+  - `^NEW_CRITICAL_MAJOR_FOUND` = 2 (codex-cli emits the final message twice), and `^NO_NEW_CRITICAL_MAJOR` = 0;
+  - `tokens used`: 90,269 / 57,131 / 89,143. **Sum: 236,543.**
+- **Prior-finding leak check.** Round 2 has 0 hits for `R1-0`. Round 3 has 1 hit for `R1-0|R2-0`, and it is a `latched_origin.py` code comment ("CHARC R2-05", a 22-A item) that the reviewer read from the repo. It is not a D79 finding; the prompt and the stripped stdin ledger carry 0 hits. Every round counts.
+- **Depths,** read by the orchestrator with `cell_depth --agent`: 238,065 at intake, then 317,138 / 328,477 / 344,362 at the round gates. The cell is `implementer-opus-high` (build 2.1.300, `claude-opus-5-5`).
+- **The loop ended at the three-round cap without a clean round.** Under plan-stage rule 4 this is the default outcome: three counted rounds, then a self-sweep, then execution. No fourth round was authorized or needed. R3-01 was one missing case, fixed with a test, and SS-3 settled its one consequence on the already-ruled d2 behaviour.
+- **The plan was read in full** (`7b7718fb`, 515 lines, 9 tasks, 47 roster rows). Every roster row traces to a landed ruling; the envelope matches CHARC's K1 carve-out and FORK 2. Two items go to the plan-stage reviews:
+  - T1 moves `get_trade` and the state/size checks INSIDE the lock. This is part of the transaction shape, so it is CHARC's to confirm as within carve-out (1).
+  - T7 makes the confirm POST re-fetch Schwab. During a Schwab outage, an auto-fill confirm is therefore void, and the only way to record is an unclaimed typed exit. That is RD's to confirm against K3 (2) / K5.
