@@ -1552,7 +1552,7 @@ def _undecidable_duplicates(
             # both green while narrowing the large-magnitude alarm. That gap is
             # named rather than closed: pinning a spurious-flag width as
             # required behaviour would freeze a side effect into a contract.
-            and math.isclose(row_quantity, quantity, rel_tol=1e-9, abs_tol=1e-9)
+            and _quantities_equal(row_quantity, quantity)
             and row.date in dates
         ):
             matches.append(replace(row, reason=DUP_REASON_VALUE_TUPLE))
@@ -1791,18 +1791,44 @@ def _compute_signature_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _quantities_equal(a: float, b: float) -> bool:
+    """THE QUANTITY GRAIN, spelled once: two share quantities are the same
+    quantity when they agree under ``math.isclose`` at ``rel_tol=1e-9``,
+    ``abs_tol=1e-9`` -- the resolver's duplicate comparison
+    (``_undecidable_duplicates``, whose comment carries why both tolerances
+    are what they are) and ``derives_from`` both call this.
+
+    D79-A1 (Reviewer A round 1): the quantity is compared as a FLOAT and is
+    NEVER truncated. ``fills.quantity`` is ``REAL NOT NULL CHECK (quantity >
+    0)`` (migration 0014), so a stored fill can be fractional, and an
+    ``int()`` here made a 5.9-share row the "same" as a typed 5-share exit.
+    """
+    return math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-9)
+
+
+def _entry_quantity_matches(quantity: object, shares: int) -> bool:
+    """``quantity`` (a map entry's or a stored row's) is ``shares`` at the
+    one grain. Raises ``TypeError`` / ``ValueError`` / ``OverflowError`` for
+    a value that does not coerce to a float, so each caller keeps its own
+    answer for that case."""
+    return _quantities_equal(float(quantity), float(shares))
+
+
 def derives_from(entry: object, *, exit_date: str, exit_price: float,
                  shares: int) -> bool:
     """Do the typed exit values DERIVE FROM ``entry``? THE ONE GRAIN (D79).
 
     Date string-exact, price at the exit form's 2 decimals (the template
     renders ``'%.2f'``, so an execution-grain VWAP like 120.505 compares as
-    rendered), quantity as an int. Lifted out of the exit POST so every
+    rendered), quantity as a FLOAT at ``_quantities_equal``'s grain -- never
+    truncated, so a fractional stored or map quantity does not derive a
+    whole-share exit (D79-A1). Lifted out of the exit POST so every
     "derives from" question -- the route's id-retention rule, the F1
     contradiction flag, the anonymous (c) value-tuple match and the service's
     instrument-anomaly sentence -- is answered by ONE comparison; a second
     spelling of the same grain could correct a row by one measure and link
     it by another (RD K5c, "one grain in both places"; RD P2 correction 1).
+    ``_differing_fields`` names the differing fields at this same grain.
 
     ``entry`` is a mapping with ``date`` / ``price`` / ``quantity``; anything
     else, or values that do not coerce, never derives.
@@ -1811,13 +1837,14 @@ def derives_from(entry: object, *, exit_date: str, exit_price: float,
         return False
     try:
         entry_price = float(entry.get("price"))
-        entry_shares = int(entry.get("quantity"))
+        quantity_matches = _entry_quantity_matches(entry.get("quantity"),
+                                                   shares)
     except (TypeError, ValueError, OverflowError):
         return False
     return (
         entry.get("date") == exit_date
         and round(entry_price, 2) == round(exit_price, 2)
-        and entry_shares == shares
+        and quantity_matches
     )
 
 
@@ -1992,7 +2019,7 @@ def _differing_fields(entry: dict, *, exit_date: str, exit_price: float,
     except (TypeError, ValueError, OverflowError):
         fields.append("price")
     try:
-        if int(entry.get("quantity")) != shares:
+        if not _entry_quantity_matches(entry.get("quantity"), shares):
             fields.append("quantity")
     except (TypeError, ValueError, OverflowError):
         fields.append("quantity")

@@ -260,3 +260,42 @@ def test_flags_dedupe_by_identity_and_order():
         f"{FLAG_VALUE_TUPLE}|5", f"{FLAG_POSSIBLE_PARTIAL}|6",
         f"{FLAG_UNREADABLE_ENVELOPE}|9"]
     assert json.dumps([f.text for f in flags]).isascii()
+
+
+# ------------------------------------------------- D79-A1 (Reviewer A R1)
+def test_a1_a_fractional_stored_fill_does_not_derive_a_whole_share_exit(
+        tmp_path):
+    """D79-A1: the quantity is compared as a FLOAT at the resolver's
+    ``isclose`` grain, never truncated. A literal stored 5.9-share anonymous
+    fill is NOT a value-tuple match of a typed 5-share exit. PRE-FIX:
+    ``int(5.9) == 5`` -> the 5.9 row is returned as a match (red)."""
+    db = make_db(tmp_path)
+    tid = seed_trade(db, state="partial_exited")
+    fractional = plant_exit_fill(db, tid, envelope=None, qty=5.9)
+    whole = plant_exit_fill(db, tid, envelope=None, qty=5.0)
+    c = connect(db)
+    try:
+        got = anonymous_fill_matches(c, trade_id=tid, exit_date="2026-05-21",
+                                     exit_price=131.0, shares=5)
+    finally:
+        c.close()
+    assert [m.fill_id for m in got] == [whole]
+    assert fractional not in [m.fill_id for m in got]
+    row = {"date": "2026-05-21", "price": 131.0, "quantity": 5.9}
+    assert derives_from(row, exit_date="2026-05-21", exit_price=131.0,
+                        shares=5) is False
+    # The control: a whole-valued float still derives (5.0 == 5).
+    assert derives_from(dict(row, quantity=5.0), exit_date="2026-05-21",
+                        exit_price=131.0, shares=5) is True
+
+
+def test_a1_a_fractional_map_entry_is_asked_f1_naming_quantity():
+    """D79-A1: a map entry whose quantity is fractional does not derive the
+    typed int, so F1 asks and names ``quantity`` (``_differing_fields`` at
+    the SAME grain). PRE-FIX: ``int(5.9) == 5`` derives silently -> no
+    flag (red)."""
+    sel = dict(O1, quantity=5.9)
+    [flag] = _flags(("2026-05-20", 130.0, 5), selected=sel,
+                    cmap={"h1": sel, "h2": O2})
+    assert flag.kind == FLAG_F1_NO_CANDIDATE
+    assert " in quantity." in flag.text
