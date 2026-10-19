@@ -824,3 +824,23 @@ Transcribed as a literal block quote of the message body in `comms/orchestrator/
 > TRANSCRIPTION: block-quote both rulings into the D79 exec ledger with RD as author; landed when the path is posted back. The small cell (AL-5 restatement, AL-13, the B-05 pin, the B-06 fix) is doc-only plus test-only; no confirming round under the stop rule. The suite on the final head, T9, the census and CHARC's gate follow as you stated.
 
 Author of the Reviewer B section and table: orchestrator. Author of the block quote: RD.
+
+## Cell 8 record (implementer-sonnet-high; the Reviewer B fixes, doc and test only)
+
+Author of this section: the cell-8 implementer. No Reviewer A or B round was run, as briefed. No file under `swing/` changed (`git diff --stat 618d7b04..HEAD -- swing/` is identical to the one at `a6519295`).
+
+| Commit | Change |
+|---|---|
+| `92014b0c` | AL-5's last sentence replaced by RD's text, verbatim (plan line 39); the rest of AL-5 unchanged |
+| `6afd6c36` | AL-13 added after AL-12 and its D85 sub-bullet: RD's text verbatim, then "Why accepted" (RD's B-01 ruling, the AL-6 bank) and the pin's name |
+| `bceccb1b` | B-05: `test_b05_one_entry_map_sole_entry_is_the_selection_al13_width`, parametrized over the two submission shapes (`index0_inputs`, `bare`) |
+| `91670361` | B-06: `test_t4f_no_second_spelling_of_the_grain` patches a counting stub and asserts `len(calls) >= 1` |
+
+**Mutation results (production restored byte-for-byte after each; sha256 compared):**
+- B-05, mutation 1: the bare one-entry `else:` branch at `routes/trades.py` (the `selected_index = 0` stamp) replaced by `pass`. The `bare` case went RED (400, the re-confirm, nothing recorded). The `index0_inputs` case stayed green, because it takes the inferred-index-0 branch.
+- B-05, mutation 2: additionally the index-0 inference replaced by `selected_index = None`. BOTH cases RED. Route restored: sha256 `5d776c7f...` identical.
+- B-06: `anonymous_fill_matches` made to skip `derives_from` (a bare `continue`). The new assertion went RED (`assert 0 >= 1`); the sibling `test_t4f_anonymous_fill_matches_through_the_authority_per_trade` went red too. `exit_auto_fill.py` restored: sha256 `b840acc2...` identical.
+
+**Fixture note on B-05:** built on `_single(world)` (the T5 builder) with the sole entry rewritten to `o9`, `date 2026-05-20`, `price 130.0`, `quantity 4` (o1's values), the top level left at o2 / 2026-05-21 / 131.00 / 3, and the typed values set to o9's. The persisted top-level `schwab_order_id` and `selected_candidate_order_id` are both asserted `o9`. The test is green on arrival by design.
+
+**Suite on the final head `91670361`** (`-m "not slow" -n auto`): 1 failed, 15497 passed, 13 skipped in 1097 s. The one red was `tests/integrations/test_schwab_setup_cli.py::test_setup_auth_failure_audit_status_and_sentinel_redaction` (a sentinel in the audit `error_message`), NOT the red the orchestrator saw at `a6519295`. In isolation (`-n 0`) the module passes, 27 passed in 12.5 s; `tests/integrations` under `-n auto` passes, 698 passed in 44 s. Not classified further by this cell: the cell reproduced it as a load-order red only, and routes the classification to the orchestrator.
