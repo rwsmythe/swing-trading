@@ -28,9 +28,14 @@ from click.testing import CliRunner
 from swing.cli import main
 
 # Sentinel token bytes — if these leak into stdout / audit-row error_message
-# the discriminating tests below catch it. Choose a long alphanumeric run that
-# the `_redacted_excerpt` substitution + the schwabdev wrapper's
-# `_redact_message` regex both target.
+# the discriminating tests below catch it. The audit-row error_message goes
+# through `auth.py:_redacted_excerpt` -> `client.py:_make_redactor_from_global`.
+# The underscores in each sentinel cut it into runs of at most 22 characters,
+# so neither Layer-1 regex there (`[a-fA-F0-9]{32,}`, `[A-Za-z0-9+/=]{24,}`)
+# matches it: a sentinel is redacted only if it is in the Layer-0 registry,
+# which is why the auth-failure test registers it (`sentinel_registered`).
+# (`client.py:_redact_message` is a different mask, applied to
+# `_RedactedMessageError` messages; it is not on the audit-row path.)
 _SENTINEL_ACCESS_TOKEN = "AUTH_BYTES_DO_NOT_LEAK_ABCDEF0123456789012345"
 _SENTINEL_REFRESH_TOKEN = "REFRESH_BYTES_DO_NOT_LEAK_ZYXWVU09876543210987"
 
