@@ -402,3 +402,31 @@ def test_ra04_a_void_confirm_whose_prefetch_is_none_builds_once(
     assert "the confirmation is void" in r.text
     assert calls == [1]
     assert _exit_rows(world.cfg) == []
+
+
+# ------------------------------------------- RA-05 (Reviewer A round 2)
+def test_ra05_every_identity_must_be_acknowledged_not_any(world):
+    """RA-05, K5 (EVERY flag's identity): one unedited (linked) o2 POST
+    raises TWO flags at once -- the (c) value-tuple match on an anonymous
+    fill at o2's values, and the unreadable envelope of a fill on another
+    trade. A confirm acknowledging ONE re-asks and records nothing; a
+    confirm acknowledging BOTH records. NULL killed: recording when the
+    acknowledgements merely INTERSECT the flags."""
+    anon = _plant_fill(world.cfg, world.tid, day="2026-05-21", price=131.0,
+                       qty=3)
+    bad = _plant_fill(world.cfg, _other_trade(world.cfg), day="2026-05-10",
+                      price=125.0, qty=1, envelope=_UNREADABLE_ENVELOPE)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        r1 = _post(tc, world.tid, _form(tc, world.tid))
+        assert r1.status_code == 400, r1.text[:500]
+        both = _acks(r1.text)
+        assert both == [f"value_tuple_match|{anon}",
+                        f"unreadable_envelope|o2|{bad}"]
+        for one in both:
+            r = _confirm(tc, world.tid, r1.text, acks=[one])
+            assert r.status_code == 400, r.text[:500]
+            assert "Confirm or retype before recording." in r.text
+            assert len(_exit_rows(world.cfg)) == 2  # the two planted rows
+        r2 = _confirm(tc, world.tid, r1.text, acks=both)
+    assert r2.status_code == 200, r2.text[:500]
+    assert len(_exit_rows(world.cfg)) == 3
