@@ -230,7 +230,7 @@ The plan is `docs/superpowers/plans/2026-10-19-d79-exit-identity.plan.md`. It is
 |---|---|---|---|---|---|---|---|---|---|---|
 | 1 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2: codex-cli emits the final message twice); the other token 0 | 2 major / 2 task-bearing; 0 instrument | 2 / 0 | 90,269 | `.codex-review-r1.txt`, 497,877 B; prompt `.codex-prompt-r1.md`, 4,820 B | 317,138 (orchestrator, `cell_depth --agent`, at the round-1 gate) |
 | 2 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2); the other token 0 | 2 major / 2 task-bearing (R2-02 contested-class rule: it changes a test's specification); 0 instrument | 2 / 0 | 57,131 | `.codex-review-r2.txt`, 248,967 B; prompt `.codex-prompt-r2.md`, 4,820 B | 328,477 (orchestrator, at the round-2 gate) |
-| 3 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2); the other token 0 | 1 major / 1 task-bearing; 0 instrument | 1 / 0 | 89,143 | `.codex-review-r3.txt`, 468,323 B; prompt `.codex-prompt-r3.md`, 4,820 B; stdin ledger `stdin-ledger-r3.md` | (orchestrator fills) |
+| 3 | gpt-5.6-luna = gpt-5.6-luna | medium = medium | 0 | 1 | `NEW_CRITICAL_MAJOR_FOUND` (count 2); the other token 0 | 1 major / 1 task-bearing; 0 instrument | 1 / 0 | 89,143 | `.codex-review-r3.txt`, 468,323 B; prompt `.codex-prompt-r3.md`, 4,820 B; stdin ledger `stdin-ledger-r3.md` | 344,362 (orchestrator-read, `cell_depth --agent`, at return) |
 
 **Round 1, process checks.**
 - The codex process exited: the runner's exit file reads `rc=0`, and it is written only after `codex exec` returns.
