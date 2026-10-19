@@ -34,7 +34,16 @@ from swing.trades.entry import (
 )
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason, ExitRequest, record_exit
-from swing.trades.exit_auto_fill import _EXIT_DATE_SOURCE_VALUES
+from swing.trades.exit_auto_fill import (
+    _EXIT_DATE_SOURCE_VALUES,
+    ExitRecordFlag,
+    derives_from,
+    exit_record_flags,
+)
+from swing.trades.latched_origin import (
+    ENVELOPE_REFUSED,
+    canonical_envelope_identity,
+)
 from swing.trades.origin import EntryPath
 from swing.trades.stop_adjust import (
     StopAdjustRationale,
@@ -2422,6 +2431,34 @@ _EXIT_AUTO_FILL_REFRESH_NOTICE = (
 )
 
 
+def _exit_values_well_formed(date_value: object, price_value: object,
+                             shares_value: object) -> bool:
+    """Tier (d)'s value-shape predicate, ONE spelling for every place an
+    exit POST reads date / price / quantity out of the client-editable
+    envelope: an ISO ``YYYY-MM-DD`` string, a finite number that is not a
+    bool, an int that is not a bool. The top-level quartet is judged by it
+    at tier (d); the SELECTED map entry is judged by it before its values
+    are written to the persisted top level (D79 T6)."""
+    import math as _math
+    from datetime import date as _date_cls
+
+    if not isinstance(date_value, str):
+        return False
+    try:
+        _date_cls.fromisoformat(date_value)
+    except (TypeError, ValueError):
+        return False
+    price_ok = (
+        isinstance(price_value, (int, float))
+        and not isinstance(price_value, bool)
+        and _math.isfinite(float(price_value))
+    )
+    shares_ok = (
+        isinstance(shares_value, int) and not isinstance(shares_value, bool)
+    )
+    return price_ok and shares_ok
+
+
 def _exit_candidates_maps_equal(vm, submitted_envelope: dict) -> bool:
     """Ruling (d), d2-strict: may a refused exit POST's SUBMITTED anchor be
     restored over the fresh re-render?  True ONLY when the fresh fetch is
@@ -2471,6 +2508,7 @@ def _rerender_exit_form_with_error(
     submitted_auto_fill_audit_at: str | None = None,
     submitted_fill_origin_at_form_render: str | None = None,
     submitted_selected_signature_hash: str | None = None,
+    flags: tuple = (),
 ) -> HTMLResponse:
     """Re-render the exit form at 400 after a refused POST, KEEPING what the
     operator typed and, when it is safe, the anchor he submitted (RD 1(iii) /
@@ -2551,6 +2589,7 @@ def _rerender_exit_form_with_error(
             vm = dc_replace(
                 vm, auto_fill_refresh_notice=_EXIT_AUTO_FILL_REFRESH_NOTICE,
             )
+    vm = dc_replace(vm, exit_flags=tuple(flags))
     return templates.TemplateResponse(
         request, "partials/trade_exit_form.html.j2",
         {"vm": vm, "error_message": error_message},
@@ -2596,8 +2635,6 @@ async def exit_post(
     fill_origin_at_form_render: str = Form(""),
 ):
     import json as _json
-    import math as _math
-    from datetime import date as _date_cls
 
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
@@ -2667,6 +2704,12 @@ async def exit_post(
     # which candidate the operator had picked (ruling (a)).
     anchor_envelope: object = None
     selected_index: int | None = None
+    # D79: what the F1 question is asked against. Set only on the claimed
+    # dict-envelope path below; an unclaimed submission has no selected
+    # entry, so it is never asked F1 (its (c) value-tuple flag still is).
+    flag_selected_entry: dict | None = None
+    flag_selected_order_id: str | None = None
+    flag_candidates_map: dict | None = None
 
     # Helper: 400 + recovery-form re-render with anchor CLEARED (T3.SB1 R3
     # M#2 anchor-clear discipline BINDING). Recovery form is rebuilt from
@@ -2740,35 +2783,23 @@ async def exit_post(
                 "The form has been regenerated; please re-submit."
             )
         # (d) dict with invalid value shapes + claim → 400
-        if isinstance(anchor_envelope, dict) and claimed_auto_fill:
-            v_exit_date = anchor_envelope.get("exit_date")
-            v_exit_price = anchor_envelope.get("exit_price")
-            v_closed_shares = anchor_envelope.get("closed_shares")
-            exit_date_ok = isinstance(v_exit_date, str)
-            if exit_date_ok:
-                try:
-                    _date_cls.fromisoformat(v_exit_date)
-                except (TypeError, ValueError):
-                    exit_date_ok = False
-            exit_price_ok = (
-                isinstance(v_exit_price, (int, float))
-                and not isinstance(v_exit_price, bool)
-                and _math.isfinite(float(v_exit_price))
+        if (
+            isinstance(anchor_envelope, dict)
+            and claimed_auto_fill
+            and not _exit_values_well_formed(
+                anchor_envelope.get("exit_date"),
+                anchor_envelope.get("exit_price"),
+                anchor_envelope.get("closed_shares"))
+        ):
+            return _reject_anchor(
+                "Trade exit rejected: fill_origin_at_form_render="
+                f"{fill_origin_at_form_render!r} claims auto-fill "
+                "provenance but schwab_source_value_json contains "
+                "invalid values (exit_date must be ISO YYYY-MM-DD; "
+                "exit_price must be finite numeric; closed_shares must "
+                "be an integer). The form has been regenerated; please "
+                "re-submit."
             )
-            shares_ok = (
-                isinstance(v_closed_shares, int)
-                and not isinstance(v_closed_shares, bool)
-            )
-            if not (exit_date_ok and exit_price_ok and shares_ok):
-                return _reject_anchor(
-                    "Trade exit rejected: fill_origin_at_form_render="
-                    f"{fill_origin_at_form_render!r} claims auto-fill "
-                    "provenance but schwab_source_value_json contains "
-                    "invalid values (exit_date must be ISO YYYY-MM-DD; "
-                    "exit_price must be finite numeric; closed_shares must "
-                    "be an integer). The form has been regenerated; please "
-                    "re-submit."
-                )
 
         # (e) D31 — the provenance stamps, when PRESENT, must be members of the
         # closed enum the resolver emits. The envelope is a hidden input and so
@@ -2911,29 +2942,19 @@ async def exit_post(
             # ``swing/trades/exit_auto_fill.py`` and this half was left behind
             # for one commit, which is the partial-cleanup shape). The WHOLE
             # envelope round-trips through a hidden form field, so a client can
-            # alter the map and the signature together; what check (a) below
-            # establishes is CONSISTENCY WITHIN THE SUBMITTED ENVELOPE, not
-            # provenance from the server. Making it unforgeable needs a signed
-            # envelope, which is a design decision outside this arc and is
-            # flagged rather than improvised. Two failure modes addressed:
-            #   (a) a POST claiming a candidate_signature_hash that does NOT
-            #       appear in its own submitted map is rejected with 400.
-            #   (b) Critical #1 broken radio selection — the template's
-            #       radio inputs do NOT rebind visible exit_date /
-            #       exit_price / shares form fields client-side. When the
-            #       operator picks a non-default candidate without editing
-            #       visible inputs, the submitted visible values are the
-            #       MOST-RECENT default's values (which differ from the
-            #       authoritative selected candidate). The comparator
-            #       below treats that delta as an operator edit and
-            #       persists fill_origin='schwab_auto_then_operator_corrected'
-            #       with the visible-input values — semantically honest
-            #       given that the form has no client-side rebind. When
-            #       the operator DOES manually edit visible inputs to
-            #       match the selected candidate (or when the operator
-            #       leaves the default candidate radio unchanged), the
-            #       comparator records fill_origin='schwab_auto' and the
-            #       authoritative selected-candidate values are persisted.
+            # alter the map and the signature together; what the membership
+            # check below establishes is CONSISTENCY WITHIN THE SUBMITTED
+            # ENVELOPE, not provenance from the server. Making it unforgeable
+            # needs a signed envelope, which is a design decision outside this
+            # arc and is flagged rather than improvised.
+            #
+            # The template's radio does NOT rebind the visible date / price /
+            # shares inputs, so a non-default pick submits the inputs the
+            # DEFAULT filled in. D79 (orchestrator K4, K7.3) settles what that
+            # means: the selected entry is the operator's claim of WHICH order,
+            # the typed values are his claim of HOW it executed, and when the
+            # two disagree the POST ASKS (the F1 flag) instead of guessing. It
+            # records nothing until he confirms or retypes.
             candidates_map = anchor_envelope.get("candidates_map")
             if not isinstance(candidates_map, dict):
                 candidates_map = {}
@@ -2964,55 +2985,67 @@ async def exit_post(
                         submitted_sig_hash,
                     )
 
-            # Compute the comparison baseline. When the operator made a
-            # multi-partial selection whose hash is consistent with its own
-            # submitted map, compare visible inputs against THAT candidate (not
-            # the envelope's default chosen). Otherwise (single-fill case
-            # or selection without candidates_map) fall back to the
-            # envelope's top-level exit_date / exit_price / closed_shares.
+            # D79 T6 (orchestrator K7.3): the selected entry's values are
+            # about to become the persisted envelope's TOP-LEVEL values, so
+            # they are held to the same shape tier (d) holds the top level to
+            # (one predicate). A malformed entry is a tampered anchor: 400 and
+            # cleared, like every other rung of the ladder.
+            if (
+                authoritative_selected is not None
+                and not _exit_values_well_formed(
+                    authoritative_selected.get("date"),
+                    authoritative_selected.get("price"),
+                    authoritative_selected.get("quantity"))
+            ):
+                return _reject_anchor(
+                    "Trade exit rejected: the selected auto-fill candidate "
+                    "carries invalid values (date must be ISO YYYY-MM-DD; "
+                    "price must be finite numeric; quantity must be an "
+                    "integer). The form has been regenerated; please "
+                    "re-submit."
+                )
+
+            # D79 T6 item 2 + executing FORK 2 (orchestrator): THE SELECTED
+            # ENTRY the F1 question is asked against, and THE ONE SYNTHESIS
+            # SITE. With a selection whose hash its own map carries, it is that
+            # map entry. With NO such selection -- a legacy envelope carrying
+            # no ``candidates_map``, or a multi-entry map submitted with no
+            # candidate inputs -- it is SYNTHESIZED from the envelope's
+            # top-level quartet, which is the candidate the form rendered as
+            # the default (``resolve_exit_auto_fill`` writes the quartet from
+            # the last candidate, and the default radio is the last). So every
+            # claimed shape reaches F1, and no shape reaches the corrected
+            # branch without an acknowledged F1 (orchestrator K5). For the
+            # legacy shape F1 can only be NO_CANDIDATE (there is no other
+            # entry); for the multi-entry shape OTHER_ORDER is reachable.
             if authoritative_selected is not None:
-                cmp_date = authoritative_selected.get("date")
-                cmp_price = authoritative_selected.get("price")
-                cmp_shares = authoritative_selected.get("quantity")
+                flag_selected_entry = authoritative_selected
             else:
-                cmp_date = anchor_envelope.get("exit_date")
-                cmp_price = anchor_envelope.get("exit_price")
-                cmp_shares = anchor_envelope.get("closed_shares")
-            try:
-                cmp_price_float = (
-                    float(cmp_price) if cmp_price is not None else None
-                )
-            except (TypeError, ValueError):
-                cmp_price_float = None
-            try:
-                cmp_shares_int = (
-                    int(cmp_shares) if cmp_shares is not None else None
-                )
-            except (TypeError, ValueError):
-                cmp_shares_int = None
-            exit_date_diff = cmp_date != exit_date
-            # Codex R4 Major #2 fix — price comparison must match the
-            # template's rendering precision. The form renders
-            # ``exit_price`` via ``{{ '%.2f' | format(vm.exit_price) }}``
-            # (``swing/web/templates/partials/trade_exit_form.html.j2``
-            # line 102), so authoritative candidate prices with 3+ decimal
-            # precision (e.g. VWAP across multi-leg execution-grain fills:
-            # 120.505) are TRUNCATED-via-banker's-rounding to 2 decimals
-            # before the operator sees them. Submitting the rendered
-            # 2-decimal value back used to flip ``fill_origin`` to
-            # ``schwab_auto_then_operator_corrected`` against a 1e-9
-            # epsilon, even though the operator made NO actual edit
-            # (0.005 > 1e-9). Compare at the template's rendering
-            # precision (2 decimals) instead — ``round(_, 2) != round(_, 2)``
-            # exactly matches what the form can render.
-            price_diff = (
-                cmp_price_float is None
-                or round(cmp_price_float, 2) != round(exit_price, 2)
+                flag_selected_entry = {
+                    "date": anchor_envelope.get("exit_date"),
+                    "price": anchor_envelope.get("exit_price"),
+                    "quantity": anchor_envelope.get("closed_shares"),
+                    "order_id": anchor_envelope.get("schwab_order_id"),
+                }
+            selected_raw_order_id = flag_selected_entry.get("order_id")
+            flag_selected_order_id = (
+                selected_raw_order_id
+                if isinstance(selected_raw_order_id, str)
+                and selected_raw_order_id.strip() else None
             )
-            shares_diff = (
-                cmp_shares_int is None or cmp_shares_int != shares
-            )
-            if exit_date_diff or price_diff or shares_diff:
+            flag_candidates_map = candidates_map or None
+
+            # THE COMPARATOR (T6 item 2): ``derives_from``, the one grain --
+            # date exact, price at the template's 2 decimals (an
+            # execution-grain VWAP like 120.505 renders, and so compares, as
+            # 120.50 -- Codex R4 Major #2), quantity as an int. The typed
+            # values either derive from the selected entry (``schwab_auto``)
+            # or they do not, and then the row is a correction of that order
+            # -- reachable ONLY through an acknowledged F1 flag.
+            f1_pending = not derives_from(
+                flag_selected_entry, exit_date=exit_date,
+                exit_price=exit_price, shares=shares)
+            if f1_pending:
                 resolved_fill_origin = "schwab_auto_then_operator_corrected"
                 resolved_operator_corrected_value_json = _json.dumps(
                     {
@@ -3032,9 +3065,9 @@ async def exit_post(
             #   - ``selected_candidate_order_id`` (chosen candidate's order)
             #   - ``other_candidate_signature_hashes`` (audit history)
             # Architectural decision: keep the original envelope keys
-            # verbatim + ADD provenance fields rather than rebuilding so
-            # downstream consumers reading e.g. ``schwab_order_id`` from
-            # the legacy single-fill shape continue to work.
+            # + ADD provenance fields rather than rebuilding, so downstream
+            # consumers reading e.g. ``schwab_order_id`` from the legacy
+            # single-fill shape continue to work.
             extended = dict(anchor_envelope)
             if selected_index is not None and selected_index in candidate_sigs:
                 extended["selected_candidate_signature_hash"] = (
@@ -3069,186 +3102,88 @@ async def exit_post(
                 # single-fill case). Wrapping audit history is the V1
                 # contract per the dispatch brief.
                 extended["other_candidate_signature_hashes"] = others
-                # Codex R3 Major #1 fix — rewrite top-level
-                # ``schwab_order_id`` to reflect the SCHWAB ORDER WHOSE
-                # VALUES WERE ACTUALLY PERSISTED.
-                #
-                # The form-render envelope's top-level ``schwab_order_id``
-                # is the DEFAULT (most-recent) candidate's order_id (per
-                # ``resolve_exit_auto_fill`` at
-                # ``swing/trades/exit_auto_fill.py``). When the operator
-                # picks a NON-DEFAULT candidate via radio AND manually
-                # edits visible inputs to match the picked candidate's
-                # values, ``resolved_fill_origin == 'schwab_auto'`` AND
-                # the persisted fill row carries the SELECTED candidate's
-                # values — but pre-fix the top-level ``schwab_order_id``
-                # still pointed at the form-render default.
-                #
-                # The future-fetch dedupe path in
-                # ``swing/web/view_models/trades.py`` (per Codex R2 M#3
-                # fix) reads top-level ``schwab_order_id`` to exclude
-                # already-recorded fills. Pre-fix this excluded the WRONG
-                # order_id (the default which was never persisted) and
-                # FAILED to exclude the SELECTED order_id (which WAS
-                # persisted), letting the operator re-record the same
-                # Schwab order as a duplicate fill.
-                #
-                # Rewrite scope: ONLY when ``fill_origin == 'schwab_auto'``
-                # AND ``authoritative_selected is not None`` — that is the
-                # path on which the SELECTED candidate's values are the ones
-                # persisted, so the id must name IT.
-                #
-                # WHAT THE OTHER PATHS DO IS NO LONGER DECIDED HERE. This
-                # comment used to enumerate the two sub-cases its author had
-                # thought of and conclude that the corrected branch could keep
-                # the default's id because "in both sub-cases the persisted
-                # values trace back to the default's source candidate". A
-                # third case reached the same branch and the enumeration did
-                # not cover it (orchestrator B review MAJOR 1). The retention
-                # question is now answered ONCE, below, by the rule rather
-                # than by a list of cases.
-                if (
-                    resolved_fill_origin == "schwab_auto"
-                    and authoritative_selected is not None
-                ):
-                    # Codex R4 Major #1 fix — when the authoritative
-                    # selected candidate carries no usable ``order_id``,
-                    # the pre-R4 R3 M#1 rewrite SILENTLY
-                    # SKIPPED, leaving top-level ``schwab_order_id`` at the
-                    # form-render default (most-recent candidate's
-                    # order_id). The future-fetch dedupe path in
-                    # ``view_models/trades.py`` then read the wrong
-                    # order_id (the default which was never persisted) and
-                    # ``order_id_found=True`` (just for the wrong order),
-                    # preventing the fallback (date, price, qty) tuple
-                    # match from firing — letting the operator re-record
-                    # the same fill as a duplicate. Since the 2026-08-11
-                    # ruling the same defect is WORSE, not milder: a
-                    # present-but-wrong order id is treated as PROVEN
-                    # identity, which is the only evidence state that may
-                    # suppress a candidate at all.
-                    #
-                    # Fix: pop top-level ``schwab_order_id`` when the
-                    # authoritative selected has no usable order_id. The
-                    # VM-side dedupe will see no usable order_id for this
-                    # fill and correctly fall through to the anonymous
-                    # channel. NOTE THE CHANGED CONSEQUENCE: that channel
-                    # FLAGS a (date, price, qty) match by naming the row, it
-                    # does NOT exclude on it (RD, 2026-08-11 — superseding
-                    # the R2 M#4 behaviour this comment originally described).
-                    #
-                    # WHERE AN UNUSABLE ID COMES FROM. This comment used to
-                    # say "MARKET fills without a broker order_id, or mapper
-                    # edge cases". Production cannot produce that:
-                    # ``SchwabOrderResponse.__post_init__`` requires a
-                    # non-empty ``order_id`` and ``_build_candidate`` copies it
-                    # straight onto the candidate. The one reachable source is
-                    # the client-editable envelope (banked, cited) — and NOT a
-                    # "legacy envelope", which in this handler means one
-                    # carrying no ``candidates_map`` at all, a shape that
-                    # cannot reach this branch because
-                    # ``authoritative_selected`` is read OUT of that map
-                    # (Codex R2 minor). The constructor is no stricter than
-                    # non-empty,
-                    # so a WHITESPACE id is constructible where a ``None`` is
-                    # not — and the truthiness test below does NOT reject one:
-                    # ``"   "`` is truthy and would be installed here. It is
-                    # then DROPPED by the retention rule further down, whose
-                    # ``usable`` predicate requires a NON-BLANK string, so the
-                    # outcome is identical and no link is ever asserted on a
-                    # blank token. Stated because the reader of this branch
-                    # would otherwise reasonably infer the test rejects it.
-                    auth_top_order_id = authoritative_selected.get("order_id")
-                    if isinstance(auth_top_order_id, str) and auth_top_order_id:
-                        extended["schwab_order_id"] = auth_top_order_id
-                    else:
-                        extended.pop("schwab_order_id", None)
+
+            # D79 T6 item 1 (orchestrator K7.3; RD K3): THE TOP LEVEL NAMES
+            # THE SELECTED ORDER. The form-render envelope's top-level
+            # quartet is the DEFAULT candidate's; once a selection is made it
+            # is replaced, UNCONDITIONALLY, by the SELECTED entry's own date,
+            # price, quantity, date provenance and order id -- so the
+            # top-level id names the order the operator picked, and the
+            # top-level values are THAT order's values (the typed values, when
+            # they differ, ride in ``operator_corrected_value_json``: fill
+            # 40's shape). The default's id never survives a non-default
+            # pick, which is the link round 0 measured going to an order the
+            # operator did not pick (Item 2). An entry with no date provenance
+            # drops the top-level stamp rather than leaving the DEFAULT's
+            # describing it; an id that is not a non-blank string is POPPED
+            # (Codex R4 Major #1's pop, kept: a blank token asserts no link).
+            if authoritative_selected is not None:
+                extended["exit_date"] = authoritative_selected["date"]
+                extended["exit_price"] = authoritative_selected["price"]
+                extended["closed_shares"] = authoritative_selected["quantity"]
+                if "date_source" in authoritative_selected:
+                    extended["exit_date_source"] = (
+                        authoritative_selected["date_source"])
+                else:
+                    extended.pop("exit_date_source", None)
+                if flag_selected_order_id is not None:
+                    extended["schwab_order_id"] = flag_selected_order_id
+                else:
+                    extended.pop("schwab_order_id", None)
 
             # ---------------------------------------------------------------
-            # WHAT A TOP-LEVEL ``schwab_order_id`` ASSERTS, STATED WHERE IT IS
-            # ENFORCED (RD, 2026-08-11; orchestrator B review MAJOR 1):
+            # THE RETENTION RULE: WHAT A TOP-LEVEL ``schwab_order_id`` ASSERTS,
+            # STATED WHERE IT IS ENFORCED (RD, 2026-08-11 and D79 K3).
             #
-            #   The operator affirmatively LINKED this row to that broker
-            #   order — by selecting it, or by accepting its unedited render.
-            #   An id that arrived as a display default and survived edits
-            #   pointing elsewhere is RESIDUE, not a link. Any path where the
-            #   persisted values cease to derive from the id's OWN candidate
-            #   DROPS the id: the row becomes anonymous-in-substance and
-            #   enters the flag channel, which is built for exactly this
-            #   evidence state.
+            #   The top-level id is the LINK: the operator affirmatively tied
+            #   this row to that broker order. The link is established by
+            #   SELECTION plus EITHER value-derivation (the typed values derive
+            #   from the order's own map entry) OR an explicit confirmation
+            #   (the F1 flag for THAT order, acknowledged -- RD K3 (iv)). An id
+            #   with neither is RESIDUE and is DROPPED: the row is then
+            #   anonymous-in-substance and enters the flag channel, which is
+            #   built for exactly that evidence state.
             #
             # THAT IS THE TEST THAT ESTABLISHES THE LINK, AT THE ONE MOMENT IT
-            # CAN BE APPLIED -- NOT AN INVARIANT THE ROW CARRIES FOREVER
-            # (RD, 2026-08-11, correcting his own earlier wording, which
-            # described a test as though it were a property; the orchestrator's
-            # B review round 2 MAJOR A). Here at POST the question is
-            # link-versus-residue, and value-derivation is the only evidence
-            # available to answer it: nothing else distinguishes an id the
-            # operator meant from one the form happened to render. So the rule
-            # above governs THIS handler, in full, and is not weakened by
-            # anything below.
+            # CAN BE APPLIED -- NOT AN INVARIANT THE ROW CARRIES FOREVER (RD,
+            # 2026-08-11). Once written, the id asserts a HISTORICAL FACT --
+            # that this link was made -- and later movement of the row's values
+            # does not revoke it. A correction moves the row toward being a
+            # MORE accurate record of THE SAME order; the id names WHICH order,
+            # the values describe HOW it executed, and drift between them is a
+            # data-quality question, never an identity question. A
+            # re-derivation on the READ path is ruled out:
+            # `swing/web/view_models/trades.py` carries the case -- fill 40,
+            # whose hand-corrected date is the TRUEST thing about it -- and why
+            # re-deriving would demote the best-evidenced row on the ledger and
+            # re-offer its order.
             #
-            # Once the id is written it asserts a HISTORICAL FACT -- that this
-            # link was made -- and later movement of the row's values does not
-            # revoke it. A correction moves the row toward being a MORE accurate
-            # record of THE SAME order; the id names WHICH order, the values
-            # describe HOW it executed, and drift between them is a data-quality
-            # question, never an identity question. The reader who takes the
-            # paragraph above as a standing invariant is exactly the reader who
-            # adds a re-derivation on the READ path, and that re-derivation is
-            # ruled out: `swing/web/view_models/trades.py` carries the case --
-            # fill 40, whose hand-corrected date is the TRUEST thing about it --
-            # and the reasoning for why re-deriving would demote the
-            # best-evidenced row on the ledger and re-offer its order.
+            # WHAT THE DROP BRANCH COVERS NOW (D79): an UNCONFIRMED divergence
+            # cannot reach this point through the form -- the F1 flag stops the
+            # POST before ``record_exit`` until it is acknowledged -- so the
+            # drop is the BACKSTOP for a tampered or malformed anchor: zero or
+            # several map entries naming the id, an id that is not a non-blank
+            # string, or a legacy (map-less) envelope whose top-level quartet
+            # the typed values neither derive from nor were confirmed against.
+            # The evidence hierarchy is VALUES->ORDER, never TOKEN->ORDER:
+            # ``selected_candidate_order_id`` still records what the operator
+            # picked, and the flag channel alarms rather than asserts.
             #
-            # THIS IS A RULE, NOT AN ENUMERATION, and that is the whole fix.
-            # The false-exhaustive comment above is what let a reachable third
-            # case survive: a NON-DEFAULT radio pick plus edits matching
-            # neither that candidate nor the default kept the default's id,
-            # and ``view_models/trades.py`` reads a top-level id as PROVEN
-            # IDENTITY — the one evidence state permitted to suppress a
-            # candidate. Two failures compounded: the default's Schwab order,
-            # never recorded, was silently suppressed, AND the fill that WAS
-            # recorded never entered the flag channel. Widening the branch
-            # condition by one case would have been the same comment one case
-            # longer, waiting for a fourth.
+            # The confirmation branch reads ``f1_pending``: the POST reaches
+            # ``record_exit`` only when every flag the dispatch below computes
+            # is acknowledged, so at the moment this envelope is RECORDED an
+            # F1 flag for the selected order has been confirmed. Computing the
+            # envelope as-if-confirmed is also what lets the dispatch know, at
+            # the FIRST POST, whether the exit it asks about is linked (the
+            # unreadable-envelope flag fires only on a linked exit).
+            # Comparison grain: ``derives_from``, the same comparison the F1
+            # question uses, so a row cannot be corrected by one measure and
+            # linked by the other.
             #
-            # The evidence hierarchy is VALUES->ORDER, never TOKEN->ORDER, so
-            # dropping costs nothing real: ``selected_candidate_order_id``
-            # still records what the operator picked, and the flag channel
-            # alarms rather than asserts. ONE SHIPPED CASE CHANGED BEHAVIOUR —
-            # the default-radio override, which used to keep the id because
-            # the default "was the source the operator started from". That is
-            # the residue the ruling names; its regression test moved with it.
-            #
-            # Comparison grain matches the origin comparator above (date
-            # exact, price at the template's 2 decimals, quantity as int)
-            # because "derives from" must mean the same thing in both places
-            # or a row could be corrected by one measure and linked by the
-            # other.
-            def _derives_from(entry: object) -> bool:
-                if not isinstance(entry, dict):
-                    return False
-                try:
-                    entry_price = float(entry.get("price"))
-                    entry_shares = int(entry.get("quantity"))
-                except (TypeError, ValueError):
-                    return False
-                return (
-                    entry.get("date") == exit_date
-                    and round(entry_price, 2) == round(exit_price, 2)
-                    and entry_shares == shares
-                )
-
             # EVERY PRESENT VALUE IS JUDGED, not only the string-shaped ones
-            # (Codex R2 minor). An earlier version gated on
-            # ``isinstance(top_order_id, str)``, so a numeric / list / object
-            # id — reachable only through the client-editable envelope —
-            # survived the rule that claims to govern every top-level id. The
-            # VM ignores non-string values today, so nothing was silently
-            # suppressed; the envelope simply carried an assertion the rule had
-            # never examined. A value that is not a non-blank string asserts no
-            # link and is dropped without further inquiry.
+            # (Codex R2 minor): a numeric / list / object id -- reachable only
+            # through the client-editable envelope -- asserts no link and is
+            # dropped without further inquiry.
             if "schwab_order_id" in extended:
                 top_order_id = extended["schwab_order_id"]
                 usable = (
@@ -3258,9 +3193,7 @@ async def exit_post(
                 # PRESENCE, not truthiness (Codex R1 major). An envelope that
                 # CARRIES ``candidates_map`` and declares it EMPTY asserts a
                 # candidate manifest containing nothing, and an id naming no
-                # entry in it evidences no link — the legacy justification
-                # below does not reach that shape. A falsy test conflated the
-                # two and would keep such an id. A populated resolver never
+                # entry in it evidences no link. A populated resolver never
                 # emits an empty map, so this is a client-edited or malformed
                 # envelope either way; the map governs whenever it is present.
                 if usable and "candidates_map" in anchor_envelope:
@@ -3282,15 +3215,35 @@ async def exit_post(
                         "price": anchor_envelope.get("exit_price"),
                         "quantity": anchor_envelope.get("closed_shares"),
                     }]
+                f1_confirmed_for_this_order = (
+                    f1_pending and flag_selected_order_id == top_order_id
+                )
                 if not (
                     usable
                     and len(named) == 1
-                    and _derives_from(named[0])
+                    and (derives_from(named[0], exit_date=exit_date,
+                                      exit_price=exit_price, shares=shares)
+                         or f1_confirmed_for_this_order)
                 ):
                     extended.pop("schwab_order_id", None)
             resolved_schwab_source_value_json = _json.dumps(
                 extended, sort_keys=True,
             )
+            # D79 T6 item 4 (CHARC FORK 2, the PRODUCER): never persist an
+            # envelope the one authority cannot read. The retention rule's
+            # ``usable`` test above admits a PADDED id (" 123" strips
+            # non-blank) that ``canonical_envelope_identity`` REFUSES; the
+            # authority read here, over the envelope ABOUT TO BE PERSISTED,
+            # dominates it. No normalisation on write -- stripping a value the
+            # authority refuses would be a second spelling of the id.
+            if canonical_envelope_identity(
+                    resolved_schwab_source_value_json,
+            ).state == ENVELOPE_REFUSED:
+                return _reject_anchor(
+                    "Trade exit rejected: the auto-fill envelope's order id "
+                    "is malformed (padded or blank) and cannot be recorded; "
+                    "the form has been regenerated."
+                )
             # ``... or None`` not ``... or ''`` (Phase 6 gotcha).
             resolved_auto_fill_audit_at = auto_fill_audit_at or None
     elif claimed_auto_fill:
@@ -3342,6 +3295,59 @@ async def exit_post(
     # branches, an interrupt RETURNED by `log_contained` (the record's SINK
     # raised it) is raised `from` the error being recorded -- never retyped,
     # never rendered as text into a degraded-success body.
+    # R: spec §5.1 case 2 — a refusal re-renders the form with the
+    # authoritative remaining shares (``max=``), keeping the typed values. The
+    # helper falls back to the banner-only fragment when the trade is
+    # closed/gone. The submitted anchor is offered for restore only when it
+    # passed the ladder as a CLAIMED dict envelope (ruling (c)); the helper
+    # restores it only under ruling (d)'s gate. ONE closure, so a service
+    # refusal and a D79 flag re-render take the same restore path.
+    def _refusal_rerender(
+        error_message: str, *, flags: tuple[ExitRecordFlag, ...] = (),
+    ) -> HTMLResponse:
+        restorable = claimed_auto_fill and isinstance(anchor_envelope, dict)
+        return _rerender_exit_form_with_error(
+            request=request, templates=templates, cfg=cfg,
+            cache=cache, executor=executor, trade_id=trade_id,
+            exit_date=exit_date, exit_price=exit_price,
+            shares=shares, reason=reason_enum.value, notes=notes,
+            error_message=error_message,
+            submitted_schwab_source_value_json=(
+                schwab_source_value_json if restorable else None
+            ),
+            submitted_envelope=(
+                anchor_envelope if restorable else None
+            ),
+            submitted_auto_fill_audit_at=(
+                auto_fill_audit_at if restorable else None
+            ),
+            submitted_fill_origin_at_form_render=(
+                fill_origin_at_form_render if restorable else None
+            ),
+            submitted_selected_signature_hash=(
+                candidate_sigs.get(selected_index)
+                if restorable and selected_index is not None
+                else None
+            ),
+            flags=flags,
+        )
+
+    # D79 (orchestrator K4, K5): the POST ASKS before it records. Every flag
+    # is computed by ``exit_record_flags`` (pure); any flag stops the POST
+    # here with nothing written.
+    flags = exit_record_flags(
+        typed=(exit_date, exit_price, shares),
+        selected_entry=flag_selected_entry,
+        selected_order_id=flag_selected_order_id,
+        candidates_map=flag_candidates_map,
+        anonymous_matches=(),
+        unreadable_fills=(),
+        linked=False,
+    )
+    if flags:
+        return _refusal_rerender(
+            "Confirm or retype before recording.", flags=flags)
+
     result = None
     close_interrupt: BaseException | None = None
     conn = connect(cfg.paths.db_path)
@@ -3350,40 +3356,7 @@ async def exit_post(
             try:
                 result = record_exit(conn, req)
             except ValueError as exc:
-                # R: spec §5.1 case 2 — re-render form with authoritative
-                # remaining shares (``max=``), keeping the typed values. The
-                # helper falls back to the banner-only fragment when the
-                # trade is closed/gone. The submitted anchor is offered for
-                # restore only when it passed the ladder as a CLAIMED dict
-                # envelope (ruling (c)); the helper restores it only under
-                # ruling (d)'s gate.
-                restorable = (
-                    claimed_auto_fill and isinstance(anchor_envelope, dict)
-                )
-                return _rerender_exit_form_with_error(
-                    request=request, templates=templates, cfg=cfg,
-                    cache=cache, executor=executor, trade_id=trade_id,
-                    exit_date=exit_date, exit_price=exit_price,
-                    shares=shares, reason=reason_enum.value, notes=notes,
-                    error_message=str(exc),
-                    submitted_schwab_source_value_json=(
-                        schwab_source_value_json if restorable else None
-                    ),
-                    submitted_envelope=(
-                        anchor_envelope if restorable else None
-                    ),
-                    submitted_auto_fill_audit_at=(
-                        auto_fill_audit_at if restorable else None
-                    ),
-                    submitted_fill_origin_at_form_render=(
-                        fill_origin_at_form_render if restorable else None
-                    ),
-                    submitted_selected_signature_hash=(
-                        candidate_sigs.get(selected_index)
-                        if restorable and selected_index is not None
-                        else None
-                    ),
-                )
+                return _refusal_rerender(str(exc))
         finally:
             try:
                 conn.close()

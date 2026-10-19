@@ -44,6 +44,17 @@
       <strong>Schwab auto-fill:</strong> {{ vm.auto_fill_advisory_text }}
     </div>
     {% endif %}
+    {#- D79 (orchestrator K4, K5, K7.5): what this POST must ASK before it
+        records -- an F1 contradiction with the selected order, an anonymous
+        recorded fill the values match, a possible partial, an unreadable
+        recorded envelope. Each names its reason and the recovery. -#}
+    {% if vm.exit_flags %}
+    <div class="banner banner-degraded exit-record-flags" role="alert">
+      {% for flag in vm.exit_flags %}
+      <p class="exit-record-flag">{{ flag.text }}</p>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% if vm.auto_fill_kind == 'populated' %}
     <div class="auto-fill-audit">
       <label>Auto-fill source:</label>

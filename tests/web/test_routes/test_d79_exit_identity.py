@@ -7,6 +7,7 @@ o2 the default at index 1; the trade holds 10 shares.
 """
 from __future__ import annotations
 
+import html
 import json
 
 from fastapi.testclient import TestClient
@@ -115,3 +116,132 @@ def test_t5c_single_candidate_two_tab_replay_is_refused_once(world):
     assert rb.status_code == 400, rb.text[:500]
     assert "already recorded" in rb.text
     assert len(_exit_fills(world.cfg)) == 1
+
+
+# ------------------------------------------------------------------- T6
+def _form(tc, tid) -> dict:
+    fd = _browser_form(tc.get(f"/trades/{tid}/exit/form").text)
+    fd["reason"] = "manual"
+    return fd
+
+
+def _env(fd) -> dict:
+    return json.loads(fd["schwab_source_value_json"])
+
+
+def _hash_of(env: dict, order_id: str) -> str:
+    [sig] = [k for k, v in env["candidates_map"].items()
+             if v["order_id"] == order_id]
+    return sig
+
+
+def _text(r) -> str:
+    """The body with HTML entities decoded (the flag texts carry an
+    apostrophe, which the template autoescapes)."""
+    return html.unescape(r.text)
+
+
+def _without_candidate_inputs(fd: dict) -> dict:
+    return {k: v for k, v in fd.items() if not k.startswith("candidate_")}
+
+
+def test_t6a_unconfirmed_contradiction_writes_nothing(world):
+    """Orchestrator K7.3, the label: o1 picked (index 0), the inputs left at
+    o2's values, no confirm -> NOTHING is written and the F1 flag names
+    both orders. PRE-FIX: a ``schwab_auto_then_operator_corrected`` fill
+    whose top-level id is o2 (round-0 Item 2)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        fd["candidate_index"] = "0"
+        r = _post(tc, world.tid, fd)
+    assert r.status_code == 400, r.text[:500]
+    assert "match order o2, not the selected order o1" in _text(r)
+    assert _exit_fills(world.cfg) == []
+
+
+def test_t6d_padded_order_id_is_refused_before_record_exit(world, monkeypatch):
+    """CHARC F2-(iv), the writer half: an envelope whose top-level id and
+    map entry carry " o2" (padded, a hand-built CONSISTENT anchor) is
+    refused by the authority read before ``record_exit`` is reached; the
+    same POST with "o2" records. PRE-FIX: " o2" is persisted (the
+    ``usable`` check passes). NULL killed: the check in the service only
+    (it fails the zero-calls assertion)."""
+    calls: list[int] = []
+    real = exit_mod.record_exit
+
+    def spy(conn, req):
+        calls.append(1)
+        return real(conn, req)
+
+    monkeypatch.setattr(routes_mod, "record_exit", spy)
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        for entry in env["candidates_map"].values():
+            if entry["order_id"] == "o2":
+                entry["order_id"] = " o2"
+        env["schwab_order_id"] = " o2"
+        padded = dict(fd, schwab_source_value_json=json.dumps(
+            env, sort_keys=True), candidate_order_id_1=" o2")
+        r = _post(tc, world.tid, padded)
+        assert r.status_code == 400, r.text[:500]
+        assert "malformed (padded or blank)" in _text(r)
+        assert calls == []
+        assert _exit_fills(world.cfg) == []
+        ok = _post(tc, world.tid, fd)
+    assert ok.status_code == 200, ok.text[:500]
+    assert calls == [1]
+    [env_ok] = _persisted_envelopes(world.cfg)
+    assert env_ok["schwab_order_id"] == "o2"
+
+
+def test_t6e_default_pick_with_an_edit_is_flagged(world):
+    """Orchestrator K4 (the default included): o2 left selected, the price
+    edited 131.00 -> 131.40, no confirm -> no fill, and the F1 flag names
+    the one differing field. PRE-FIX: recorded as corrected."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        fd["exit_price"] = "131.40"
+        r = _post(tc, world.tid, fd)
+    assert r.status_code == 400, r.text[:500]
+    body = _text(r)
+    assert "differ from order o2's (2026-05-21, 131.00 x 3) in price." in body
+    assert "match order" not in body
+    assert _exit_fills(world.cfg) == []
+
+
+def test_t6f_default_unedited_control(world):
+    """Control: the default, unedited -> ``schwab_auto``, top-level o2, one
+    fill, 200."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        r = _post(tc, world.tid, _form(tc, world.tid))
+    assert r.status_code == 200, r.text[:500]
+    [(_fid, _action, _qty, origin, env, _at)] = _exit_fills(world.cfg)
+    assert origin == "schwab_auto"
+    assert json.loads(env)["schwab_order_id"] == "o2"
+
+
+def test_t6h_multi_entry_map_with_no_selection_synthesizes_the_default(world):
+    """Fork 2 (orchestrator): a claimed multi-entry envelope, top-level o2,
+    NO candidate inputs. The route synthesizes the selected entry from the
+    top-level quartet. (i) price edited -> F1 NO_CANDIDATE naming price;
+    (ii) typed values equal to o1's entry -> F1 OTHER_ORDER naming o1;
+    (iii) unedited -> recorded, the control. PRE-FIX (legacy-only
+    synthesis): (i) records ``schwab_auto_then_operator_corrected`` on the
+    first POST."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        bare = _without_candidate_inputs(_form(tc, world.tid))
+        r1 = _post(tc, world.tid, dict(bare, exit_price="131.40"))
+        assert r1.status_code == 400, r1.text[:500]
+        assert ("differ from order o2's (2026-05-21, 131.00 x 3) in price."
+                in _text(r1))
+        r2 = _post(tc, world.tid, dict(
+            bare, exit_date="2026-05-20", exit_price="130.00", shares="4"))
+        assert r2.status_code == 400, r2.text[:500]
+        assert "match order o1, not the selected order o2" in _text(r2)
+        assert _exit_fills(world.cfg) == []
+        r3 = _post(tc, world.tid, bare)
+    assert r3.status_code == 200, r3.text[:500]
+    [(_fid, _action, _qty, origin, env, _at)] = _exit_fills(world.cfg)
+    assert origin == "schwab_auto"
+    assert json.loads(env)["schwab_order_id"] == "o2"

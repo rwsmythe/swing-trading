@@ -989,6 +989,10 @@ class TradeExitFormVM:
     # and set only when ruling (d) restored his anchor. None renders the
     # default (the last candidate) checked.
     selected_candidate_index: int | None = None
+    # D79 (orchestrator K4, K5): the ``ExitRecordFlag`` s a refused POST must
+    # ask before it records -- each rendered with its text and its identity.
+    # A row partial, not a base-layout VM, so no cross-VM field obligation.
+    exit_flags: tuple = ()
 
 
 def build_exit_form_vm(
