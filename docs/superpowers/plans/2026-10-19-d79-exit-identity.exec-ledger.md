@@ -844,3 +844,40 @@ Author of this section: the cell-8 implementer. No Reviewer A or B round was run
 **Fixture note on B-05:** built on `_single(world)` (the T5 builder) with the sole entry rewritten to `o9`, `date 2026-05-20`, `price 130.0`, `quantity 4` (o1's values), the top level left at o2 / 2026-05-21 / 131.00 / 3, and the typed values set to o9's. The persisted top-level `schwab_order_id` and `selected_candidate_order_id` are both asserted `o9`. The test is green on arrival by design.
 
 **Suite on the final head `91670361`** (`-m "not slow" -n auto`): 1 failed, 15497 passed, 13 skipped in 1097 s. The one red was `tests/integrations/test_schwab_setup_cli.py::test_setup_auth_failure_audit_status_and_sentinel_redaction` (a sentinel in the audit `error_message`), NOT the red the orchestrator saw at `a6519295`. In isolation (`-n 0`) the module passes, 27 passed in 12.5 s; `tests/integrations` under `-n auto` passes, 698 passed in 44 s. Not classified further by this cell: the cell reproduced it as a load-order red only, and routes the classification to the orchestrator.
+
+## Orchestrator QA of cell 8 and the final head (against disk, `90a7b9c1`)
+
+- Five commits `92014b0c`..`90a7b9c1`, all doc or test. `git diff --stat 618d7b04..HEAD -- swing/` is identical to the one at `a6519295`: no production file changed after Reviewer B audited the tree. `%(trailers)` is empty across `618d7b04..HEAD`. The tree is clean, and the stash stack holds only the pre-existing entry.
+- AL-5's restated sentence and AL-13 are each present once, verbatim from RD's text. The false clause "after K7.3 nothing produces" is gone.
+- The B-05 pin is parametrized over two submission shapes (2 cases). The cell's mutations: deleting the bare one-entry branch reds the `bare` case; also deleting the index-0 inference reds both. The B-06 mutation (skipping the `derives_from` call) reds the new did-it-fire assertion. `swing/` was restored byte-for-byte after each mutation, checked by sha256.
+- **The full fast suite, three runs, every result read off the saved output** (copies in `C:/Users/rwsmy/swing-data/review-transcripts/d79-exit-identity/exec/t9/`):
+  - `a6519295`, orchestrator, 1432 s under heavy load: **1 failed**, 15495 passed, 13 skipped. The red is `tests/research/test_l2_lock_sys_modules_isolation_regression.py::test_research_l2lock_del_does_not_break_web_route_exception_identity`, a subprocess `TimeoutExpired` at 300 s. The module passes with `-n 0` (5 passed).
+  - `90a7b9c1`, cell 8, 1097 s: **1 failed**, 15497 passed, 13 skipped. The red is `tests/integrations/test_schwab_setup_cli.py::test_setup_auth_failure_audit_status_and_sentinel_redaction`, which passes in isolation (27 passed with `-n 0`). The same test is recorded as an intermittent pre-existing red since Phase 12 (`docs/archive/phase12/phase12-bundle-B-return-report.md:152`, where the sentinel is built by the test itself and never registered with the redactor).
+  - **`90a7b9c1`, orchestrator re-run, 799 s: 15498 passed, 13 skipped, 0 failed, exit 0.** This run is the final-head result. The two earlier reds, both in modules outside the arc and neither reproduced in isolation, are recorded here and not counted as green.
+
+## T9 -- the operator-witnessed browser check (2026-10-19)
+
+**Live state at T9:** the live DB holds 28 trades, all `reviewed`, with NONE open (read `mode=ro`). Per plan T9 step 3 (a), the Schwab-candidate legs (b) to (d) cannot run on live data. They are **DEFERRED to the first live exit after merge**, which RD's witness line already names as the witness: "the first live exit after merge IS the witness", and RD reads its fill row before any other read quotes it. The operator chose a **SEEDED** witness of the browser-only mechanics now. It is labelled as such: it validates the HTMX render-and-confirm path, not live Schwab data (the seeded-gate memory).
+
+**Step 2, the scratch DB:**
+- The live DB was copied through plain `sqlite3`'s backup API from a `mode=ro` source, never through `swing.data.db.connect`.
+- The copy was seeded through the production writers by `seed_t9.py` (in the evidence directory): trade #29 `ZZT9`, 10 shares at 120.00, then one anonymous `operator_typed` exit of 3 at 131.00 on 2026-10-16 (fill #61), leaving 7 shares. The entry date reads 2026-05-04 because the test helper fixes it, which does not matter for this check.
+- The server was the worktree's: `PYTHONPATH=. python -m swing.cli --config <scratch config> web --port 8091`. Every `[paths]` entry pointed into the scratch directory. The operator's live server stayed on 8080, untouched.
+- **Worktree code proven:** an orchestrator curl POST of the duplicate values returned 400 with the D79 flag fragment (`exit-record-flags`, "These values match recorded fill #61 ...", `acknowledged_flag` value `value_tuple_match|61`), and recorded nothing (still 2 fills).
+
+**Step 3, the operator's browser legs** (one step at a time, each verified on the copy afterwards):
+1. The dashboard's ZZT9 Exit button swapped in the exit form. There were no Schwab candidates, as expected for a fake ticker. A "Schwab integration degraded: most-recent call status='error'" banner showed, inherited from the live DB's last Schwab call. That is not D79, and the operator was told.
+2. **(e), the (c) flag on a hand-typed duplicate:** 10/16/2026, 131.00, 3 -> the 400 fragment SWAPPED in the browser: "Confirm or retype before recording.", the fill #61 question, and a "Confirm and record" button. **Nothing recorded** (still 2 fills, 7 shares).
+3. **Confirm:** "Confirm and record" -> the form closed and the row showed 4.0 / 10. **Exactly one fill recorded**: #62, trim, 2026-10-16, 3 x 131.00, `operator_typed`, no envelope. So the Confirm button's `force` reached the POST (the HTMX submitter-name specific).
+4. **The stale-tab replay:**
+   - Tab A, with the same values, showed TWO questions (#61 and #62), and was left unconfirmed.
+   - In tab B the operator typed 2026-10-19 by mistake. It recorded #63 directly with no question, which is correct: a different date is not a value-tuple duplicate. That left 1 share.
+   - Tab A's stale Confirm (3 shares) was then **refused**: "exit shares 3 exceeds remaining current_size 1.0". The questions and the Confirm button were gone (Fork 1 discriminator (ii): the refusal is ordered before the question), and **nothing was recorded** (still 4 fills).
+   - The identity-bound acknowledgement (an acknowledgement given to #61 and #62 does not cover a new matching fill) was NOT witnessed in the browser, because the remaining size refused first. It is pinned by T7-b.
+- **Teardown:** the server process was stopped, port 8091 was verified free, and no straggler process remained. The live DB was re-read afterwards: 28 trades, none open, unchanged.
+
+**Steps 4-5, the census**, run on a FRESH copy (`census.db`, the same backup method; no seed) through the worktree's authority. Output: `census-output.txt`.
+- **Census 4** (CHARC K6; linked exit fills sharing an extracted id, split partials excluded): `[]`. No linked id is shared, so there are no known partial sets either.
+- **Census 5** (CHARC FORK 2; the authority over every non-entry envelope): **19 non-entry envelopes, 0 refused.** At the intake's width (entries included, which is how the intake's "0 of 33" was counted): **33 envelopes, 0 refused.** 33 = 14 entry + 19 non-entry, so the two counts agree.
+
+Author of the sections above: orchestrator.
