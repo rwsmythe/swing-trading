@@ -567,6 +567,46 @@ def test_a02_a_huge_int_selected_entry_price_is_not_well_formed(world):
     assert _exit_rows(world.cfg) == []
 
 
+
+# ------------------------------------------------- A-F02 (Reviewer A R4)
+def test_af02_a_huge_int_top_level_quantity_is_not_well_formed(world):
+    """A-F02, caller one (tier (d)): the top-level ``closed_shares`` is a
+    401-digit JSON int. The quantity is held to the price's bound -- an int
+    that cannot convert to a finite float is NOT well formed: 400 with tier
+    (d)'s text, no fill. PRE-FIX (measured): ``isinstance(int)`` alone
+    passed it, tier (d) did not fire, the form's checked radio selected an
+    entry whose values then REPLACED the tampered top level, and the POST
+    recorded -- 200, so red. A tampered anchor is refused at the ladder, as
+    a huge-int price already is (D79-A-02)."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        env["closed_shares"] = _HUGE_INT
+        r = _post(tc, world.tid, dict(
+            fd, schwab_source_value_json=json.dumps(env, sort_keys=True)))
+    assert r.status_code == 400, r.text[:500]
+    assert "contains invalid values" in r.text
+    assert _exit_rows(world.cfg) == []
+
+
+def test_af02_a_huge_int_selected_entry_quantity_is_not_well_formed(world):
+    """A-F02, caller two (the selected-entry check): o1 picked, and o1's map
+    entry carries a 401-digit JSON int ``quantity``. 400 with the
+    selected-entry text, no fill. PRE-FIX: the entry passed the check and
+    the POST was asked F1 instead (``derives_from`` catches the overflow and
+    reads it as not deriving) -- the selected-entry text absent, so red."""
+    with TestClient(create_app(world.cfg, world.cfg_path)) as tc:
+        fd = _form(tc, world.tid)
+        env = _env(fd)
+        env["candidates_map"][_hash_of(env, "o1")]["quantity"] = _HUGE_INT
+        r = _post(tc, world.tid, dict(
+            fd, candidate_index="0",
+            schwab_source_value_json=json.dumps(env, sort_keys=True)))
+    assert r.status_code == 400, r.text[:500]
+    assert "the selected auto-fill candidate carries invalid values" in r.text
+    assert _exit_rows(world.cfg) == []
+
+
 # ------------------------------------------------- D79-A-03 (Reviewer A R3)
 def test_a03_a_huge_integer_share_count_is_refused_as_exceeds(world):
     """D79-A-03, the caller: a POST whose ``shares`` is a 401-digit integer

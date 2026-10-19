@@ -2471,7 +2471,9 @@ def _exit_values_well_formed(date_value: object, price_value: object,
 
     A JSON int too large for a float (``float()`` raises ``OverflowError``)
     is not a finite number, so it is NOT well formed (D79-A-02): the caller
-    answers 400 with the anchor cleared, never a 500."""
+    answers 400 with the anchor cleared, never a 500. The quantity is held
+    to the same bound as the price (A-F02): an int that cannot convert to a
+    finite float is not well formed either."""
     import math as _math
     from datetime import date as _date_cls
 
@@ -2486,14 +2488,15 @@ def _exit_values_well_formed(date_value: object, price_value: object,
         and not isinstance(price_value, bool)
     ):
         return False
+    if not (
+        isinstance(shares_value, int) and not isinstance(shares_value, bool)
+    ):
+        return False
     try:
-        price_ok = _math.isfinite(float(price_value))
+        return (_math.isfinite(float(price_value))
+                and _math.isfinite(float(shares_value)))
     except OverflowError:
         return False
-    shares_ok = (
-        isinstance(shares_value, int) and not isinstance(shares_value, bool)
-    )
-    return price_ok and shares_ok
 
 
 def _exit_candidates_maps_equal(vm, submitted_envelope: dict) -> bool:
@@ -2880,8 +2883,8 @@ async def exit_post(
                 "provenance but schwab_source_value_json contains "
                 "invalid values (exit_date must be ISO YYYY-MM-DD; "
                 "exit_price must be finite numeric; closed_shares must "
-                "be an integer). The form has been regenerated; please "
-                "re-submit."
+                "be a finite integer). The form has been regenerated; "
+                "please re-submit."
             )
 
         # (e) D31 — the provenance stamps, when PRESENT, must be members of the
@@ -3157,8 +3160,8 @@ async def exit_post(
                 return _reject_anchor(
                     "Trade exit rejected: the selected auto-fill candidate "
                     "carries invalid values (date must be ISO YYYY-MM-DD; "
-                    "price must be finite numeric; quantity must be an "
-                    "integer). The form has been regenerated; please "
+                    "price must be finite numeric; quantity must be a "
+                    "finite integer). The form has been regenerated; please "
                     "re-submit."
                 )
 
