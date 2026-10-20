@@ -264,7 +264,7 @@ def test_observe_load_gains_resolve_reads_and_loses_nothing(
     for t in ("AAA", "BBB"):
         _put(cfg.paths.prices_cache_dir, t, "yfinance", [("2026-05-29", 9.0)])
     cache = _real_cache(cfg, monkeypatch, {"AAA": ["frame"], "BBB": ["frame"]})
-    _count_resolve(monkeypatch)
+    reads = _count_resolve(monkeypatch)
     w = _drive(cfg, db_path, cache)
     entry = load(w)
     assert set(entry) == {"step", "metric", "observed", "fetch_window",
@@ -273,4 +273,5 @@ def test_observe_load_gains_resolve_reads_and_loses_nothing(
     assert entry["fetch_window"] == 2
     assert entry["in_memory_hit"] == 1
     assert entry["resolve_reads"] == 2
+    assert reads["n"] == 2
     assert list(entry)[-1] == "resolve_reads"
