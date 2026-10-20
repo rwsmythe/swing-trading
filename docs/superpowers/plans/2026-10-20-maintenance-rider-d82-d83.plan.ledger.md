@@ -196,3 +196,13 @@ The depth column is the orchestrator's (`scripts/cell_depth.py --agent <id>`); t
 **The redo is a PARTIAL round.** The checklist has all 26 lines: 21 HOLDS, 1 FAILS (C08) and 4 CANNOT-TELL (C22-C25, the rulings checks). The four CANNOT-TELLs are a REVIEWER error: codex mistyped the staged path, dropping one character of the session id. Its own `find` then printed the correct path, but it never re-read the file. The file was present throughout.
 
 **R2-01** (reviewer: major, TASK-BEARING, IN-ENVELOPE; T5 W7). `lease=_StubLease()` is described as "a `run_id = 1` stub" but the plan never says to define it, and `test_step_evaluate_warm.py` imports no lease stub. The reviewer's RED claim does not hold: pre-fix, the autouse fixture's `monkeypatch.setattr` on the missing `rmod._open_detection_warm_tickers` raises at setup first. The gap would surface at GREEN as a `NameError`. **Cell-3 disposition (proposed, NOT applied, per the orchestrator's step 6):** task-bearing by the fail-safe rule. Mechanical fix: W7 says to define a module-local `class _StubLease` with `run_id = 1` in that file. The same class is open at W1-W4 ("a lease stub with `run_id=1`") and N-V (`lease=...`).
+
+**Orchestrator ruling at the round-2 (redo) gate -- author: orchestrator** (transcribed from the orchestrator's resume message to cell 3, 2026-10-20):
+
+> R2-01 CONCURRED, with its siblings: W7, W1-W4 and N-V each name the stub, and `tests/pipeline/test_step_evaluate_warm.py` defines a module-local `class _StubLease` with `run_id = 1`. I verified on disk that the file imports only `runner` and `WarmReport`. The reviewer's RED claim is wrong as you say, and the GREEN-side NameError is the real gap. Round 2 (redo) counts, with one task-bearing finding. Round 3, the last counted round, must COVER C22-C25.
+
+**R2-01 RESOLVED; encoded by cell 3 (plan sha256 `935c2423...`):**
+- **W7:** `test_step_evaluate_warm.py` defines a module-local `class _StubLease` with `run_id = 1`. It is never read, because the autouse fixture replaces the helper.
+- **W1-W4:** the stub is named as `_FakeLease(db_path, 1, "2026-06-10")`, imported from `tests/pipeline/conftest_temporal.py:70`. The helper reads only `lease.run_id`, through `lease_data_asof` (`runner.py:1111-1118`).
+- **N-V:** the same `_FakeLease` is passed to BOTH the warm and `_step_pattern_observe`. A bare `run_id = 1` stub is NOT enough there: observe writes its rows through `lease.fenced_write()` (`runner.py:3243`). That is why the sibling names the conftest class rather than the W7 stub (read at `conftest_temporal.py:70-90`).
+- **Unchanged:** W5 and W6 keep `_FakeLease(inputs.db_path, 1)`, the two-argument class `test_step_evaluate_warm_scope.py:27` imports from `test_step_evaluate_pin_injection.py:40`.
