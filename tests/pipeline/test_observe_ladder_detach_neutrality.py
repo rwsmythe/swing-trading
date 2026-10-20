@@ -269,7 +269,7 @@ def test_carry_night_rows_differ_only_on_the_observe_only_provider_label(
     assert len(detach["rows"]) == 6
     differing: set[int] = set()
     providers: dict[int, tuple[str, str]] = {}
-    for rt, rd in zip(today["rows"], detach["rows"]):
+    for rt, rd in zip(today["rows"], detach["rows"], strict=True):
         assert rt[0] == rd[0] and rt[1] == rd[1]  # detection_id, observation_date
         assert rt[3:] == rd[3:]  # status, status_change_event, sessions_since
         jt, jd = json.loads(rt[2]), json.loads(rd[2])

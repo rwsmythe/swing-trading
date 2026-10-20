@@ -34,8 +34,8 @@ from tests.pipeline.conftest_temporal import (
     _cfg,
     _FakeLease,
     _plant_detection,
-    _StubOhlcvCache,
     _stub_window,
+    _StubOhlcvCache,
 )
 
 tmp_db_at_head = _ct.tmp_db_at_head  # the shared fixture (conftest_temporal)
