@@ -384,81 +384,24 @@ def test_excluded_green_when_under_threshold(tmp_path: Path) -> None:
     check = _only(
         _check_excluded_reason_breakdown(exports_root=tmp_path),
         "excluded_reason_breakdown")
-    # 5 <= baseline 23 -> over=0 -> green (also < the old 10% raw floor).
+    # D82: the INCLUSIVE green bound at exactly 5.00% (5*20 = 100 <= 100). A
+    # strict-green `<` reads 100 < 100 as false -> yellow, so this kills it.
     assert check.status == "green"
 
 
-def test_excluded_yellow_at_threshold(tmp_path: Path) -> None:
-    # CALIBRATION B FLIP (yellow->green): invalid_ohlc=15 <= baseline 23 -> over=0
-    # -> the invalid_ohlc arm is GREEN (no other reason) -> check GREEN. (Was
-    # yellow pre-calibration at 15% > _EXCL_YELLOW_PCT.) The "yellow-at-threshold"
-    # intent for the UN-baselined reasons is preserved by
-    # test_excluded_other_reasons_keep_thresholds below.
-    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
-                    funnel=_funnel(100, {"H": {"excluded": {"invalid_ohlc": 15}}}))
-    check = _only(
-        _check_excluded_reason_breakdown(exports_root=tmp_path),
-        "excluded_reason_breakdown")
-    assert check.status == "green"  # 15 <= 23 baseline -> over=0 -> green
-
-
-def test_excluded_red_over_threshold(tmp_path: Path) -> None:
-    # CALIBRATION B FLIP (red->yellow): invalid_ohlc=30, over=30-23=7,
-    # excess_pct=100*7/100=7.0% -> 0 < 7 <= _EXCL_YELLOW_PCT -> YELLOW (the
-    # yellow-floor: any excess above the permanent ceiling is a real event, never
-    # green). (Was red pre-calibration at 30% > _EXCL_RED_PCT.)
-    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
-                    funnel=_funnel(100, {"H": {"excluded": {"invalid_ohlc": 30}}}))
-    check = _only(
-        _check_excluded_reason_breakdown(exports_root=tmp_path),
-        "excluded_reason_breakdown")
-    assert check.status == "yellow"  # over=7 -> excess 7.0% -> yellow-floor
-
-
-# --- CALIBRATION B (18-D §6.7): invalid_ohlc baseline (the PINNED curve) -------
-# Baseline=23 (the live plateau). over=max(0,count-23); over==0 -> green; else
-# excess_pct=100*over/unique_signals mapped through _EXCL_RED_PCT/_EXCL_YELLOW_PCT
-# with a yellow floor (any excess > 0 is never green). SCOPE LOCK: ONLY
-# invalid_ohlc is baselined; the other two reasons keep their raw thresholds.
-
-
-def test_excluded_invalid_ohlc_at_baseline_not_red(tmp_path: Path) -> None:
-    # the EXACT live shape (invalid_ohlc=23 of 77). 23 <= baseline 23 -> over=0 ->
-    # the arm is green -> GREEN. Pre-calibration 23/77 = 29.9% > 25 -> RED.
-    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
-                    funnel=_funnel(77, {"H": {"excluded": {"invalid_ohlc": 23}}}))
-    check = _only(
-        _check_excluded_reason_breakdown(exports_root=tmp_path),
-        "excluded_reason_breakdown")
-    assert check.status != "red"
-    assert check.status == "green"
-
-
-def test_excluded_invalid_ohlc_above_baseline_red(tmp_path: Path) -> None:
-    # invalid_ohlc=50 of 77: over=50-23=27; excess_pct=100*27/77=35.1% > 25 -> RED.
-    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
-                    funnel=_funnel(77, {"H": {"excluded": {"invalid_ohlc": 50}}}))
-    check = _only(
-        _check_excluded_reason_breakdown(exports_root=tmp_path),
-        "excluded_reason_breakdown")
-    assert check.status == "red"
-
-
-def test_excluded_invalid_ohlc_just_above_baseline_yellow(tmp_path: Path) -> None:
-    # invalid_ohlc=24 of 77: over=1; excess_pct=100*1/77=1.3% -> 0 < 1.3 <= 10 ->
-    # the yellow FLOOR (NOT green -- strictly above the permanent ceiling is a real
-    # event; NOT the raw-pct red/yellow path).
-    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
-                    funnel=_funnel(77, {"H": {"excluded": {"invalid_ohlc": 24}}}))
-    check = _only(
-        _check_excluded_reason_breakdown(exports_root=tmp_path),
-        "excluded_reason_breakdown")
-    assert check.status == "yellow"
+# --- D82 (RD F5, CHARC F6; 2026-10-20): invalid_ohlc is judged as a RATE -------
+# green iff count*20 <= unique_signals (<= 5.00%); red iff count*10 >
+# unique_signals (> 10.00%); yellow otherwise. Integer cross-multiplication,
+# never a float ratio and never the rounded display. The other two reasons keep
+# their _EXCL_*_PCT thresholds. The boundary pins share ONE denominator, 1535
+# (the live manifest's unique_signals): green <= 76, yellow 77-153, red >= 154.
 
 
 def test_excluded_other_reasons_keep_thresholds(tmp_path: Path) -> None:
-    # SCOPE LOCK proof: the baseline is applied ONLY to invalid_ohlc; the other
-    # two reasons keep their RAW-count thresholds.
+    # D82 scope: the RATE rule applies ONLY to invalid_ohlc; the other two reasons
+    # keep their 10 / 25 floors. The yellow leg (20 of 100) also kills a mutant
+    # that applies the 5 / 10 invalid_ohlc bands to every reason (20% would read
+    # red under them).
     # insufficient_forward_depth=20 of 100 (20% > _EXCL_YELLOW_PCT) -> YELLOW.
     _write_manifest(
         tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
@@ -481,17 +424,72 @@ def test_excluded_other_reasons_keep_thresholds(tmp_path: Path) -> None:
     assert check2.status == "red"
 
 
-def test_excluded_baseline_visible_in_detail(tmp_path: Path) -> None:
-    # the baselined-out count stays VISIBLE in detail (mirror FIX 1's "surface the
-    # accepted cohort" posture) -- the detail names the baseline so the 23 does not
-    # silently disappear.
+@pytest.mark.parametrize(("count", "expected"), [
+    (76, "green"),    # 76*20 = 1520 <= 1535
+    (77, "yellow"),   # 77*20 = 1540 > 1535; 77*10 = 770 <= 1535 (displays 5.02)
+    (153, "yellow"),  # 153*10 = 1530 <= 1535 (displays 9.97)
+    (154, "red"),     # 154*10 = 1540 > 1535 (displays 10.03)
+])
+def test_excluded_invalid_ohlc_rate_bands_at_1535(
+        tmp_path: Path, count: int, expected: str) -> None:
+    # N1 (RD F5's four boundary pins on ONE denominator). 77 kills a comparison on
+    # the 1-dp rounded rate (5.0 <= 5 -> green) and 154 kills it on the red side
+    # (10.0 > 10 is false -> yellow).
     _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
-                    funnel=_funnel(77, {"H": {"excluded": {"invalid_ohlc": 23}}}))
+                    funnel=_funnel(1535, {"H": {"excluded": {"invalid_ohlc": count}}}))
     check = _only(
         _check_excluded_reason_breakdown(exports_root=tmp_path),
         "excluded_reason_breakdown")
-    assert "invalid_ohlc=23" in (check.detail or "")
-    assert "baseline 23" in (check.detail or "")
+    assert check.status == expected
+
+
+def test_excluded_invalid_ohlc_exactly_ten_percent_is_yellow(tmp_path: Path) -> None:
+    # N1b: red is STRICTLY above 10.00% -- 10*10 = 100 > 100 is false -> yellow
+    # (and 10*20 = 200 > 100 -> not green). Kills an inclusive-red `>=`.
+    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+                    funnel=_funnel(100, {"H": {"excluded": {"invalid_ohlc": 10}}}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "yellow"
+
+
+def test_excluded_invalid_ohlc_display_two_dp_and_band(tmp_path: Path) -> None:
+    # N2: RD's display -- the rate at 2 dp, the band word, and the two thresholds
+    # DERIVED from the divisor constants (the text cannot drift from the compare).
+    _write_manifest(tmp_path, dir_name="shadow-expectancy-20260613T000000Z",
+                    funnel=_funnel(1535, {"H": {"excluded": {"invalid_ohlc": 77}}}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert (check.detail or "").startswith(
+        "invalid_ohlc=77 (5.02%, yellow; yellow above 5.00%, red above 10.00%)")
+
+
+def test_excluded_live_shape_71_of_1535_reads_green(tmp_path: Path) -> None:
+    # N3: the REAL emitter's funnel, copied from the live manifest
+    # exports/research/shadow-expectancy-20261018T234055Z/manifest.json
+    # (unique_signals 1535; invalid_ohlc 71, all under Broad-watch). 71*20 = 1420
+    # <= 1535 -> GREEN; the retired count rule read it yellow (71 > 23). The
+    # terminal cards are omitted: they are validated only when present.
+    _write_manifest(
+        tmp_path, dir_name="shadow-expectancy-20261018T234055Z",
+        funnel=_funnel(1535, {
+            "A+ baseline": {"excluded": {"degenerate_risk": 1}},
+            "Broad-watch baseline": {"excluded": {
+                "degenerate_risk": 30, "insufficient_forward_depth": 26,
+                "invalid_ohlc": 71, "missing_observations": 20}},
+            "Near-A+ defensible: extension test": {"excluded": {}},
+        }, unattributed={}))
+    check = _only(
+        _check_excluded_reason_breakdown(exports_root=tmp_path),
+        "excluded_reason_breakdown")
+    assert check.status == "green"
+    assert check.summary == "excluded reasons vs 1535 signals"
+    assert check.detail == (
+        "invalid_ohlc=71 (4.63%, green; yellow above 5.00%, red above 10.00%); "
+        "insufficient_forward_depth=26 (1.7%); missing_observations=20 (1.3%)")
+    assert "baseline" not in (check.detail or "")
 
 
 def test_excluded_sums_across_hypotheses(tmp_path: Path) -> None:
@@ -657,7 +655,9 @@ def test_excluded_ok_when_unique_signals_is_integer_valued_float(tmp_path: Path)
     check = _only(
         _check_excluded_reason_breakdown(exports_root=tmp_path),
         "excluded_reason_breakdown")
-    assert check.status == "green"  # 5/100 = 5% < 10%, ok manifest
+    # D82: 5*20 = 100 <= int(100.0) -> green; the integer-valued float is an ok
+    # manifest and the cast is lossless.
+    assert check.status == "green"
 
 
 def test_excluded_yellow_when_per_hyp_terminal_card_non_integer(tmp_path: Path) -> None:
