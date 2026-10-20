@@ -278,7 +278,7 @@ Ordinary: rows equal. Carry: the rows differ EXACTLY on OOT's two rows' provider
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | strong / `gpt-5.6-sol` / `high` (equal to `~/.codex/strong.config.toml`'s `model` and `model_reasoning_effort`) | present (1) | the clean token, 2 anchored occurrences (the CLI's double emission); the findings token 0 | 0 | 0 | 0 | 2 | 2 new / 0 reopened | 0 | 205,725 | |
 
-**Loop status: CLEAN VERDICT AT ROUND 1** (zero new critical/major). Per the recipe the loop ends here; the two minors are post-verdict minors. **Returned to the orchestrator at the round gate** with the proposed dispositions below; no fix is applied until the orchestrator resumes the cell.
+**Loop status: CONVERGED AT ROUND 1** (the first clean verdict; zero new critical/major). The two post-verdict minors were ruled by the orchestrator at the round gate and fixed without a new round (section 6).
 
 **Spend (executing phase, Reviewer A):** 205,725 tokens (round 1).
 
@@ -307,7 +307,7 @@ Ordinary: rows equal. Carry: the rows differ EXACTLY on OOT's two rows' provider
 
 **Codex's checklist (verbatim summary of the final message; full text in `final-r1.txt`):** 1 HOLDS (`runner.py:3139`); 2 HOLDS; 3 HOLDS (`ohlcv_cache.py:500`); 4 HOLDS; 5 HOLDS; 6 HOLDS; 7 HOLDS; 8 FAILS (R1-01 below); 9 HOLDS. "I could not execute pytest because the available `python3` environment lacks pytest; all 12 changed files parsed successfully with `ast`, and the production/static caller censuses were inspected directly."
 
-**Adjudication (PROPOSED; the orchestrator rules at the gate).**
+**Adjudication (proposed at the gate; RULED in section 6).**
 
 | id | reviewer severity | finding | verified at the code | proposed disposition |
 |---|---|---|---|---|
@@ -315,3 +315,27 @@ Ordinary: rows equal. Carry: the rows differ EXACTLY on OOT's two rows' provider
 | R1-02 | minor | T-D4 (`test_observe_ladder_detach.py:175`) records an absent `use_ladder` and an explicit `use_ladder=None` the same way; `None` is falsy in the production branch, so a future caller passing `None` would bypass the ladder unseen. | Yes: the walk maps a missing keyword to `None`, and `ast.literal_eval` of a literal `None` is also `None`. | ACCEPT, test-only, no round: record keyword PRESENCE separately (a sentinel for "absent"), so the closure asserts the only call carrying the keyword at all is `_bar_for_date`'s `False`. |
 
 All nine checklist items: 8 HOLD, 1 FAILS (R1-01, minor).
+
+## 6. Orchestrator rulings at the round-1 gate, the fixes, and the final head
+
+### 6.1 The rulings (verbatim). Author: the orchestrator.
+
+> R1-01: ACCEPTED as a docstring-only qualification, with no new round. The Concurrency paragraph at `swing/web/ohlcv_cache.py:215-220` sits in a file D90 already edits, and D90 creates the two postures that make "the same archive-source" partly false. That makes it a #31 docstring describing what the code does today, not a code-bearing change, so it does not re-open the clearance. Qualify the sentence in place, by replacement: two racing fetches on the same key see the same archive, so their values agree, EXCEPT ledger K-2's case (an empty archive with a Schwab success under `use_ladder=True`, where the ladder stores its Schwab sub-window). Name K-2. Add nothing else.
+> R1-02: ACCEPTED, test-only, with no new round. T-D4 records keyword PRESENCE with a sentinel for "absent", so an explicit `use_ladder=None` is distinguishable from an omitted keyword.
+> D-1 (the plan's M4 row wrong about S5): ACCEPTED as recorded. M4 is still caught by T-D1, T-D2, both N-V tests and S7.
+> Round 1 counts as CONVERGED: the first clean verdict, with post-verdict minors fixed and no new round.
+
+### 6.2 The fixes (separate commits, pathspec-only, `%(trailers)` empty)
+
+- **R1-01, `a2bee0f6`** `docs(web): R1-01 -- get_or_fetch's concurrency sentence names the K-2 exception (D90)`. The sentence "Both fetches see the same archive-source so values are identical; no data corruption." is replaced by "Both fetches see the same archive, so their values agree, EXCEPT the D90 ledger's K-2 case: an empty archive with a Schwab success under ``use_ladder=True``, where the ladder stores its Schwab sub-window. No data corruption." (`swing/web/ohlcv_cache.py:218-222`). Nothing else changes; `ruff check swing/` clean.
+- **R1-02, `f71467dc`** `test(pipeline): R1-02 -- T-D4 records use_ladder presence with a sentinel (D90)`. A module `_ABSENT = object()` marks an omitted keyword; a present keyword records its literal value, so `use_ladder=None` counts as carrying the keyword. Discrimination, measured (`exec\t2\r1-02\`): a scratch `use_ladder=None` added to detect's call at `runner.py:2195` (`none_mutant.diff`) leaves the PRE-fix T-D4 PASSING (`none_mutant_prefix_test.txt`: 1 passed) and turns the fixed T-D4 RED (`none_mutant.txt`: `AssertionError` at `test_observe_ladder_detach.py:188`); `git diff --exit-code swing/` returned 0 after each.
+- **Touched files re-run:** `test_observe_ladder_detach.py`, `test_ohlcv_cache_use_ladder.py`, `test_observe_ladder_detach_neutrality.py`: 8 passed (`exec\t2\r1-02\touched_rerun.txt`).
+
+### 6.3 The final head
+
+- **Full fast suite** on `f71467dc` (the final code head; this ledger commit is docs-only), `python -m pytest -m "not slow" -q -n 8 -p no:cacheprovider`, saved with the head sha on its first line and a clean `git status --short` (`exec\t2\suite_final_head.txt`): **15525 passed, 13 skipped, 0 failed** in 717.28 s.
+- **`ruff check swing/`:** All checks passed. **Touched test files, NEW findings vs base:** 0 in every file (conftest_temporal 4/4, fetch_vs_write 9/9, load_instrumentation 7/7, the other seven 0/0; `exec\t2\ruff_final.txt`).
+
+### 6.4 Outcome
+
+**CONVERGED at round 1.** Reviewer A spend: 205,725 tokens (one counted round). Reviewer B is the orchestrator's.
