@@ -98,11 +98,17 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
        - F8 (b): the observe wall 1,300 s -> 542 s, read as an UPPER BOUND. CHARC's ruling: the ladder only adds work, so no ladder-OFF night is owed.
        - The cohort line: open_det=248, open_det_added=218.
      - Record: `docs/superpowers/plans/2026-10-20-maintenance-rider-d82-d83.exec-ledger.md`. Addendum mail: `20261020T034646Z`.
-  3. NEXT, BUT HELD FOR THE OPERATOR'S WORD: D89, the per-detection `resolve_ohlcv_window` cost in observe.
-     - CHARC's row; the owner is the orchestrator; it is its own rider and goes BEFORE the widening.
-     - It was registered AFTER the 2026-10-19 approval, which lifted the stop for two items by name only.
-     - The first live bound is about 64 ms per iteration (run 195).
-  4. Then the soft-stop arc (D84), with plan-stage director review.
+  3. DONE: D89, observe's per-step read memo. Operator-approved 2026-10-20.
+     - Merged at `717e4ebe`, converged at round 1; Reviewer B 0/0/0. The merged head is green (15518 / 0).
+     - Replay on run 195's copies: 7,139 archive reads down to 248, with rows byte-equal.
+     - **Owed at run 196, the first D89-only nightly:** RD reads W1 (the observe wall against 541,691 ms) and W5 (live `resolve_reads`, about 248), with the ladder state, BEFORE anyone quotes the projection. I post the addendum once the run exists.
+  4. D90, observe's ladder detach. Operator-approved by name 2026-10-20 ("Yes, D90 after D89 and before soft-stop arc").
+     - Branch `d90-detach` at `c0c92de7`; converged at A round 1. B-01 (major) was accepted by RD as a limitation; B-02 and B-03 are fixed.
+     - CLEARED by CHARC (`20261020T092202Z`, tree `e1c971bb`) and RD (`20261020T092235Z`), FOR EXECUTION AFTER run 196 exists and RD has read D89's W1/W5.
+     - A code or test change to main or the branch before then re-opens the clearance; docs-only is fine.
+     - **After the merge:** RD's VII.F boundary note; the witness night (0 Schwab calls inside observe, filtered by `pipeline_run_id`; the wall drop at least 87,395 ms; W0 with `fetch_window > 0`).
+  5. Then the soft-stop arc (D84) with its widening rider.
+     - Registered for after D84: D91 (stuck detections; RD semantics), D92 (range reads merging two adjustment bases on 55 tickers), D93 (zero-price bars pass the archive barriers).
 - **Plan cells run out of context:** two writing-plans cells (opus-xhigh) passed 400K reading the whole comms record. Brief a plan cell with a NARROW reading list, and expect a continuation cell.
 
 ### Prior state: PHASE 22 ACTIVE — **22-F MERGED 2026-09-26 at `58368c86` (code-only, schema v41 unchanged); the `d4f2cbed` grant is SPENT; the next arc is the operator's to commission**
