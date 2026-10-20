@@ -18,7 +18,7 @@
 | F13 (plan rounds at `fast`) | orchestrator | RULED (census; continuation brief section 2) |
 | F14 (`latches/service.py:393-394` docstring) | orchestrator | RULED, envelope widened by that docstring (census; CHARC concurs) |
 | I-1 (a second site of the F14 sentence, in a test docstring) | orchestrator | RULED A (widen), 2026-10-20; encoded by cell 3 in plan T2 step 2 (below) |
-| **I-4 (CHARC F12's depth relation `>=` encoded as `>`)** | **CHARC** | **FLAGGED, a DEVIATION, not resolved; CHARC reads it at the plan-stage read (below)** |
+| I-4 / R1-01 (CHARC F12's depth relation `>=` encoded as `>`) | CHARC | RESOLVED 2026-10-20: strict `>` upheld, F12 text amended; plus an orchestrator ruling widening the envelope by `config.py:284` (below, "Rulings on I-4 / R1-01") |
 
 ## RD rulings -- author: RD; courier: orchestrator
 
@@ -94,6 +94,35 @@ Transcribed as a literal block quote from the cell-3 plan-review brief, `docs/ma
 
 **Encoded by cell 3:** the plan's envelope IN list names the docstring; the "FLAGGED, outside the envelope" paragraph is removed by replacement; T2 step 2 is unconditional; T1 step 3's residual-hit sentence and the test roster name the site. **Fact re-checked at intake:** the sentence sits at `tests/latches/test_criteria_lapse.py:1136-1138` on `a8221cea` (read). T2's closure greps are restricted to `--include=*.py`, because a bare `grep -rn` also matches the stale `swing/latches/__pycache__/service.cpython-314.pyc` binary (measured).
 
+## Rulings on I-4 / R1-01
+
+### CHARC -- author: CHARC; courier: orchestrator
+
+Transcribed as a literal block quote of the message body in `comms/orchestrator/read/20261020T012526Z-charc-maint-rider-plan-r1-i-4-ruled-strict-tra.md` (posted 2026-10-20T01:25:26Z). The body was copied mechanically from the file (front matter stripped, each line prefixed).
+
+> CHARC RULING, maintenance rider plan round 1, I-4 / R1-01 (the F12 depth relation). PRIMARY: CHARC. Read: `ohlcv_archive.py:607` (`combined = combined.tail(archive_history_days)` -- the archive KEEPS THE LAST N TRADING ROWS) and `:15` (the fetch window is `_calendar_window_for_trading_days(archive_history_days)`); `config.py:284` (`archive_history_days: int = 1260`, no unit in the name; the docstring does not state one). Transcribe as a block quote with CHARC as author.
+>
+> RULING: STRICT `>`. The plan's encoding is correct and my ruled text was loose. The two sides are in different units: the constant is a CALENDAR window (observe's `window_days`), the config value is a count of TRADING rows. N trading rows span at least N-1 calendar days (the weakest bound, every day a session; in practice ~1.45 N), so covering a C-calendar-day window needs N-1 >= C, that is N > C. `>=` would admit N = C, which the bound does not cover. `>` is the stricter operator and cannot pass an archive that `>=` would refuse; the reviewer's finding was procedure (the plan departed from my text), not arithmetic, and the departure is upheld. My F12 text is amended by this ruling to read "`archive_history_days` > the constant".
+>
+> TWO CONDITIONS, so the operator is not read as a typo by the next author: (1) the test's docstring states the unit mismatch and the bound in one sentence ("the config counts TRADING rows (`ohlcv_archive.py:607` keeps the last N), the constant is CALENDAR days; N rows span at least N-1 calendar days, so N > C"); (2) the comparison is written against the LIVE config value read through `Config`, not a literal 1260 -- the test is condition (ii)'s assertion against the deployed value, and a literal would pin today's default, not the deployment. Today: 1260 > 400, by a margin the docstring may quote (~1,857 calendar days).
+>
+> Noted, not ruled: the config field carries no unit in its name or docstring; that is the reason this fork existed. A one-line docstring addition at `config.py:284` ("a count of trading ROWS retained; see `ohlcv_archive.py:607`") is CONTENT, yours, in this rider or the next touch; no rename (a rename would be a mirror sweep for no behaviour).
+>
+> Round 2 proceeds. Nothing else open on my seat for round 1.
+
+### Orchestrator -- author: orchestrator
+
+Transcribed from the orchestrator's resume message to cell 3 (2026-10-20).
+
+> The envelope widens by one docstring line at `swing/config.py:284` (`archive_history_days`): "a count of trading ROWS retained; see `ohlcv_archive.py:607`". Docstring only, no rename. It goes into the same task as F12.
+
+**Encoded by cell 3, with the incidental facts re-checked against the code:**
+- `ohlcv_archive.py:607` is `combined = combined.tail(archive_history_days)` (the warm path). It is one of THREE retention sites; the other two are `:836` and `:849`. AL-14 now cites all three. CHARC's `:15` is the module docstring's description of the fetch window, which is accurate.
+- `config.py:284` is the FIELD `archive_history_days: int = 1260`. It has no docstring of its own. The class docstring is `:267-282`. **The ruling named a docstring line at :284; the code has a bare dataclass field there; encoded as one COMMENT line directly above the field**, carrying the ruled text verbatim. The field line is unchanged and moves to :285 (plan T4 step 2). No test reads `config.py` source (grep of `tests/` for `getsource` + `ArchiveConfig` / `archive_history_days`: the two hits read `runner` and `orchestration` source only).
+- CHARC condition (1): D1's docstring carries the ruled sentence (plan T4 D1).
+- CHARC condition (2): D1 reads the value through `swing.config.load`, the CLI's loader (`cli.py:35, 244`), never a literal. `load` builds `ArchiveConfig` from the tracked toml only (`config.py:859`).
+- Also folded in, mechanically: T1 step 3's four closure greps gained `--include=*.py` (the stale `.pyc` matches).
+
 ## D82 coverage -- the deferral, as text only (RD)
 
 The coverage conversion is NOT in this rider. The count rule stands unchanged (`_COVERAGE_YELLOW_GAPS = 1`, `_COVERAGE_RED_GAPS = 10`, CALIBRATION A and C, the comment "a missing forward bar is a real signal") and so do its tests. Recorded so a future conversion does not restart at D1/D3:
@@ -115,7 +144,7 @@ A ruling's reasoning binds; its incidental facts are inputs, re-checked here. Ea
   - **What the order test can honestly pin:** the list HANDED to the warm, not the chunks.
 - **I-3 (CHARC F10 (4), count corrected).** The ruling said "the seven warm unit tests take a lease stub". `tests/pipeline/test_step_evaluate_warm.py` has seven tests. SIX of them CALL `_prewarm_evaluate_archives` (:31, :48, :63, :76, :129, :147); the seventh, `test_step_evaluate_wires_prewarm_before_fetch_loops`, is a source-text wiring contract that calls nothing. **Encoded:** six get `lease=`; the seventh is unchanged, and its regex still matches.
   - **Method:** read of the file. `grep -rn "_prewarm_evaluate_archives" tests swing` finds two more test references: `test_step_evaluate_pin_injection.py:223` (a `lambda **k: None` patch, which accepts the new keyword) and `test_step_evaluate_warm_scope.py:54` (a `**kwargs` recorder, which is W5's site).
-- **I-4 (CHARC F12, `>=` -> `>`; a DEVIATION from the ruling's text, FLAGGED and NOT resolved -- CHARC reads it at the plan-stage read, per the orchestrator's cell-3 brief section 1).** The ruling: "`archive_history_days` (1,260 trading days, ~1,857 calendar) >= the constant". The mechanic: the archive RETAINS the last `archive_history_days` trading rows (`ohlcv_archive.py:836, 849`). N distinct trading dates span at least N-1 calendar days, so coverage of a C-calendar-day window needs N-1 >= C, i.e. N > C. `_calendar_window_for_trading_days` (1,857) is the fetch window: it adds a +30 buffer and is trimmed to N rows afterwards, so it overstates retained depth. **Encoded:** `archive_history_days > DETECT_OBSERVE_WINDOW_DAYS` (AL-14). Both forms hold today (1260 vs 400).
+- **I-4 (CHARC F12, `>=` -> `>`; RESOLVED 2026-10-20: CHARC upheld strict `>` and amended F12's text; see "Rulings on I-4 / R1-01").** The ruling: "`archive_history_days` (1,260 trading days, ~1,857 calendar) >= the constant". The mechanic: the archive RETAINS the last `archive_history_days` trading rows (`ohlcv_archive.py:836, 849`). N distinct trading dates span at least N-1 calendar days, so coverage of a C-calendar-day window needs N-1 >= C, i.e. N > C. `_calendar_window_for_trading_days` (1,857) is the fetch window: it adds a +30 buffer and is trimmed to N rows afterwards, so it overstates retained depth. **Encoded:** `archive_history_days > DETECT_OBSERVE_WINDOW_DAYS` (AL-14). Both forms hold today (1260 vs 400).
 - **I-5 (CHARC F12, the closure grep counts comments).** `grep -rn "window_days=400" swing/` returns FIVE lines today: three code (:2136, :2398, :3054) and two comments (:2395, :3052). **Encoded:** the two comments are reworded at their sites (AL-13). This sits inside "the three sites" the envelope widened.
 - **I-6 (CHARC F6's "26 references").** Not reproduced as a reference count (`grep -c -i baseline` = 30, which includes the unrelated FIX-1 finiteness baseline; a broader regex over the excluded section = 28 lines / 49 tokens). It DOES match the number of `test_excluded_*` functions: 26, by `grep -n "^def test_excluded"`. By READ of all 26: SIX pin baseline semantics and are superseded by name; THREE keep their assertions with comments rewritten; SEVENTEEN are untouched (plan T1 step 1).
 - **I-7 (RD F5's discriminator, its scope stated).** RD: "77/1535 -> YELLOW. At 1 dp it displays '5.0%', so an implementation that compares the rounded display, or compares `count/unique <= 0.05` after a 1 dp round, reads it GREEN." Confirmed (p02: `round(pct, 1) <= 5.0` is True at 77). Measured further (p03): an UNROUNDED float comparison (`100.0*c/u <= 5.0`, or `c/u <= 0.05`) agrees with the integer form on every `c <= u <= 5000`. So no test distinguishes those two; the integer form is held by read (L-3). The pins also kill the rounded mutant on the RED side: N1[154] reads yellow under a 1-dp round.
@@ -148,4 +177,4 @@ The depth column is the orchestrator's (`scripts/cell_depth.py --agent <id>`); t
 
 **Round 1 evidence:** `C:\Users\rwsmy\swing-data\review-transcripts\maint-rider\plan\round1\` -- `prompt-r1.md` (8,215 B), `transcript-r1.txt` (471,078 B), `exit-r1.txt` (`exit=0 finished=2026-10-20T01:22:40Z`), `findings-r1.md` (assertions + verbatim response + adjudication), `run-r1.sh`. Prior-round reads: 0. Content-filter events: none.
 
-**R1-01** (reviewer: major, TASK-BEARING, IN-ENVELOPE; AL-14 / T4 D1). It says the plan's strict `>` departs from CHARC F12's `>=`. This is the I-4 deviation the plan already declares, and the reviewer argues procedure, not the mechanic. **Cell-3 disposition (proposed):** task-bearing by the fail-safe rule, NOT edited. The orchestrator's brief keeps I-4 flagged for CHARC's plan-stage read, and CHARC's ruling is the fix either way: keep `>`, or encode `>=`.
+**R1-01** (reviewer: major, TASK-BEARING, IN-ENVELOPE; AL-14 / T4 D1). It says the plan's strict `>` departs from CHARC F12's `>=`. This is the I-4 deviation the plan already declares, and the reviewer argues procedure, not the mechanic. **Cell-3 disposition (proposed):** task-bearing by the fail-safe rule, NOT edited. The orchestrator's brief keeps I-4 flagged for CHARC's plan-stage read, and CHARC's ruling is the fix either way: keep `>`, or encode `>=`. **RESOLVED 2026-10-20:** CHARC ruled strict `>` with two conditions, and the orchestrator added the `config.py:284` line; both are encoded in plan AL-14 and T4 ("Rulings on I-4 / R1-01").
