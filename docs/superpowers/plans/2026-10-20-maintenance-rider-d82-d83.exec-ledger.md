@@ -106,6 +106,16 @@ Every RED and GREEN below is read off saved output in the evidence folder (file 
 - L-3 in RD's words: on this domain the integer form and the unrounded float form are the same function, so there is NO behaviour to test (not "untested").
 - RD's post-merge read: the live `excluded_reason_breakdown` detail after the first nightly reads `invalid_ohlc=<n> (<x.xx>%, green; yellow above 5.00%, red above 10.00%)` with the band matching the integer rule on the manifest's own counts.
 
+## Orchestrator rulings, cell 2 -- author: orchestrator
+
+Transcribed from `docs/maintenance-rider-d82-d83-exec-continuation-brief-cell2.md` (main `2c50be4a`) section 1.
+
+> RUFF GATE -- RULED (a). The gate reads "zero NEW findings on the touched files". `ruff check swing/` is clean, and so are the three new test files. The 34 findings in `test_criteria_lapse.py` (29), `test_research_health_checks.py` (4 E702) and `test_step_evaluate_warm.py` (1 I001) are all present at base `033d1053` at the same codes and sites (`exec/t6-ruff.txt`). They are not this rider's, and are not fixed here. `test_criteria_lapse.py`'s 28 N802 would be a rename sweep, which T2 step 2 forbids.
+
+> STALE-BY-CONTRAST COMMENT -- FIX, comment only. `research_health.py:994` reads "the other two reasons keep their existing RAW-count pct thresholds (NOT baselined)". After T1 nothing is baselined, so the parenthetical contrasts with a rule that no longer exists. Replace the parenthetical so the comment says the other two reasons are judged by the `_EXCL_*_PCT` floors, and that invalid_ohlc is the rate rule above. Comment only; no code change. That keeps it inside CHARC's clearance, which re-opens only on a code-bearing change.
+
+**Encoded (cell 2):** `28442bf0` replaces the two comment lines at `research_health.py:993-994` with "SCOPE LOCK: the other two reasons are judged by the _EXCL_*_PCT floors; invalid_ohlc is the rate rule above." Diff: 2 lines changed, both comments. `ruff check swing/` passed; `tests/monitoring/` `337 passed, 1 skipped` (`cell2-monitoring-28442bf0.txt`). Full fast suite on `28442bf0` (`python -m pytest -m "not slow" -q -n auto -p no:cacheprovider`), `cell2-full-suite-28442bf0.txt`: `15510 passed, 13 skipped, 1322 warnings in 816.35s (0:13:36)`, `exit=0`.
+
 ## Reviewer A (executing, `strong`)
 
-Not started: held at the ruff gate above. The round-1 prompt head is staged at `exec\round1\prompt-head.md`.
+Run by cell 2. Prompt built by `exec\build\build_prompt.py` from cell 1's `round1\prompt-head.md` (re-verified: the D83 conditions byte-equal to the register row, `docs/tool-director-context.md:147`, by `diff`; the envelope and AL list match plan lines 10-87 by read) plus both clearances (the block quotes above), the cell-2 rulings, and the plan ledger CUT before its `## Round ledger` heading. Runner `exec\build\run_round.sh` (LF, literal paths), Codex cwd = the worktree, `-p strong -s read-only --skip-git-repo-check`.
