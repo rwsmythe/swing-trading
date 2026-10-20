@@ -156,6 +156,9 @@ def test_shared_stub_records_use_ladder_false_and_the_populate_reports_ok(
     assert load(w)["resolve_reads"] == 1
 
 
+_ABSENT = object()  # T-D4: "no use_ladder keyword at this call"
+
+
 def _outermost_def(tree):
     for top in tree.body:
         yield getattr(top, "name", "<module>"), top
@@ -173,10 +176,13 @@ def test_only_observes_populate_passes_use_ladder():
                         and isinstance(node.func, ast.Attribute)
                         and node.func.attr == "get_or_fetch"):
                     kw = {k.arg: k.value for k in node.keywords}
-                    value = kw.get("use_ladder")
-                    calls.append((rel, name, None if value is None
-                                  else ast.literal_eval(value)))
+                    # Presence is recorded with a sentinel, so an explicit
+                    # use_ladder=None (falsy: it would bypass the ladder) is
+                    # distinguishable from an omitted keyword.
+                    value = (ast.literal_eval(kw["use_ladder"])
+                             if "use_ladder" in kw else _ABSENT)
+                    calls.append((rel, name, value))
     # A broken walk must fail, not pass empty (p22: 10 call sites).
     assert len(calls) >= 10
-    carrying = [c for c in calls if c[2] is not None]
+    carrying = [c for c in calls if c[2] is not _ABSENT]
     assert carrying == [("swing/pipeline/runner.py", "_bar_for_date", False)]
