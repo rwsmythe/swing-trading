@@ -30,34 +30,28 @@ def _cfg_for(tmp_path):
     return runner_cfg_stub(tmp_path)  # supplies paths.prices_cache_dir = tmp_path/ohlcv
 
 
-def test_success_path_overwrites_contaminated_before_lock(tmp_path, monkeypatch):
-    """Schwab-success: the populate refetches clean (L1) -> keep='last'
-    overwrites -> _bar_for_date returns the clean bar."""
-    cfg = _cfg_for(tmp_path)
-    cache = cfg.paths.prices_cache_dir
-    monkeypatch.setattr(arch, "_last_completed_session_today",
-                        lambda: date(2026, 6, 4))
-    monkeypatch.setattr(runner, "last_completed_session",
-                        lambda *_a, **_k: date(2026, 6, 4))
-    _seed_contaminated_schwab(cache)
-
-    class _Cache:
-        def get_or_fetch(self, *, ticker, window_days):
-            # emulate the ladder's clean L1 Schwab refetch + persist.
-            write_window(ticker, pd.DataFrame(
-                [["2026-06-04", 10, 11, 9, 10.5, 100]], columns=COLS),
-                "schwab_api", cache_dir=cache)
-            return pd.DataFrame()  # return value unused by _bar_for_date's read
-    bar = runner._bar_for_date(cfg, _Cache(), "AAPL", "2026-06-04")
-    assert bar is not None and bar["high"] == 11   # clean, not 99
-    assert bar["provider"] == "schwab_api"
+# SUPERSEDED BY NAME (D90; RD ruling 20261020T072525Z, CHARC 20261020T072626Z):
+# test_success_path_overwrites_contaminated_before_lock pinned observe's populate
+# re-fetching a clean schwab_api row for the observation date through the Schwab
+# ladder, healing a contaminated one (the seeded case is an ext-hours-inflated
+# high). D90 detaches the ladder from observe's populate, so that path is gone.
+# The hazard, and what closes it now: (i) the ladder cannot write a NEW
+# contaminated schwab_api row -- it requests regular-session candles only
+# (needExtendedHoursData=False in swing/integrations/schwab/marketdata.py), and
+# every Schwab bar passes OhlcvBar's finite-OHLC check
+# (swing/integrations/schwab/models.py) before it reaches the archive;
+# (ii) an observe-only ticker gets no schwab_api row from observe after the
+# boundary;
+# (iii) a detect-pool ticker's row is refetched by detect's own ladder call on
+# the next run. Replacement: tests/pipeline/test_observe_ladder_detach.py::
+# test_observe_populate_never_reaches_the_ladder_hook.
 
 
 def test_failure_path_then_purge_falls_to_clean_yfinance(tmp_path, monkeypatch):
-    """Schwab-failure/TTL-hit: the populate does NOT overwrite; the stale
-    contaminated schwab_api row wins on precedence -> _bar_for_date returns it
-    (the residual gap). After the C8 purge removes *.schwab_api.parquet,
-    _bar_for_date falls to the clean yfinance row."""
+    """The populate does NOT overwrite the schwab_api row (D90: observe never
+    reaches the ladder); the stale contaminated row wins on precedence ->
+    _bar_for_date returns it (the residual gap). After the C8 purge removes
+    *.schwab_api.parquet, _bar_for_date falls to the clean yfinance row."""
     cfg = _cfg_for(tmp_path)
     cache = cfg.paths.prices_cache_dir
     monkeypatch.setattr(arch, "_last_completed_session_today",
@@ -69,9 +63,13 @@ def test_failure_path_then_purge_falls_to_clean_yfinance(tmp_path, monkeypatch):
     write_window("AAPL", pd.DataFrame([["2026-06-04", 10, 11, 9, 10.5, 100]],
                                       columns=COLS), "yfinance", cache_dir=cache)
 
+    seen: list[bool] = []
+
     class _NoOpCache:
-        def get_or_fetch(self, *, ticker, window_days):
-            return pd.DataFrame()  # Schwab failed / TTL hit -> no overwrite
+        def get_or_fetch(self, *, ticker, window_days, use_ladder):
+            seen.append(use_ladder)
+            # observe's populate never writes schwab_api (D90) -> no overwrite
+            return pd.DataFrame()
     # BEFORE purge: contaminated schwab_api wins.
     bar = runner._bar_for_date(cfg, _NoOpCache(), "AAPL", "2026-06-04")
     assert bar["high"] == 99   # documents the residual gap
@@ -79,3 +77,4 @@ def test_failure_path_then_purge_falls_to_clean_yfinance(tmp_path, monkeypatch):
     _shape_a_path(cache, "AAPL", "schwab_api").unlink()
     bar2 = runner._bar_for_date(cfg, _NoOpCache(), "AAPL", "2026-06-04")
     assert bar2["high"] == 11 and bar2["provider"] == "yfinance"
+    assert seen == [False, False]

@@ -40,15 +40,15 @@ def test_observe_populate_uses_the_window_constant(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(runner, "DETECT_OBSERVE_WINDOW_DAYS", 401)
     monkeypatch.setattr(runner, "last_completed_session",
                         lambda *_a, **_k: date(2026, 6, 4))
-    recorded: list[int] = []
+    recorded: list[tuple[int, bool]] = []
 
     class _RecCache:
-        def get_or_fetch(self, *, ticker, window_days):
-            recorded.append(window_days)
+        def get_or_fetch(self, *, ticker, window_days, use_ladder):
+            recorded.append((window_days, use_ladder))
             return pd.DataFrame()
 
     runner._bar_for_date(cfg, _RecCache(), "AAPL", "2026-06-04")
-    assert recorded == [401]
+    assert recorded == [(401, False)]
 
 
 def test_window_constant_value_is_400() -> None:

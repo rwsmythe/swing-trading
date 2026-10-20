@@ -57,11 +57,17 @@ def _build_bars(start: date = date(2025, 6, 1), n_days: int = 180) -> pd.DataFra
 
 
 class _StubOhlcvCache:
-    """get_or_fetch(*, ticker, window_days) -> the canned frame for ticker."""
+    """get_or_fetch(*, ticker, window_days, use_ladder) -> the canned frame for
+    ticker. Every call is recorded in ``self.calls`` (D90: the keyword reaches
+    the stub, pinned by test_observe_ladder_detach.py's T-stub)."""
     def __init__(self, bars_by_ticker: dict[str, pd.DataFrame]):
         self._b = bars_by_ticker
+        self.calls: list[dict] = []
 
-    def get_or_fetch(self, *, ticker: str, window_days: int = 180) -> pd.DataFrame:
+    def get_or_fetch(self, *, ticker: str, window_days: int = 180,
+                     use_ladder: bool = True) -> pd.DataFrame:
+        self.calls.append({"ticker": ticker, "window_days": window_days,
+                           "use_ladder": use_ladder})
         if ticker not in self._b:
             raise KeyError(ticker)  # mimic a fetch miss
         return self._b[ticker]

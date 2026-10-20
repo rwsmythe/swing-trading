@@ -16,8 +16,10 @@ class _TeleStub:
     def __init__(self, bars):
         self._b = bars
         self._fw = 0
+        self.use_ladder_seen: list[bool] = []
 
-    def get_or_fetch(self, *, ticker, window_days=180):
+    def get_or_fetch(self, *, ticker, window_days=180, use_ladder=True):
+        self.use_ladder_seen.append(use_ladder)
         self._fw += 1
         return self._b.get(ticker)
 
@@ -47,10 +49,16 @@ def test_ohlcv_cache_telemetry_counts_hit_vs_fetch(tmp_path, monkeypatch):
     frame = pd.DataFrame(
         {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0],
          "Volume": [1]}, index=pd.to_datetime(["2026-05-28"]))
-    monkeypatch.setattr(cache, "_fetch_bars_window",
-                        lambda *, ticker, window_days: frame)
+    fbw_seen: list[bool] = []
+
+    def _fbw(*, ticker, window_days, use_ladder):
+        fbw_seen.append(use_ladder)
+        return frame
+
+    monkeypatch.setattr(cache, "_fetch_bars_window", _fbw)
     cache.get_or_fetch(ticker="AAA", window_days=180)   # fetch_window
     cache.get_or_fetch(ticker="AAA", window_days=180)   # in_memory_hit (TTL)
+    assert fbw_seen == [True]  # one miss, on the default
     t = cache.drain_telemetry()
     assert t["fetch_window"] == 1 and t["in_memory_hit"] == 1
     # Drain zeroes the counters.
@@ -67,6 +75,7 @@ def test_observe_emits_fetch_telemetry_metrics_entry(tmp_db_at_head, tmp_path):
     cache = _TeleStub({"AAA": _build_bars(), "BBB": _build_bars()})
     warnings: list[dict] = []
     _drive_observe(cfg, _FakeLease(db_path, 1, _OBS), cache, warnings)
+    assert cache.use_ladder_seen == [False, False]  # D90
     entry = next(w for w in warnings
                  if w.get("metric") == "observe_load")
     assert entry["step"] == "pattern_observe"
@@ -89,6 +98,8 @@ def test_observe_load_excludes_prior_step_fetches(tmp_db_at_head, tmp_path):
         cache.get_or_fetch(ticker="AAA")
     warnings: list[dict] = []
     _drive_observe(cfg, _FakeLease(db_path, 1, _OBS), cache, warnings)
+    # The five prior-step calls take the default; observe passes False (D90).
+    assert cache.use_ladder_seen == [True] * 5 + [False]
     entry = next(w for w in warnings if w.get("metric") == "observe_load")
     # Observe touched 1 open detection -> fetch_window == 1, NOT 6.
     assert entry["fetch_window"] == 1
@@ -105,11 +116,14 @@ def test_observe_scaling_one_obs_per_open_detection(tmp_db_at_head, tmp_path):
         for t in ("AAA", "BBB", "CCC", "DDD", "EEE")]
     cfg = _cfg(tmp_path, db_path)
     bars = {t: _build_bars() for t in ("AAA", "BBB", "CCC", "DDD", "EEE")}
+    seen: list[bool] = []
 
     class _Stub:
-        def get_or_fetch(self, *, ticker, window_days=180):
+        def get_or_fetch(self, *, ticker, window_days=180, use_ladder):
+            seen.append(use_ladder)
             return bars[ticker]
     _drive_observe(cfg, _FakeLease(db_path, 1, _OBS), _Stub(), [])
+    assert seen == [False] * 5  # D90
     assert sum(len(get_observations_for_detection(conn, d)) for d in det_ids) == 5
     # Idempotent re-drive: still 5 (no duplicate rows).
     _drive_observe(cfg, _FakeLease(db_path, 2, _OBS), _Stub(), [])

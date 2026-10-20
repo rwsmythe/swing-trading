@@ -69,8 +69,10 @@ def _real_cache(cfg, monkeypatch, script):
     from swing.web.ohlcv_cache import OhlcvCache
     cache = OhlcvCache(cfg)
     cache.overruns = []
+    cache.use_ladder_seen = []
 
-    def _fetch(*, ticker, window_days):
+    def _fetch(*, ticker, window_days, use_ladder):
+        cache.use_ladder_seen.append(use_ladder)
         actions = script.get(ticker)
         if not actions:
             cache.overruns.append(ticker)
@@ -108,6 +110,9 @@ def _drive(cfg, db_path, cache, run_id=1):
         _step_pattern_observe(cfg=cfg, lease=_FakeLease(db_path, run_id, _OBS),
                               ohlcv_cache=cache, run_warnings=w)
     assert not getattr(cache, "overruns", []), cache.overruns
+    if hasattr(cache, "use_ladder_seen"):
+        # D90: the keyword reached the real cache's fetch, always False.
+        assert cache.use_ladder_seen and set(cache.use_ladder_seen) == {False}
     return w
 
 
