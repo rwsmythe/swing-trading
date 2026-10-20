@@ -390,8 +390,9 @@ def _sound_envelope(bar: DailyBar) -> bool:
     `DailyBar.__post_init__` validates FINITENESS ONLY and the archive reader
     polices nothing else, so a row recording `open = 101` against `high = 99`
     constructs happily -- and this project has a MEASURED invalid-OHLC
-    population (the 18-D research monitor baselines `invalid_ohlc` at 23 of 77
-    unique signals), so it is a real shape rather than a hypothetical one.
+    population (the 18-D research monitor judges the engine's `invalid_ohlc`
+    exclusions as a RATE of unique signals -- green at or below 5.00%, red
+    above 10.00%), so it is a real shape rather than a hypothetical one.
 
     It matters because 2a asks *was the entry trigger reached* and answers from
     the HIGH alone. On such a bar the OPEN proves a touch the HIGH denies, and

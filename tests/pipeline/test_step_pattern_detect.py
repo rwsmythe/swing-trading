@@ -649,6 +649,32 @@ def test_step_pattern_detect_pass_1_runs_outside_write_transaction(
     )
 
 
+def test_detect_pass1_uses_the_window_constant(seeded_env, monkeypatch) -> None:
+    """F12 (maintenance rider): detect Pass-1 fetches with the named window
+    constant `runner.DETECT_OBSERVE_WINDOW_DAYS`, read at call time (a sentinel
+    401 proves the site uses the constant, not a literal 400)."""
+    import swing.pipeline.runner as _runner_mod
+
+    monkeypatch.setattr(_runner_mod, "DETECT_OBSERVE_WINDOW_DAYS", 401)
+    recorded: list[int] = []
+
+    class _RecordingCache:
+        def get_or_fetch(self, *, ticker: str, window_days: int) -> pd.DataFrame:
+            recorded.append(window_days)
+            return seeded_env["bars"]
+
+    _seed_aplus_candidate(seeded_env["conn"], seeded_env["eval_run_id"])
+    seeded_env["conn"].commit()
+    _step_pattern_detect(
+        cfg=None,
+        lease=seeded_env["lease"],
+        eval_run_id=seeded_env["eval_run_id"],
+        ohlcv_cache=_RecordingCache(),
+    )
+    assert recorded, "Pass-1 made no fetch"
+    assert all(w == 401 for w in recorded), recorded
+
+
 def test_step_pattern_detect_partial_retry_includes_existing_rows_in_histogram(
     seeded_env,
 ) -> None:

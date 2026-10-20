@@ -763,21 +763,18 @@ _ATTRIBUTED_EXCLUDED_REASONS = (
 _PER_HYP_TERMINAL_CARDS = (
     "closed", "open_at_horizon", "never_triggered",
 )
-# Excluded-reason rate (% of unique_signals) escalation. invalid_ohlc has run
-# ~30% on the live manifest (the 06-10 NaN backlog the engine's belt rejects);
-# these are CONSERVATIVE V1 floors -- the RD tunes them post-build.
+# Excluded-reason rate (% of unique_signals) escalation for insufficient_forward_depth
+# and missing_observations; these are CONSERVATIVE V1 floors -- the RD tunes them
+# post-build. invalid_ohlc is NOT judged by them (D82, below).
 _EXCL_YELLOW_PCT = 10.0   # any one reason >10% of unique_signals -> yellow
 _EXCL_RED_PCT = 25.0      # any one reason >25% -> red
-# CALIBRATION B (18-D §6.7): invalid_ohlc reflects the engine rejecting the SAME
-# 06-10 non-finite cohort FIX 1 baselined in check #1 -- a known, accepted,
-# PERMANENT ceiling (the immutable temporal log + the 18-B.1 write-barrier mean no
-# NEW non-finite can enter; the count only dilutes as unique_signals grows).
-# GROUNDED against the newest live manifest (shadow-expectancy-20260613T091809Z:
-# invalid_ohlc=23 of 77 unique_signals; plateaued 22->23->23->23 across
-# 06-12..06-13). Red ONLY on a count STRICTLY ABOVE this baseline (a new event = a
-# write-barrier regression). SCOPE LOCK: baselined ONLY for invalid_ohlc; the
-# other two reasons keep their raw _EXCL_*_PCT thresholds.
-_INVALID_OHLC_BASELINE_COUNT = 23
+# D82 (RD F5, CHARC F6; 2026-10-20): invalid_ohlc is judged as a RATE of
+# unique_signals by INTEGER cross-multiplication: green iff count*GREEN_DIVISOR <=
+# unique_signals (<= 5.00%), red iff count*RED_DIVISOR > unique_signals (> 10.00%),
+# yellow otherwise. The displayed thresholds are DERIVED from these two constants,
+# so the text and the comparison cannot diverge. No count belt.
+_INVALID_OHLC_GREEN_DIVISOR = 20
+_INVALID_OHLC_RED_DIVISOR = 10
 
 
 def _is_nonneg_count(v: object) -> bool:
@@ -979,24 +976,22 @@ def _check_excluded_reason_breakdown(*, exports_root) -> list[ResearchHealthChec
         count = summed[reason]
         pct = 100.0 * count / unique_signals
         if reason == "invalid_ohlc":
-            # CALIBRATION B (the PINNED curve): red ONLY on a count STRICTLY ABOVE
-            # the permanent baseline ceiling; below/at -> green; any excess is
-            # mapped through the SAME thresholds applied to the EXCESS, with a
-            # yellow floor (an excess above a permanent ceiling is never green).
-            over = max(0, count - _INVALID_OHLC_BASELINE_COUNT)
-            parts.append(
-                f"{reason}={count} ({pct:.1f}%, baseline"
-                f" {_INVALID_OHLC_BASELINE_COUNT})")
-            if over == 0:
+            # D82 (RD F5, CHARC F6; 2026-10-20): a RATE of unique_signals by INTEGER
+            # cross-multiplication -- never a float ratio, never the rounded display.
+            us = int(unique_signals)  # lossless: _is_nonneg_count admits integer values only
+            if count * _INVALID_OHLC_GREEN_DIVISOR <= us:
                 reason_status = "green"
+            elif count * _INVALID_OHLC_RED_DIVISOR > us:
+                reason_status = "red"
             else:
-                # > _EXCL_RED_PCT -> red; otherwise yellow (covers > _EXCL_YELLOW_PCT
-                # AND the yellow floor 0 < excess <= 10 -> never green when over>0).
-                excess_pct = 100.0 * over / unique_signals
-                reason_status = "red" if excess_pct > _EXCL_RED_PCT else "yellow"
+                reason_status = "yellow"
+            parts.append(
+                f"{reason}={count} ({pct:.2f}%, {reason_status}; yellow above "
+                f"{100 / _INVALID_OHLC_GREEN_DIVISOR:.2f}%, red above "
+                f"{100 / _INVALID_OHLC_RED_DIVISOR:.2f}%)")
         else:
-            # SCOPE LOCK: the other two reasons keep their existing RAW-count
-            # pct thresholds (NOT baselined).
+            # SCOPE LOCK: the other two reasons are judged by the _EXCL_*_PCT
+            # floors; invalid_ohlc is the rate rule above.
             parts.append(f"{reason}={count} ({pct:.1f}%)")
             if pct > _EXCL_RED_PCT:
                 reason_status = "red"
