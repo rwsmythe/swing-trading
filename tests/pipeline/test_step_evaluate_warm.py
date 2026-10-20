@@ -1,8 +1,26 @@
 """_prewarm_evaluate_archives: warm call + #27 telemetry (Arc 6 §6)."""
 from __future__ import annotations
 
+import pytest
+
 from swing.pipeline import runner as rmod
 from swing.data.ohlcv_archive import WarmReport
+
+
+class _StubLease:
+    """D83: the warm takes the run's lease (W7). Never read here: the autouse
+    fixture below replaces the open-detection reader that would read it."""
+    run_id = 1
+
+
+@pytest.fixture(autouse=True)
+def _no_open_detection_read(monkeypatch):
+    """D83 (plan AL-17): these tests pin the warm's telemetry and failure paths
+    over the BASE cohort; the open-detection reader is stubbed to an empty set
+    (this file's _Cfg has no db_path, so a real read would add the
+    reader-failure warning their assertions exclude). The reader's own tests
+    live in test_step_evaluate_warm_open_detections.py."""
+    monkeypatch.setattr(rmod, "_open_detection_warm_tickers", lambda cfg, lease: [])
 
 
 class _Cfg:
@@ -31,6 +49,7 @@ def test_prewarm_calls_warm_once_with_full_deduped_set(monkeypatch):
     rmod._prewarm_evaluate_archives(
         cfg=_Cfg(), candidate_tickers=["AAPL", "MSFT"],
         universe_tickers=["AAPL", "NVDA"], run_now=None, run_warnings=run_warnings,
+        lease=_StubLease(),
     )
     # Called once with benchmark + candidates + universe, deduped + uppercased
     # order-independent (warm_archives_batch dedupes internally; the helper passes
@@ -47,7 +66,7 @@ def test_prewarm_degraded_report_appends_27_warning(monkeypatch):
     run_warnings: list[dict] = []
     rmod._prewarm_evaluate_archives(
         cfg=_Cfg(), candidate_tickers=["AAPL"], universe_tickers=[],
-        run_now=None, run_warnings=run_warnings,
+        run_now=None, run_warnings=run_warnings, lease=_StubLease(),
     )
     assert len(run_warnings) == 1
     assert run_warnings[0]["step"] == "evaluate_warm"
@@ -62,7 +81,7 @@ def test_prewarm_clean_report_appends_no_warning(monkeypatch):
     run_warnings: list[dict] = []
     rmod._prewarm_evaluate_archives(
         cfg=_Cfg(), candidate_tickers=["AAPL"], universe_tickers=["MSFT"],
-        run_now=None, run_warnings=run_warnings,
+        run_now=None, run_warnings=run_warnings, lease=_StubLease(),
     )
     assert run_warnings == []  # honest funnel — clean warm emits no warning (#27)
 
@@ -75,7 +94,7 @@ def test_prewarm_wholesale_failure_warns_not_raises(monkeypatch):
     # Must NOT raise — warm is best-effort.
     rmod._prewarm_evaluate_archives(
         cfg=_Cfg(), candidate_tickers=["AAPL"], universe_tickers=[],
-        run_now=None, run_warnings=run_warnings,
+        run_now=None, run_warnings=run_warnings, lease=_StubLease(),
     )
     assert len(run_warnings) == 1
     assert run_warnings[0]["step"] == "evaluate_warm"
@@ -128,7 +147,7 @@ def test_prewarm_trim_appends_27_warning_even_when_clean(monkeypatch):
     run_warnings: list[dict] = []
     rmod._prewarm_evaluate_archives(
         cfg=_Cfg(), candidate_tickers=["AAPL"], universe_tickers=["MSFT"],
-        run_now=None, run_warnings=run_warnings,
+        run_now=None, run_warnings=run_warnings, lease=_StubLease(),
     )
     trim_entries = [w for w in run_warnings if w.get("trailing_nan_trimmed")]
     assert len(trim_entries) == 1
@@ -146,7 +165,7 @@ def test_prewarm_info_line_includes_trim_count(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger=rmod.log.name):
         rmod._prewarm_evaluate_archives(
             cfg=_Cfg(), candidate_tickers=["AAPL"], universe_tickers=[],
-            run_now=None, run_warnings=[],
+            run_now=None, run_warnings=[], lease=_StubLease(),
         )
     info = [r.message for r in caplog.records if "evaluate warm:" in r.message]
     assert info and "trimmed=2" in info[0]

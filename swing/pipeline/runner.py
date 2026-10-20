@@ -1458,9 +1458,29 @@ def _step_research_health(
         status, out_path=artifact_path, extra={"detection_count": det_count})
 
 
+def _open_detection_warm_tickers(cfg, lease) -> list[str]:
+    """D83: the distinct uppercased tickers of the detections observe will read
+    this run -- observe's OWN selector with observe's OWN anchor (CHARC F9):
+    `list_observable_detections(conn, source="pipeline",
+    observation_date=lease_data_asof(cfg, lease))`, the same function and
+    arguments as `_step_pattern_observe`. A fresh SELECT-only connection,
+    closed in `finally`. Raises on any failure; the caller degrades."""
+    observation_date = lease_data_asof(cfg, lease)
+    conn = connect(cfg.paths.db_path)
+    try:
+        from swing.data.repos.pattern_detection_events import (
+            list_observable_detections,
+        )
+        dets = list_observable_detections(
+            conn, source="pipeline", observation_date=observation_date)
+    finally:
+        conn.close()
+    return sorted({d.ticker.upper() for d in dets})
+
+
 def _prewarm_evaluate_archives(
     *, cfg, candidate_tickers: list[str], universe_tickers: list[str],
-    run_now, run_warnings: list[dict] | None,
+    run_now, run_warnings: list[dict] | None, lease,
 ) -> None:
     """Arc 6: ONE batched gap pre-warm before the serial evaluate loops, so each
     of the three serial fetch loops hits the cache-hit branch (zero per-ticker
@@ -1470,11 +1490,40 @@ def _prewarm_evaluate_archives(
     `run_now` is accepted for the documented end_date symmetry (the warm anchors
     writes on _last_completed_session_today() internally — see warm_archives_batch
     docstring; end_date is a signature-contract value the warm does not use for
-    writes); pass None in unit tests."""
+    writes); pass None in unit tests.
+
+    D83 (maintenance rider): the cohort also carries the OPEN detection set --
+    the tickers observe will read this run, chosen by observe's own selector at
+    the run's lease date (`_open_detection_warm_tickers`) -- APPENDED after the
+    unchanged base cohort, only those not already in it. The warm sorts and
+    dedupes its input itself, so the append is for diff-locality and
+    readability, not order. A failure of that read is a `log.warning` plus a
+    #27 run-warning and `n/a` telemetry; the warm proceeds with the base set."""
     from datetime import datetime
 
     from swing.evaluation.dates import last_completed_session
-    warm_set = [cfg.rs.benchmark_ticker, *candidate_tickers, *universe_tickers]
+    base = [cfg.rs.benchmark_ticker, *candidate_tickers, *universe_tickers]
+    # D83: a SEPARATE try, before the wholesale one, so a reader failure never
+    # reads as "warm raised wholesale" and never costs the warm.
+    try:
+        open_tickers = _open_detection_warm_tickers(cfg, lease)
+        base_upper = {b.upper() for b in base}
+        added = [t for t in open_tickers if t not in base_upper]
+        open_det, open_det_added = len(open_tickers), len(added)
+    except Exception as exc:  # noqa: BLE001 — the reader must never sink the warm
+        log.warning(
+            "open-detection cohort read failed (evaluate warm proceeds with "
+            "base cohort): %s: %s", type(exc).__name__, exc)
+        if run_warnings is not None:
+            run_warnings.append({
+                "step": "evaluate_warm",
+                "reason": "open-detection cohort read failed (warm proceeds with "
+                          "base cohort): "
+                          + " ".join(f"{type(exc).__name__}: {exc}".split())[:200],
+            })
+        added = []
+        open_det, open_det_added = "n/a", "n/a"
+    warm_set = [*base, *added]
     try:
         end_date = last_completed_session(run_now if run_now is not None else datetime.now())
         report = warm_archives_batch(
@@ -1495,10 +1544,12 @@ def _prewarm_evaluate_archives(
     # looks "clean" (zero fallbacks) is still visible as an anomalous distribution.
     log.info(
         "evaluate warm: cache_hit=%d gap=%d deep_gap=%d full_refresh=%d "
-        "chunks=%d chunk_failures=%d fallback=%d trimmed=%d wall=%.1fs",
+        "chunks=%d chunk_failures=%d fallback=%d trimmed=%d wall=%.1fs"
+        " open_det=%s open_det_added=%s",
         report.cache_hit, report.gap, report.deep_gap, report.full_refresh,
         report.chunks_attempted, report.chunk_failures, len(report.fallback),
         report.trailing_nan_trimmed, report.wall_seconds,
+        open_det, open_det_added,
     )
     # Arc 8 (#27): trailing-ragged trims at the warm write barrier are a state
     # event worth surfacing even when the warm is otherwise clean — a yfinance
@@ -1600,7 +1651,7 @@ def _step_evaluate(
         _prewarm_evaluate_archives(
             cfg=cfg, candidate_tickers=merged_tickers,
             universe_tickers=universe.tickers, run_now=run_now,
-            run_warnings=run_warnings,
+            run_warnings=run_warnings, lease=lease,
         )
 
     # --- output seam: emit the pin_injection run-warning (exact dict shape). ---
