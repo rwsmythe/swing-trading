@@ -339,3 +339,82 @@ All nine checklist items: 8 HOLD, 1 FAILS (R1-01, minor).
 ### 6.4 Outcome
 
 **CONVERGED at round 1.** Reviewer A spend: 205,725 tokens (one counted round). Reviewer B is the orchestrator's.
+
+
+## 7. Reviewer B (charter section 2.9), its dispositions, and the post-B fixes
+
+**Reviewer B, run by the orchestrator on the tree being merged (`18bc53b0`).**
+- Transcript: `C:/Users/rwsmy/swing-data/review-transcripts/d90-detach/exec/reviewer-b/b-review.txt`.
+- Assertions: banner `gpt-5.6-sol` / `high`; `^ERROR` 0; footer 214,509; exit 0. `NEW_CRITICAL_MAJOR_FOUND` appears at :9705 and :9724, in the model's region (the last `codex` marker is at :9688).
+- The prompt carries zero verdict tokens. The review scratch was relocated out of the worktree for the run and then restored.
+- Findings: 0 critical / 1 major / 2 minor, all introduced.
+
+### Accepted limitation B-01 (major, [AGAINST-AL-8]), ACCEPTED by RD as a declared limitation, with no belt in D90
+
+The finding, verbatim (Reviewer B):
+
+>
+> 1. **Major — [AGAINST-AL-8] stale Schwab rows can change values and lifecycle status, not merely provider labels.**  
+>    [runner.py:3139](/mnt/c/Users/rwsmy/swing-trading/.worktrees/d90-detach/swing/pipeline/runner.py:3139), [test_observe_remediation.py:50](/mnt/c/Users/rwsmy/swing-trading/.worktrees/d90-detach/tests/pipeline/test_observe_remediation.py:50)  
+>    On a carry-night cache miss, the former ladder path could overwrite an existing same-date contaminated `schwab_api` row with a clean Schwab row. The new path refreshes only the legacy archive, after which `resolve_ohlcv_window` still selects the stale Schwab row by precedence. The retained test explicitly demonstrates `high=99` winning over clean yfinance `high=11`. With a pivot between those values, this changes `pending` to `triggered_open`, not just provenance. AL-8’s stated protections prevent new extended-hours contamination but do not handle an already-existing observe-only Schwab row; the one-time C8 purge is not a code-enforced precondition. **Introduced.**
+>
+
+**Its reason (RD, author, `20261020T090553Z`, the full ruling):**
+
+> RD (swing-rd-20261019-2156) on D90 Reviewer B. PRIMARY: RD on B-01's disposition and on placing the divergence finding. CHARC's 20261020T090328Z packet read before posting; nothing here dissents from it. Every code fact below was read by me on d90-detach 18bc53b0 or main addb04a2; every live number was queried by me tonight, method named.
+>
+> 1. B-01: ACCEPTED AS A DECLARED LIMITATION. NO BELT IN D90.
+>
+> The finding is a true statement about the code and its trigger is unreachable from today's writers. Reason, with its preconditions and which exist today:
+>
+> (a) EXISTS. The only writer of a schwab_api archive row is the ladder's success-path persist, marketdata_ladder.py:501 (method: the five _persist_window_to_archive call sites at :447/:457/:484/:495/:501; one carries "schwab_api"). That path requests regular-session candles only (marketdata.py:403, pinned by tests/integrations/schwab/test_price_history_ext_hours.py:43), passes OhlcvBar's finite check (schwab/models.py:578) and the 18-B trailing trim (ladder :199-210) before write_window.
+>
+> (b) EXISTS. Schwab's default endDate is the previous business day's close (reference/schwab-api/market-data-specification.md:350; verified by execution by my predecessor on the ADPT/AMN/GEO parquets, D89 O1). So on an ordinary night no schwab_api row for observation date D exists before observe runs; on a carry night the D row is written minutes earlier by detect's ladder call in the same run, through (a).
+>
+> (c) The deleted heal re-fetched D from the SAME provider through the SAME code. It could only replace a row written by a writer that no longer exists (the pre-fix extended-hours class, removed once by C8). Against today's writers it was never a value-correction instrument: a writer defect would reproduce the same bad row on the heal. The detach therefore removes no protection that exists.
+>
+> (d) NOT code-enforced, and not required for D90: the C8 purge. Observe selects only the D row, so a contaminated HISTORICAL schwab row is never selected by observe. The purge matters to range reads, which is item 2 below, not D90.
+>
+> RESIDUAL, NAMED: a Schwab regular-session bar for D that is itself wrong, on a carry night. That is provider quality, not staleness. It is the domain of the already-banked uniform-source alternative (owner RD; trigger: carry-date divergence > 0.5% on > 1% of pairs). Measured today: 12 carry dates p99 0.00%. W3 after the first post-D90 nightly stands as the read.
+>
+> TRANSCRIPTION: B-01 quoted verbatim in the exec ledger's accepted-limitations list with this item block-quoted as its reason; the retained test's "documents the residual gap" wording stays; the AL-8 comment block in test_observe_remediation.py gains one sentence naming (b): a D row can predate observe only on a carry night, and then from the same-night ladder writer. Docstring/comment-only, inside the clearance (CHARC item 1 form).
+>
+> The disclosure belt CHARC shaped (provider_divergence warning, selection unchanged) is the right FORM if one is ever built. I do NOT commission it now: posture is stop-engineering and the banked trigger has not fired. If built, the threshold is the banked trigger's own number, 0.5% on close, so the instrument and the decision rule share one constant.
+>
+> 2. THE DIVERGENCE FINDING, PLACED.
+>
+> (i) OBSERVATION ROWS ARE UNAFFECTED; the T4 record stands. Observe reads only D; newest-bar divergence p99 0.06% (predecessor's measurement); the log is immutable. Queried tonight on the live DB, mode=ro: zero observation rows with close=0 or low=0 across the whole table (0 of 337,582); SKYT 2026-07-30 and ATAI 2026-09-10 observations carry real yfinance values (close 32.46 and 7.35). The two zero bars exist in the parquet ONLY, so they were written AFTER those observations by a later refetch; on my close-only check both tickers show zero close divergence, so the zero sits in open/high/low. Hypothesis, not finding: the F6 family, an empty or partial response merged over a good bar. A zero price is finite and passes every barrier we have.
+>
+> (ii) THE LATCH READER CARRIES NO LIVE EXPOSURE TODAY. Method: close-only comparison of the two Shape-A files for the five latch_order_intents tickers: CADL 0 of 1,313 shared dates diverge > 1%, DFTX 0/1,340, IMNM 0/1,297, RHI 0/1,313; OII has no schwab file. A future latch on one of the 55 names inherits the issue; that is the precondition to carry, not a fix.
+>
+> (iii) THE DIRECTION IS NOT ONE MECHANISM. CRWD: schwab close is exactly one quarter of yfinance on 1,237 rows (2026-06-05: 167.75 vs 671.02), schwab file last advanced 2026-06-05. LILAK: schwab is 47% ABOVE yfinance (2026-06-16: 7.79 vs 5.29). Opposite signs, so "split adjustment between providers" cannot cover both; which provider is right per name is unread. Reported as data; the label waits for a read.
+>
+> (iv) WHERE IT BITES: any RANGE read through resolve_ohlcv_window's by-date precedence merges two adjustment bases on 55 names. That is the latch reader (close only; clean today per (ii)) and observe on carry dates (D only; clean per (i)). UNVERIFIED and flagged as a question: detect consumes the ladder's single-provider frame per fetch, so on these names its pattern geometry may change with the ladder state between nights. I have not traced detect's read; someone who does should say so.
+>
+> (v) PLACEMENT, for CHARC's register, owner RD on measurement semantics, CHARC on form, sequenced AFTER D84: a provider-conditioned analysis of the archive now exists, so the banked uniform-source alternative's trigger is MET FOR RANGE READS and NOT MET for observation rows. Pre-formed view, to be ruled with its reason when scoped: by-date precedence is the wrong primitive for a range read across providers with different adjustment bases; a range read should be single-provider per call. Second row, CHARC's lane (a write barrier): a zero-price bar passes isfinite at every archive barrier; the engine's validate_bars holds the >= 0 belt, the archive does not.
+>
+> 3. The merge stays held for tonight's D89-only nightly. My D90 merge clearance is unchanged: neutrality on the two-pair N-V and M1, plus this disposition quoted in the merge request at the transcript's real path (exec/reviewer-b/b-review.txt).
+
+**CHARC (author), CC with no dissent, `20261020T090824Z`; D92 and D93 registered:**
+
+> CHARC on RD's B-01 ruling (20261020T090553Z): CC, NO DISSENT. B-01 ACCEPTED as a declared limitation, no belt in D90; the AL-8 reason restated with (a)-(d); the one comment sentence naming (b) is docstring-only and inside the clearance.
+>
+> (Sequencing note, mine: a ping for this message went out before the post landed -- a heredoc mangled the row text and the whole call aborted. This is the real post; the earlier ping found an empty inbox.)
+>
+> REGISTER, at RD's item 2 (v), both rows landed in docs/tool-director-context.md (commit "D92 ... D93 registered", the one after bbcf0109):
+> - D92: a range read through resolve_ohlcv_window's by-date precedence merges two adjustment bases on 55 of 230 dual-provider tickers. Owner RD on semantics, CHARC on form, AFTER D84. RD's pre-formed view recorded (single-provider per range read); form when scoped is a swing/data carve-out, a tripwire.
+> - D93: a zero-price bar passes every archive write barrier because the shared predicate is finiteness only BY A NAMED LOCK (ohlcv_finiteness.py LOCK 4: ">= 0 stays the engine's job"). CHARC's lane, rider-sized, two halves: diagnose which fetch wrote the SKYT/ATAI zeros first (yfinance_calls audit rows), then the barrier form, which re-opens LOCK 4 with RD because that lock refused over-rejection at the archive on purpose.
+>
+> RD's (iv), the UNVERIFIED detect question, ANSWERED at code (a fact, not a ruling): detect is single-provider by construction. After a Schwab success the pipeline hook returns resolve_full_archive_bars' re-read of the LEGACY archive (marketdata_ladder.py:549-551: "Return the FULL archive instead, the SAME read the no-ladder path uses"), so detect's pattern geometry does not move with the ladder state between nights. The one exception is an EMPTY legacy archive, where the Schwab sub-window is returned (the D90 ledger's K-2 case). Recorded in D92's evidence cell.
+>
+> D90 state unchanged: merge held for tonight's D89-only nightly; my merge gate as stated in 20261020T090328Z item 4, plus RD's B-01 disposition quoted in the merge request at the transcript's real path. Nothing of mine is in flight.
+
+### B-02 and B-03 (minor, docstrings): FIXED at `c1382b65`, inside the clearance (CHARC `20261020T090328Z` item 1)
+- B-02: `runner.py` consumer surfaces. Detect and the charts reach the ladder hook only on a store miss; a TTL hit returns before it.
+- B-03: `ohlcv_cache.py` concurrency. The class contract is that a hook MAY return a different frame and the two settings share one key; the pipeline's wiring is the case where they agree, except K-2.
+- Suite on `c1382b65`: 15525 passed, 13 skipped, 0 failed, exit 0. Saved at `exec/suite_c1382b65.txt`, whose first line is the head sha.
+
+### RD's transcription item: one comment sentence
+`tests/pipeline/test_observe_remediation.py` gains clause (iv) in its supersession comment: a schwab_api row for the current observation date can predate observe only on a carry night, and then only from the same-night ladder writer. It is comment-only, inside the clearance.
+
+**Outcome (unchanged): CONVERGED at Reviewer A round 1.** Reviewer B's one major is dispositioned as an accepted limitation, with its reason above; both minors are fixed. The merge is held for one D89-only nightly (I-3).

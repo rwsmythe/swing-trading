@@ -43,7 +43,10 @@ def _cfg_for(tmp_path):
 # (ii) an observe-only ticker gets no schwab_api row from observe after the
 # boundary;
 # (iii) a detect-pool ticker's row is refetched by detect's own ladder call on
-# the next run. Replacement: tests/pipeline/test_observe_ladder_detach.py::
+# the next run;
+# (iv) a schwab_api row for the CURRENT observation date can predate observe
+# only on a carry night, and then only from the same-night ladder writer (RD,
+# 20261020T090553Z, B-01 accepted). Replacement: tests/pipeline/test_observe_ladder_detach.py::
 # test_observe_populate_never_reaches_the_ladder_hook.
 
 
