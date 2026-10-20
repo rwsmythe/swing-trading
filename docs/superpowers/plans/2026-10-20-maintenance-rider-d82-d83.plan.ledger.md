@@ -5,6 +5,7 @@
 **Briefs:** `docs/maintenance-rider-d82-d83-plan-dispatch-brief.md` @ `4d6cea42` (the envelope, live-data rules, plan form, return format), SUPERSEDED where they differ by `docs/maintenance-rider-d82-d83-plan-continuation-brief-cell2.md` @ `033d1053` (scope as ruled; plan rounds at `fast`, at most three counted, then the self-sweep).
 **Round 0:** cell 1 (stopped past the 400K cap; no Codex, no commit). Census: `comms/charc/read/20261020T004708Z-orchestrator-maint-rider-round-0-d83-ruling-premises.md`. Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\maint-rider\plan\round0\` (m01-m12, `plug\`).
 **This cell (cell 2):** writing-plans from the rulings. Its probes: `C:\Users\rwsmy\swing-data\review-transcripts\maint-rider\plan\cell2-probes\` (p01 live state + DDL, p02 selector timing + discriminator dates + band arithmetic, p03 live manifest shape + float-vs-integer grid, w01 the F8 witness script). Every probe read the live DB `mode=ro` through plain sqlite3; none opened it through `swing`'s `connect`.
+**Cell 3:** plan review, per `docs/maintenance-rider-d82-d83-plan-review-brief-cell3.md` @ `183b7104`. It encodes the I-1 ruling (below) and runs the plan rounds at `fast`.
 
 ## Packet status
 
@@ -16,7 +17,8 @@
 | CHARC premises P1-P4 | CHARC | CORRECTED ON THE RECORD (below; D83 row amended) |
 | F13 (plan rounds at `fast`) | orchestrator | RULED (census; continuation brief section 2) |
 | F14 (`latches/service.py:393-394` docstring) | orchestrator | RULED, envelope widened by that docstring (census; CHARC concurs) |
-| **I-1 (a second site of the F14 sentence, in a test docstring)** | **orchestrator** | **OPEN -- flagged by this cell; the plan stays inside the envelope until ruled (below)** |
+| I-1 (a second site of the F14 sentence, in a test docstring) | orchestrator | RULED A (widen), 2026-10-20; encoded by cell 3 in plan T2 step 2 (below) |
+| **I-4 (CHARC F12's depth relation `>=` encoded as `>`)** | **CHARC** | **FLAGGED, a DEVIATION, not resolved; CHARC reads it at the plan-stage read (below)** |
 
 ## RD rulings -- author: RD; courier: orchestrator
 
@@ -84,6 +86,14 @@ Transcribed as a literal block quote of the message body in `comms/orchestrator/
 - **F13:** "MY ERROR. My brief set the plan review at `strong` and 'to convergence with the round-5 check-in'. The recipe's plan protocol (section 3, rules 4 and 5) says plan rounds run at `fast`, with no exception, and stop at three counted rounds plus a self-sweep. The recipe binds." (Encoded: continuation brief section 2.)
 - **F14:** "swing/latches/service.py:393-394 says the research monitor 'baselines invalid_ohlc at 23 of 77'. That becomes false after F6, a false comment in normative position (#31). I widen the envelope by that docstring line." (Encoded: plan T2 step 1.)
 
+## Orchestrator ruling on I-1 -- author: orchestrator
+
+Transcribed as a literal block quote from the cell-3 plan-review brief, `docs/maintenance-rider-d82-d83-plan-review-brief-cell3.md` @ `183b7104` section 1.
+
+> I-1 RULED A (widen). The second copy of the false sentence, `tests/latches/test_criteria_lapse.py:1136-1138` (the `_envelope_case` docstring), gets the same replacement as `swing/latches/service.py:393-394` in plan T2 step 2. The envelope widens by those docstring lines only.
+
+**Encoded by cell 3:** the plan's envelope IN list names the docstring; the "FLAGGED, outside the envelope" paragraph is removed by replacement; T2 step 2 is unconditional; T1 step 3's residual-hit sentence and the test roster name the site. **Fact re-checked at intake:** the sentence sits at `tests/latches/test_criteria_lapse.py:1136-1138` on `a8221cea` (read). T2's closure greps are restricted to `--include=*.py`, because a bare `grep -rn` also matches the stale `swing/latches/__pycache__/service.cpython-314.pyc` binary (measured).
+
 ## D82 coverage -- the deferral, as text only (RD)
 
 The coverage conversion is NOT in this rider. The count rule stands unchanged (`_COVERAGE_YELLOW_GAPS = 1`, `_COVERAGE_RED_GAPS = 10`, CALIBRATION A and C, the comment "a missing forward bar is a real signal") and so do its tests. Recorded so a future conversion does not restart at D1/D3:
@@ -95,7 +105,7 @@ The coverage conversion is NOT in this rider. The count rule stands unchanged (`
 
 A ruling's reasoning binds; its incidental facts are inputs, re-checked here. Each item: what the ruling or brief said, what the code has, what the plan encodes.
 
-- **I-1 (OPEN, for the orchestrator).** F14 counted ONE site of the "baselines `invalid_ohlc` at 23 of 77" sentence. The code has TWO outside the research-health module and its test file: `swing/latches/service.py:393-394` (F14, in the envelope) and `tests/latches/test_criteria_lapse.py:1136-1138` (the docstring of `_envelope_case`, a copy of the same claim, NOT in the envelope).
+- **I-1 (RULED A, widen, by the orchestrator; see "Orchestrator ruling on I-1").** F14 counted ONE site of the "baselines `invalid_ohlc` at 23 of 77" sentence. The code has TWO outside the research-health module and its test file: `swing/latches/service.py:393-394` (F14, in the envelope) and `tests/latches/test_criteria_lapse.py:1136-1138` (the docstring of `_envelope_case`, a copy of the same claim, NOT in the envelope).
   - **Method:** `grep -rn -i -E "invalid_ohlc.{0,40}23|23.{0,40}invalid_ohlc|baseline.{0,20}invalid|invalid.{0,30}baseline" swing tests scripts --include=*.py`. That bounds the family from below; a paraphrase sharing none of those tokens would be missed.
   - **Branch A (widen):** T2 step 2 applies the identical replacement there.
   - **Branch B (leave):** the test docstring stays false after merge and goes onto the orchestrator's post-merge owner list beside `CLAUDE.md:67`.
@@ -105,7 +115,7 @@ A ruling's reasoning binds; its incidental facts are inputs, re-checked here. Ea
   - **What the order test can honestly pin:** the list HANDED to the warm, not the chunks.
 - **I-3 (CHARC F10 (4), count corrected).** The ruling said "the seven warm unit tests take a lease stub". `tests/pipeline/test_step_evaluate_warm.py` has seven tests. SIX of them CALL `_prewarm_evaluate_archives` (:31, :48, :63, :76, :129, :147); the seventh, `test_step_evaluate_wires_prewarm_before_fetch_loops`, is a source-text wiring contract that calls nothing. **Encoded:** six get `lease=`; the seventh is unchanged, and its regex still matches.
   - **Method:** read of the file. `grep -rn "_prewarm_evaluate_archives" tests swing` finds two more test references: `test_step_evaluate_pin_injection.py:223` (a `lambda **k: None` patch, which accepts the new keyword) and `test_step_evaluate_warm_scope.py:54` (a `**kwargs` recorder, which is W5's site).
-- **I-4 (CHARC F12, `>=` -> `>`).** The ruling: "`archive_history_days` (1,260 trading days, ~1,857 calendar) >= the constant". The mechanic: the archive RETAINS the last `archive_history_days` trading rows (`ohlcv_archive.py:836, 849`). N distinct trading dates span at least N-1 calendar days, so coverage of a C-calendar-day window needs N-1 >= C, i.e. N > C. `_calendar_window_for_trading_days` (1,857) is the fetch window: it adds a +30 buffer and is trimmed to N rows afterwards, so it overstates retained depth. **Encoded:** `archive_history_days > DETECT_OBSERVE_WINDOW_DAYS` (AL-14). Both forms hold today (1260 vs 400).
+- **I-4 (CHARC F12, `>=` -> `>`; a DEVIATION from the ruling's text, FLAGGED and NOT resolved -- CHARC reads it at the plan-stage read, per the orchestrator's cell-3 brief section 1).** The ruling: "`archive_history_days` (1,260 trading days, ~1,857 calendar) >= the constant". The mechanic: the archive RETAINS the last `archive_history_days` trading rows (`ohlcv_archive.py:836, 849`). N distinct trading dates span at least N-1 calendar days, so coverage of a C-calendar-day window needs N-1 >= C, i.e. N > C. `_calendar_window_for_trading_days` (1,857) is the fetch window: it adds a +30 buffer and is trimmed to N rows afterwards, so it overstates retained depth. **Encoded:** `archive_history_days > DETECT_OBSERVE_WINDOW_DAYS` (AL-14). Both forms hold today (1260 vs 400).
 - **I-5 (CHARC F12, the closure grep counts comments).** `grep -rn "window_days=400" swing/` returns FIVE lines today: three code (:2136, :2398, :3054) and two comments (:2395, :3052). **Encoded:** the two comments are reworded at their sites (AL-13). This sits inside "the three sites" the envelope widened.
 - **I-6 (CHARC F6's "26 references").** Not reproduced as a reference count (`grep -c -i baseline` = 30, which includes the unrelated FIX-1 finiteness baseline; a broader regex over the excluded section = 28 lines / 49 tokens). It DOES match the number of `test_excluded_*` functions: 26, by `grep -n "^def test_excluded"`. By READ of all 26: SIX pin baseline semantics and are superseded by name; THREE keep their assertions with comments rewritten; SEVENTEEN are untouched (plan T1 step 1).
 - **I-7 (RD F5's discriminator, its scope stated).** RD: "77/1535 -> YELLOW. At 1 dp it displays '5.0%', so an implementation that compares the rounded display, or compares `count/unique <= 0.05` after a 1 dp round, reads it GREEN." Confirmed (p02: `round(pct, 1) <= 5.0` is True at 77). Measured further (p03): an UNROUNDED float comparison (`100.0*c/u <= 5.0`, or `c/u <= 0.05`) agrees with the integer form on every `c <= u <= 5000`. So no test distinguishes those two; the integer form is held by read (L-3). The pins also kill the rounded mutant on the RED side: N1[154] reads yellow under a 1-dp round.
