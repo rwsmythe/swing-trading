@@ -119,3 +119,15 @@ Transcribed from `docs/maintenance-rider-d82-d83-exec-continuation-brief-cell2.m
 ## Reviewer A (executing, `strong`)
 
 Run by cell 2. Prompt built by `exec\build\build_prompt.py` from cell 1's `round1\prompt-head.md` (re-verified: the D83 conditions byte-equal to the register row, `docs/tool-director-context.md:147`, by `diff`; the envelope and AL list match plan lines 10-87 by read) plus both clearances (the block quotes above), the cell-2 rulings, and the plan ledger CUT before its `## Round ledger` heading. Runner `exec\build\run_round.sh` (LF, literal paths), Codex cwd = the worktree, `-p strong -s read-only --skip-git-repo-check`.
+
+### Round ledger
+
+The depth column is the orchestrator's (`scripts/cell_depth.py --agent <id>`); this cell leaves it empty.
+
+| round | head reviewed | model / effort (banner = profile) | `^ERROR` | footer (`tokens used`) | verdict (model region) | crit / major / minor | NEW / REOPENED | reverts | depth |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | `28442bf0` | `gpt-5.6-sol` / `high` (equal) | 0 | 219,461 | clean token x2, findings token 0 | 0 / 0 / 0 | 0 / 0 | 0 | |
+
+**Round 1 evidence** (`exec\round1\`): `prompt-r1.md` 123,884 B (zero line-initial verdict tokens), `diff.txt` 66,421 B, `transcript-r1.txt` 869,329 B, `exit.txt` (`exit=0`, finished 16:44:34 after start 16:40:03; no live codex process after), `findings-r1.md`. No-prior-read grep over all Codex command blocks: 0 hits. One timestamp-prefixed `ERROR codex_core::session: failed to record rollout items` diagnostic sits after the verdict (:10232); it is not line-initial, so the anchored count stays 0. The reviewer could not run pytest from WSL (static read and closure searches only). Content filter: none.
+
+**Loop status:** ENDED at round 1, the first clean verdict. No post-convergence minors. Spend (A rounds): 219,461 tokens.
