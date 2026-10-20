@@ -46,7 +46,7 @@ The two comment lines the plan adds were wrapped onto two lines each (E501 at 10
 **Closure greps** (at `7cdfaeb8`):
 - `grep -n -i "zero schwab" swing/pipeline/runner.py` -> no output, rc 1.
 - `grep -rn --include=*.py "observe_load" swing/` -> `runner.py:3242` (the entry-reset comment) and `runner.py:3361` (the entry). Two lines, as K-6 states.
-- `grep -n "memo" swing/pipeline/runner.py` -> AT ITS STATED FORM THE CLAIM DOES NOT HOLD LITERALLY. Five hits sit outside the three functions: `:1364`, `:1992`, `:1999`, `:2696`, `:4723`. Each is the substring `memo` inside `in-memory`, and all five exist on the base (`git show eed4bb2d:swing/pipeline/runner.py | grep -n memo` returns the same five plus `in_memory_hit` at :3317 and :3325). The grep that tests the plan's property, `grep -nE "memo([^r]|$)"`, returns 22 lines, all inside `_observe_memo_key` (:3073-3076), `_bar_for_date` (:3079-3171) or `_step_pattern_observe` (:3192-3366). Reported, not chosen around.
+- `grep -n "memo" swing/pipeline/runner.py` -> AT ITS STATED FORM THE CLAIM DOES NOT HOLD LITERALLY. Five hits sit outside the three functions: `:1364`, `:1992`, `:1999`, `:2696`, `:4723`. Each is the substring `memo` inside `in-memory`, and all five exist on the base (`git show eed4bb2d:swing/pipeline/runner.py | grep -n memo` returns the same five plus `in_memory_hit` at :3317 and :3325). The grep that tests the plan's property, `grep -nE "memo([^r]|$)"`, returns 20 lines (corrected at the round-1 gate: this line first said 22, a miscount; section 6 holds the output), all inside `_observe_memo_key` (:3073-3076), `_bar_for_date` (:3079-3171) or `_step_pattern_observe` (:3192-3366). Reported, not chosen around.
 - `git diff --stat main...HEAD -- swing/data swing/web swing/trades` -> empty. `git diff --stat main...HEAD -- swing` -> `swing/pipeline/runner.py | 64 +++++++++++++++++++++++++++++++++++++++---------` only.
 - `git diff --stat 31a293b4..HEAD -- swing/data swing/trades swing/web scripts research` -> empty.
 
@@ -168,3 +168,84 @@ Inputs: `prompt.md` (8,038 bytes: the envelope, L-1 to L-4 with their reasons an
 - **R1-02 (minor), the live clock in the memo tests.** The memo tests rely on `_OBS = 2026-05-29` being a completed session under the real clock. They also rely on it being at or before `_write_archive_atomic`'s cutoff. Both hold for any clock after that date. The same unpinned shape is in `test_observe_load_instrumentation.py`, the plan's named precedent for the populate stub; that test patches `lease_data_asof` only. The plan's harness does not pin the clock. Proposed: **DECLINED**, on the ground that the dates are historical and the plan's harness is followed as written. If the orchestrator prefers to pin, the shape is `test_observe_remediation.py:35-38`: patch `arch._last_completed_session_today` and `runner.last_completed_session` to a fixed date at or after `_OBS`. That is a test-only change.
 
 **Verdict:** clean at round 1, the first round. Under the executing criterion the loop ENDS here. Post-verdict minors are fixed without another round, and the full suite on the final head is their verification.
+
+## 6. Orchestrator rulings at the round-1 gate (author: the orchestrator)
+
+> R1-01: the CODE change is DECLINED. The L3 guard's raise propagates out of the step before the observe_load entry is appended, so the pre-call count can never reach the record; CHARC's plan-stage read says the same, and a code change would go beyond the cleared plan. The TEST fix is ACCEPTED, test-only, with no new round: T-load binds `reads = _count_resolve(...)` and asserts `reads["n"] == 2`, which pins the independent counter AL-8 names.
+> R1-02: DECLINED. `_OBS` is historical, the named precedent `test_observe_load_instrumentation.py` has the same unpinned shape, and the plan does not pin the clock. Recorded as a known test-shape choice.
+> The `memo` closure grep: the narrowed form `grep -nE "memo([^r]|$)"` is ACCEPTED as the instrument correction. The plan's literal form matches the pre-existing substring "in-memory" at 5 sites on base. Record both outputs.
+> Round 1 counts as CONVERGED: the first clean verdict, with post-verdict minors fixed and no new round.
+
+### The `memo` closure grep, both outputs (at `7cdfaeb8`; `runner.py` is unchanged after it)
+
+The plan's literal form, `grep -n "memo" swing/pipeline/runner.py`:
+
+```
+1364:    ``data_asof_date`` read by ``run_id``, plus the in-memory ``run_warnings``),
+1992:            # Test-stub path: single-connection in-memory test fixtures
+1999:                # in-memory test stub -- not a production path.
+2696:        #   - candidate_by_ticker = the in-memory candidate rows (ZERO new
+3073:def _observe_memo_key(ticker: str, observation_date: str) -> tuple[str, str]:
+3074:    """The observe step's per-step read-memo key (D89): the ticker exactly as
+3080:                  memo: dict | None = None):
+3096:    ``memo`` (D89): the observe step passes one dict per step call, keyed by
+3097:    ``_observe_memo_key``. When the key is present, step 2 selects from the
+3098:    memoized ``(df, provenance)`` pair and does not read the archive, whatever
+3101:    or no bar). ``memo=None`` reads on every call and stores nothing.
+3127:    #    without raising (the D89 memo write condition).
+3141:    # With a memo (D89): a present key is selected from, never re-read; an
+3144:    key = _observe_memo_key(ticker, observation_date)
+3145:    if memo is not None and key in memo:
+3146:        df, provenance = memo[key]
+3152:        if memo is not None and populate_ok:
+3153:            memo[key] = (df, provenance)
+3238:    # D89 per-step read memo: _observe_memo_key -> the (df, provenance) pair
+3240:    memo: dict = {}
+3290:        if _observe_memo_key(det.ticker, observation_date) not in memo:
+3291:            _resolve_reads += 1  # a memo miss: this call reads the archive
+3293:                            memo=memo)
+3355:    # archive/network; in_memory_hit = TTL hits.
+3356:    # resolve_reads = resolve_ohlcv_window calls this step made (memo misses, D89).
+3364:        "in_memory_hit": _tele.get("in_memory_hit", 0),
+4723:      2. _finviz_fetch_core (in-memory fetch + normalize + signature).
+```
+
+The accepted narrowed form, `grep -nE "memo([^r]|$)" swing/pipeline/runner.py`, returns 20 lines:
+
+```
+3073:def _observe_memo_key(ticker: str, observation_date: str) -> tuple[str, str]:
+3074:    """The observe step's per-step read-memo key (D89): the ticker exactly as
+3080:                  memo: dict | None = None):
+3096:    ``memo`` (D89): the observe step passes one dict per step call, keyed by
+3097:    ``_observe_memo_key``. When the key is present, step 2 selects from the
+3098:    memoized ``(df, provenance)`` pair and does not read the archive, whatever
+3101:    or no bar). ``memo=None`` reads on every call and stores nothing.
+3127:    #    without raising (the D89 memo write condition).
+3141:    # With a memo (D89): a present key is selected from, never re-read; an
+3144:    key = _observe_memo_key(ticker, observation_date)
+3145:    if memo is not None and key in memo:
+3146:        df, provenance = memo[key]
+3152:        if memo is not None and populate_ok:
+3153:            memo[key] = (df, provenance)
+3238:    # D89 per-step read memo: _observe_memo_key -> the (df, provenance) pair
+3240:    memo: dict = {}
+3290:        if _observe_memo_key(det.ticker, observation_date) not in memo:
+3291:            _resolve_reads += 1  # a memo miss: this call reads the archive
+3293:                            memo=memo)
+3356:    # resolve_reads = resolve_ohlcv_window calls this step made (memo misses, D89).
+```
+
+Every one is inside `_observe_memo_key` (:3073-3076), `_bar_for_date` (:3079-3171) or `_step_pattern_observe` (:3192-3366). On base `eed4bb2d` the literal form returns the five `in-memory` sites plus `in_memory_hit` at :3317 and :3325.
+
+### Post-verdict fix
+
+- `a12abd16` `test(pipeline): D89 R1-01 -- T-load asserts the independent resolve counter`, test-only: `_count_resolve(monkeypatch)` becomes `reads = _count_resolve(monkeypatch)`, and `assert reads["n"] == 2` is added. The two new files: `8 passed`. `ruff check` on the file and on `swing/`: `All checks passed!`. Trailers empty.
+- R1-02: no change, per the ruling.
+
+### Final-head suite
+
+`python -m pytest -m "not slow" -q -n 8 -p no:cacheprovider` at `a12abd16` (the file's first line records the sha; `exec\suite_final_head.txt`): `15518 passed, 13 skipped, 1322 warnings in 799.64s (0:13:19)`, `rc=0`. This ledger commit, which follows, is docs-only.
+
+## 7. Outcome
+
+**CONVERGED at round 1.** One counted Reviewer A round (`strong`, 349,841 tokens): the first clean verdict, two minors, R1-01's test half fixed after the verdict, no new round. Reviewer B is the orchestrator's.
