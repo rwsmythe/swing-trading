@@ -24,14 +24,16 @@ import pandas as pd
 from swing.data.repos.pattern_forward_observations import (
     get_observations_for_detection,
 )
-from tests.pipeline.conftest_temporal import (  # noqa: F401
-    _StubOhlcvCache,
+from tests.pipeline import conftest_temporal as _ct
+from tests.pipeline.conftest_temporal import (
     _build_bars,
     _cfg,
     _FakeLease,
     _plant_detection,
-    tmp_db_at_head,
+    _StubOhlcvCache,
 )
+
+tmp_db_at_head = _ct.tmp_db_at_head  # the shared fixture (conftest_temporal)
 
 _OBS = "2026-05-29"
 _DET_DATES = ("2026-05-26", "2026-05-27", "2026-05-28")
