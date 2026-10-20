@@ -281,6 +281,7 @@ class ArchiveConfig:
     `aeb2084` 2026-04-28 lesson is in scope — Python defaults shadow at
     runtime if a tracked toml override exists.
     """
+    # a count of trading ROWS retained; see ohlcv_archive.py:607
     archive_history_days: int = 1260
     stagger_full_refresh: bool = True
 

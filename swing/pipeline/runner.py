@@ -1124,6 +1124,10 @@ def lease_data_asof(cfg: Config, lease: Lease) -> str:
 SHADOW_EXPECTANCY_TIMEOUT_S = 900
 _SHADOW_EXPECTANCY_KEEP = 90
 
+# F12 (maintenance rider): the ONE calendar-day window detect Pass-1, the exemplar
+# fetch and observe's archive populate share.
+DETECT_OBSERVE_WINDOW_DAYS = 400
+
 
 def _shadow_expectancy_tail(text, *, limit: int = 512) -> str:
     """Collapse newlines + cap length for a redaction-safe run_warnings detail.
@@ -2133,7 +2137,8 @@ def _step_pattern_detect(
         for ticker in detect_pool_tickers:
             # Fetch bars (per-ticker failure: log + continue).
             try:
-                bars = ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
+                bars = ohlcv_cache.get_or_fetch(
+                    ticker=ticker, window_days=DETECT_OBSERVE_WINDOW_DAYS)
             except Exception as exc:
                 log.warning(
                     "pattern_detect: bars fetch failed for %s "
@@ -2392,10 +2397,10 @@ def _step_pattern_detect(
             continue
         snapshot_eligible_ids.add(int(ex_row.id))
         try:
-            # window_days=400 IDENTICAL to the prior in-fence call (#28/#29
-            # historical depth preserved byte-for-byte).
+            # the SAME window constant as the Pass-1 fetch (#28/#29 historical
+            # depth preserved).
             ex_bars = ohlcv_cache.get_or_fetch(
-                ticker=ex_row.ticker, window_days=400
+                ticker=ex_row.ticker, window_days=DETECT_OBSERVE_WINDOW_DAYS
             )
             _ex_start = pd.Timestamp(ex_row.start_date)
             _ex_end = pd.Timestamp(ex_row.end_date)
@@ -3049,9 +3054,9 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
     #    get_or_fetch write-throughs to the same prices_cache_dir
     #    resolve_ohlcv_window reads (Shape-A {TICKER}.{provider}.parquet).
     try:
-        # window_days=400 mirrors the detect-step Pass-1 fetch window (~400
-        # calendar days) so the archive refresh covers the same depth.
-        ohlcv_cache.get_or_fetch(ticker=ticker, window_days=400)
+        # the detect-step Pass-1 window constant (~400 calendar days), so the
+        # archive refresh covers the same depth.
+        ohlcv_cache.get_or_fetch(ticker=ticker, window_days=DETECT_OBSERVE_WINDOW_DAYS)
     except Exception as exc:  # noqa: BLE001 - best-effort populate; read is authoritative
         log.debug("observe populate get_or_fetch best-effort miss for %s: %s",
                   ticker, exc)
