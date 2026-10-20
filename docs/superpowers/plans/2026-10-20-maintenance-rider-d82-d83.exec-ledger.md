@@ -73,3 +73,39 @@ From `comms/orchestrator/read/20261020T014211Z-rd-maint-rider-plan-rd-clears-the
 
 ## Task results
 
+Every RED and GREEN below is read off saved output in the evidence folder (file named per line). All runs from the worktree with `PYTHONPATH=.`, `-p no:cacheprovider`.
+
+| task | commit | RED (saved output) | GREEN (saved output) |
+|---|---|---|---|
+| ledger | `521f7f22` | -- | -- |
+| T1 (D82) | `b83a343b` | `t1-red.txt`: `5 failed, 25 passed, 123 deselected` -- N1[76], N1[154], N1b, N2, N3 FAIL; N1[77] and N1[153] pass (pre equals post), exactly as the plan tabulates | `t1-green.txt`: `tests/monitoring/` `337 passed, 1 skipped` |
+| T2 (F14, I-1) | `98bc1582` | prose, no test | `tests/latches/test_criteria_lapse.py` `39 passed` (sanity) |
+| T3 (shadow 900) | `17113d97` | `t3-red.txt`: `1 failed, 16 passed` (`assert 300 == 900`) | `t3-green.txt`: `17 passed` |
+| T4 (F12, I-4) | `1d575229` | `t4-red.txt`: `4 failed` (D1-D4, each `AttributeError ... DETECT_OBSERVE_WINDOW_DAYS`) | `t4-green.txt`: `4 passed`; `t4-pipeline-dir.txt`: `tests/pipeline/` `434 passed` |
+| T5 (D83) | `2fb1e31a` | `t5-red.txt`: `8 failed, 7 errors` -- W1, W2, W3 x2, W4, N-V `TypeError ... unexpected keyword argument 'lease'`; W5 `KeyError: 'lease'`; W6 no reader-failure entry (only the pin_injection warning); W7's seven tests error at setup (`AttributeError ... _open_detection_warm_tickers`) | `t5-green.txt`: `15 passed` |
+
+**T5, one choice inside AL-12 (no task change):** the `log.warning` text is `open-detection cohort read failed (evaluate warm proceeds with base cohort): <Type>: <exc>`. A first GREEN prefixed it `evaluate warm:`, which collided with the cohort line's own prefix (W3's one-cohort-line assertion counted two). The run-warning `reason` is AL-12's text exactly.
+
+## T6 gates (before Reviewer A)
+
+- **Full fast suite** (`python -m pytest -m "not slow" -q -n auto -p no:cacheprovider`, head `2fb1e31a`), `t6-full-suite-pre-review.txt`: `15510 passed, 13 skipped, 1322 warnings in 886.27s (0:14:46)`, `exit=0`. No red.
+- **Closure greps** (`t6-closure-greps.txt`), every one ZERO: `_INVALID_OHLC_BASELINE_COUNT`, `excess_pct`, `CALIBRATION B`, `baseline 23`, ``baselines `invalid_ohlc` ``, `23 of 77` (each `grep -rn --include=*.py ... swing/ tests/`); `grep -n "23 of 77" swing/latches/service.py`; `grep -rn --include=*.py "window_days=400" swing/`.
+- **`git diff --stat 033d1053..HEAD -- swing/data swing/trades`:** EMPTY.
+- **Ruff** (`t6-ruff.txt`): `ruff check swing/` -- All checks passed. The three NEW test files are clean. Three TOUCHED test files carry 34 violations, every one present at base `033d1053` (same codes, same sites; line numbers in `test_criteria_lapse.py` shifted by one): `test_criteria_lapse.py` 29 (28 N802 + 1 SIM300), `test_research_health_checks.py` 4 E702 (:2373-2379), `test_step_evaluate_warm.py` 1 I001. Zero introduced. **OPEN for the orchestrator** (see the return report): the brief's gate reads "ruff clean on the touched test files", and plan T2 step 2 says "Change nothing else in that docstring or file" for `test_criteria_lapse.py`.
+- **Condition (vi) mutation** (`t6-mutation-vi.txt`, scratch): `threads=False` -> `threads=True` in `_yf_download_window` only; `test_new_ticker_triggers_full_history_fetch` and `test_single_success_records` BOTH red (`2 failed`; `helper did not pass threads=False to yf.download; got {... 'threads': True}`); reverted with `git checkout -- swing/data/ohlcv_archive.py`; `git diff --exit-code swing/data -> 0`; both pins `2 passed` after.
+- **Condition (v) mutation** (`t6-mutation-v.txt`, scratch): N-V's fake, BATCH (`list`) branch ONLY, returns `Close + 0.01`; the single (`str`) branch untouched. Assertion (1) red: `At index 0 diff: (... "close": 14.5 ...) != (... "close": 14.51 ...)`, `1 failed`. Reverted with `git checkout`; `git diff --exit-code` on the file `-> 0`; N-V `1 passed` after.
+- **Condition (v), N-V's two row sets** (merge-report item 4; `nv_rows_quote.py` -> `nv_rows_quote.out.txt`, calling `run_world` twice):
+  - world A (no warm): 1 row `(1, '2026-06-10', '{"open": 14.0, "high": 15.0, "low": 13.0, "close": 14.5, "volume": 1004.0, "provider": "yfinance"}', 'triggered_open', 'entry_fired', 3)`; observe single-ticker downloads 1; calls `[('observe', 'str')]`.
+  - world B (warm): the identical row; observe single-ticker downloads 0; calls `[('warm', 'list'), ('warm', 'list')]` (ROT's gap band and the benchmark's full refresh).
+  - rows equal: True.
+- **Trailers:** `git log 8a275a3a..HEAD --format='%(trailers)'` empty on all six commits; no `Co-Authored-By` anywhere in their bodies.
+
+## Merge-report checklist additions carried from the clearances
+
+- L-1 is a reading rule (CHARC item 5): quote the ladder state per witnessed night; a ladder-ON first post-merge night makes the observe witness INCONCLUSIVE for that night, and the witness is taken on the first ladder-OFF night.
+- L-3 in RD's words: on this domain the integer form and the unrounded float form are the same function, so there is NO behaviour to test (not "untested").
+- RD's post-merge read: the live `excluded_reason_breakdown` detail after the first nightly reads `invalid_ohlc=<n> (<x.xx>%, green; yellow above 5.00%, red above 10.00%)` with the band matching the integer rule on the manifest's own counts.
+
+## Reviewer A (executing, `strong`)
+
+Not started: held at the ruff gate above. The round-1 prompt head is staged at `exec\round1\prompt-head.md`.
