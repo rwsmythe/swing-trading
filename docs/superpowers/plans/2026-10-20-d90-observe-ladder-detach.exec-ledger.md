@@ -276,3 +276,42 @@ Ordinary: rows equal. Carry: the rows differ EXACTLY on OOT's two rows' provider
 
 | round | tier / model / effort (banner) | footer | verdict token | `^ERROR` | crit | major | minor | new / reopened | reverts | tokens used | context depth (orchestrator fills) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | strong / `gpt-5.6-sol` / `high` (equal to `~/.codex/strong.config.toml`'s `model` and `model_reasoning_effort`) | present (1) | the clean token, 2 anchored occurrences (the CLI's double emission); the findings token 0 | 0 | 0 | 0 | 2 | 2 new / 0 reopened | 0 | 205,725 | |
+
+**Loop status: CLEAN VERDICT AT ROUND 1** (zero new critical/major). Per the recipe the loop ends here; the two minors are post-verdict minors. **Returned to the orchestrator at the round gate** with the proposed dispositions below; no fix is applied until the orchestrator resumes the cell.
+
+**Spend (executing phase, Reviewer A):** 205,725 tokens (round 1).
+
+### Round 1
+
+**Invocation.** `wsl.exe bash -lc 'bash <scratchpad>/d90exec/codex/run_round.sh 1'`. The runner (LF; `file`: "Bourne-Again shell script, ASCII text executable") runs, from the worktree as cwd (repo access, `-s read-only`), `cat prompt-r1.md ledger-cut-r1.md <plan> diff-r1.txt | codex exec -p strong -s read-only --skip-git-repo-check -`. The output and exit files were pre-created Windows-side. The diff is `git diff -U8 e7f91d80..HEAD -- swing tests` at `4ebd433f` (59,865 bytes), generated on Windows.
+
+**Inputs.** The prompt states the declared envelope, the accepted limitations L-1..L-6 with their reasons, the brief's nine-item checklist, the do-not-read list (both ledgers, `.codex-*`, `.copowers-*`, `comms/`), Codex is told not to run git, and the verdict tokens are DESCRIBED, never written line-initially. The ledger cut is the plan ledger sections 0-5 (cut before section 6) plus the two clearances verbatim. An anchored grep of the prompt, the cut, the plan and the diff for either token: 0 each. The plan-round scratch (`.codex-*`, `.copowers-findings.md`) was relocated out of the worktree to the session scratchpad for the loop (`find . -maxdepth 4` after the move: none left).
+
+**Assertions.**
+
+| assertion | result |
+|---|---|
+| exit code, MEASURED | 0 (the exit file; the WSL wrapper also exited 0) |
+| transcript | 921,186 bytes, non-empty |
+| `model:` banner | `gpt-5.6-sol` = the strong profile's declared model |
+| `reasoning effort:` | `high` = the strong profile's declared effort |
+| `^ERROR` | 0 |
+| `^tokens used` | 1 (205,725) |
+| verdict | the clean token, anchored, 2 occurrences (the CLI's double emission); the findings token 0 |
+| codex process | exited: the exit file was written before the transcript was read |
+
+**Prior-round / scratch reads:** none. Every `exec` command in the transcript was listed: CLAUDE.md and `docs/orchestrator-context.md` reads, `rg`/`nl`/`sed` over `swing/` and `tests/`, one `rg` that excluded `*.exec-ledger.md`, and failed pytest attempts (WSL python3 has no pytest). No read of either ledger, of `.codex-*`/`.copowers-*`, or of `comms/`. The transcript's ledger/comms path hits are the prompt and the ledger-cut echo, and CLAUDE.md / orchestrator-context prose naming other arcs' ledgers. Content filter: none reported.
+
+**Evidence:** `C:\Users\rwsmy\swing-data\review-transcripts\d90-detach\exec\round1\`: `codex-review-r1.txt` (921,186 bytes), `prompt-r1.md`, `ledger-cut-r1.md`, `diff-r1.txt`, `run_round.sh`, `codex-exit-r1.txt`, `final-r1.txt` (the final-message region) and `copowers-findings.md`.
+
+**Codex's checklist (verbatim summary of the final message; full text in `final-r1.txt`):** 1 HOLDS (`runner.py:3139`); 2 HOLDS; 3 HOLDS (`ohlcv_cache.py:500`); 4 HOLDS; 5 HOLDS; 6 HOLDS; 7 HOLDS; 8 FAILS (R1-01 below); 9 HOLDS. "I could not execute pytest because the available `python3` environment lacks pytest; all 12 changed files parsed successfully with `ast`, and the production/static caller censuses were inspected directly."
+
+**Adjudication (PROPOSED; the orchestrator rules at the gate).**
+
+| id | reviewer severity | finding | verified at the code | proposed disposition |
+|---|---|---|---|---|
+| R1-01 | minor, OUT-OF-ENVELOPE | `get_or_fetch`'s Concurrency paragraph (`ohlcv_cache.py:215-221`) says two racing fetches "see the same archive-source so values are identical"; with opposite `use_ladder` settings one goes through the hook and one direct. | Partly. In production the hook's return is `resolve_full_archive_bars`' re-read of the same `read_or_fetch_archive` archive (`marketdata_ladder.py:549-551`), so the values ARE identical except ledger K-2's one exception (an empty archive with a Schwab success returns the Schwab window, `:552-555`). The sentence is unqualified, and the paragraph sits inside `get_or_fetch`, an IN function, but outside the plan's listed replacement (the Routing paragraph). | ACCEPT as a docstring-only qualification, no round: name the K-2 exception in the Concurrency sentence. It is text, not code, but it is a `swing/` text edit the plan did not list, so the cell asks the orchestrator to rule before applying it. Alternative: DECLINE, citing K-2 (no production caller races the two settings: observe runs sequentially in the nightly and nothing in the web process passes False). |
+| R1-02 | minor | T-D4 (`test_observe_ladder_detach.py:175`) records an absent `use_ladder` and an explicit `use_ladder=None` the same way; `None` is falsy in the production branch, so a future caller passing `None` would bypass the ladder unseen. | Yes: the walk maps a missing keyword to `None`, and `ast.literal_eval` of a literal `None` is also `None`. | ACCEPT, test-only, no round: record keyword PRESENCE separately (a sentinel for "absent"), so the closure asserts the only call carrying the keyword at all is `_bar_for_date`'s `False`. |
+
+All nine checklist items: 8 HOLD, 1 FAILS (R1-01, minor).
