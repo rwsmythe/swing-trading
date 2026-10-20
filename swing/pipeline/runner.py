@@ -3070,16 +3070,35 @@ def _advance_status(det, *, prev, bar, sessions_since_detection,
     return "pending", None
 
 
-def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
+def _observe_memo_key(ticker: str, observation_date: str) -> tuple[str, str]:
+    """The observe step's per-step read-memo key (D89): the ticker exactly as
+    the caller passed it, and the observation date."""
+    return (ticker, observation_date)
+
+
+def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str, *,
+                  memo: dict | None = None):
     """Return an ohlc dict (with provider) for exactly ``observation_date``, or
     None if the archive has no bar for that session.
 
-    OQ-17 read path (writing-plans decision): (1) populate/refresh the archive
-    via the OhlcvCache write-through ladder (archive-first; zero Schwab); (2)
-    read the date-anchored bar + provider provenance via resolve_ohlcv_window
-    (keyed end=observation_date). Selects the row whose asof_date ==
-    observation_date (NOT iloc[-1]); freezes it; never re-reads it later
-    (#26 elimination honest).
+    OQ-17 read path: (1) populate/refresh the archive via
+    ``ohlcv_cache.get_or_fetch`` (best-effort: a raise is logged and step 2's
+    read stays authoritative). A TTL hit does no I/O. On a miss, the pipeline's
+    cache fetches through the Schwab market-data ladder when the run has a
+    Schwab client (``_install_pipeline_marketdata_caches`` installs the ladder's
+    bars hook; the ladder applies its own environment check and yfinance
+    fallback), and through ``read_or_fetch_archive`` when it has none. (2) read
+    the date-anchored bar + provider provenance via resolve_ohlcv_window (keyed
+    end=observation_date). Selects the row whose asof_date == observation_date
+    (NOT iloc[-1]); freezes it; never re-reads it later (#26 elimination
+    honest).
+
+    ``memo`` (D89): the observe step passes one dict per step call, keyed by
+    ``_observe_memo_key``. When the key is present, step 2 selects from the
+    memoized ``(df, provenance)`` pair and does not read the archive, whatever
+    this call's populate did. When it is absent, step 2 reads the archive and
+    stores the pair ONLY if this call's populate returned without raising (bar
+    or no bar). ``memo=None`` reads on every call and stores nothing.
     """
     from datetime import date, datetime, timedelta
 
@@ -3104,22 +3123,34 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str):
     #    warning + skips (operator-visible). T-2.5 step 0 confirmed (PASS) that
     #    get_or_fetch write-throughs to the same prices_cache_dir
     #    resolve_ohlcv_window reads (Shape-A {TICKER}.{provider}.parquet).
+    #    populate_ok records whether THIS call's get_or_fetch returned
+    #    without raising (the D89 memo write condition).
+    populate_ok = True
     try:
         # the detect-step Pass-1 window constant (~400 calendar days), so the
         # archive refresh covers the same depth.
         ohlcv_cache.get_or_fetch(ticker=ticker, window_days=DETECT_OBSERVE_WINDOW_DAYS)
     except Exception as exc:  # noqa: BLE001 - best-effort populate; read is authoritative
+        populate_ok = False
         log.debug("observe populate get_or_fetch best-effort miss for %s: %s",
                   ticker, exc)
     # 2. Date-anchored archive read with per-asof_date provenance.
     # A small (10 calendar-day) back-pad guarantees the target session row is
     # inside the [start, end] window even across weekends/holidays; the exact
     # observation_date row is then selected below.
+    # With a memo (D89): a present key is selected from, never re-read; an
+    # absent key is read and stored only when populate_ok.
     start = (date.fromisoformat(observation_date) - timedelta(days=10)).isoformat()
-    df, provenance = resolve_ohlcv_window(
-        ticker, start=start, end=observation_date,
-        cache_dir=cfg.paths.prices_cache_dir,
-    )
+    key = _observe_memo_key(ticker, observation_date)
+    if memo is not None and key in memo:
+        df, provenance = memo[key]
+    else:
+        df, provenance = resolve_ohlcv_window(
+            ticker, start=start, end=observation_date,
+            cache_dir=cfg.paths.prices_cache_dir,
+        )
+        if memo is not None and populate_ok:
+            memo[key] = (df, provenance)
     if df.empty:
         return None
     match = df[df["asof_date"] == observation_date]
@@ -3204,6 +3235,10 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
                       "observe_max_post_trigger_window_sessions_watch", None)
     _shed_count = 0
     _observed_count = 0
+    # D89 per-step read memo: _observe_memo_key -> the (df, provenance) pair
+    # resolve_ohlcv_window returned. A local; it never outlives this call.
+    memo: dict = {}
+    _resolve_reads = 0
     # Reset cache telemetry at observe ENTRY so the observe_load audit reflects
     # observe-ONLY fetch cost (Codex R1 MAJOR): the runner shares ONE OhlcvCache
     # across _step_pattern_detect / _step_charts / _step_pattern_observe, so
@@ -3252,7 +3287,10 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
                 if _sess > _horizon:
                     _shed_count += 1
                     continue  # no fetch, no observation row, no terminal
-        bar = _bar_for_date(cfg, ohlcv_cache, det.ticker, observation_date)
+        if _observe_memo_key(det.ticker, observation_date) not in memo:
+            _resolve_reads += 1  # a memo miss: this call reads the archive
+        bar = _bar_for_date(cfg, ohlcv_cache, det.ticker, observation_date,
+                            memo=memo)
         if bar is None:
             run_warnings.append({
                 "step": "pattern_observe", "ticker": det.ticker,
@@ -3315,6 +3353,7 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
     # stub cache -> default to zeros (best-effort, never crash observe). Units:
     # observed = rows written; fetch_window = get_or_fetch calls that consulted
     # archive/network; in_memory_hit = TTL hits.
+    # resolve_reads = resolve_ohlcv_window calls this step made (memo misses, D89).
     _tele = (ohlcv_cache.drain_telemetry()
              if hasattr(ohlcv_cache, "drain_telemetry") else {})
     run_warnings.append({
@@ -3323,6 +3362,7 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
         "observed": _observed_count,
         "fetch_window": _tele.get("fetch_window", 0),
         "in_memory_hit": _tele.get("in_memory_hit", 0),
+        "resolve_reads": _resolve_reads,
     })
 
 
