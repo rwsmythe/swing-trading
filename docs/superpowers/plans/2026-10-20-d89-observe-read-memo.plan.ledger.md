@@ -179,7 +179,7 @@ Both E1 and E2 are non-neutral under H3, because a non-raising re-fetch after ex
   - Mechanic: the memo changes only where `(df, provenance)` comes from. The loop's no-bar and non-finite branches (`:3256-3279`) still run per detection. Their payloads feed `research_health._skip_pairs_for_run` (`:1143-1160`).
   - Surface: N-V (2) asserts the warnings are equal across worlds.
 - **K-8, no existing test needs an edit.**
-  - Method: a read of the six files that patch `swing.data.ohlcv_archive.resolve_ohlcv_window` alongside `_step_pattern_observe` or `_bar_for_date`, and of the three direct callers (plan "Test roster").
+  - Method: a read of the nine files that patch the resolver, of which six exercise observe, alongside `_step_pattern_observe` or `_bar_for_date`, and of the three direct callers (plan "Test roster"). The nine come from `grep -rlE "(patch|setattr)\(.*resolve_ohlcv_window|resolve_ohlcv_window.*(patch|setattr)" tests/`. The other three (`tests/cli/test_cli_latches_parity.py`, `tests/trades/test_22a_task4_authorization_ladder.py`, `tests/trades/test_22a_task6_mandate_alive_at.py`) and `tests/web/test_routes/test_latches_orders_fragment.py` patch the resolver for the LATCH READER (`latches/reader.py:695`). They never reach `_bar_for_date` or `_step_pattern_observe`, so the memo moves no assertion in them. (Corrected per CHARC's plan-stage read, section 5.)
   - Every same-ticker multi-detection test patches resolve with a `return_value` (one shared object), so reading once or N times gives the same rows.
   - No test asserts a resolve call count, and the `get_or_fetch` counts are unchanged by D1.
   - The executing cell's full suite is the check.
@@ -289,3 +289,52 @@ Method: a read of the whole plan against the code it cites, re-reading every mec
 - **SS-6 (INSTRUMENT, fixed).** The harness now says to attach `cfg.web` and `cfg.archive` BEFORE constructing `OhlcvCache`, because `__init__` copies the TTL (`:122`). T-E's TTL of -1 depends on that ordering.
 
 Residual search for the loop's own fixes: none, because round 1 produced no fix. The three instrument fixes add anchors and an ordering note. They change no task, test or expected value.
+
+
+## 5. Plan-stage director reads
+
+RD (author), `20261020T054657Z`:
+
+> RD PLAN-STAGE READ, D89 (orchestrator query 20261020T054540Z; plan e1e1b442, 322 lines, read in full via `git show`). PRIMARY: RD on neutrality and E1. The thin Codex round is noted; this read is the net, and I walked the arithmetic myself.
+>
+> VERDICT: CLEARED on neutrality; E1 CONFIRMED. The clearance attaches to T1 as written at e1e1b442 (AL-1 to AL-12, the seven T1 tests, N-V with its five assertions, the M1-M5 mutations); a code-bearing change beyond it re-opens the read.
+>
+> Verified by walking the plan against the code I read at round 0:
+> 1. The C3 literal (AL-3 + the step-2 block): `populate_ok = True` before the try, `False` in the except arm, the write `memo[key] = (df, provenance)` gated on `memo is not None and populate_ok`. A raising populate writes nothing, every time. Written for every non-raising result including an empty frame and a no-provenance row -- that is C3, no sentinel.
+> 2. E1, my condition MET: the populate (step 1) precedes the memo lookup in the code order and runs on every call (AL-4), so `fetch_window` / `in_memory_hit` are byte-identical to today; M3 (populate only on a miss) is killed by T-load and N-V (2). With the populate run first, E1 differs from plain C3 only under H3; T-E pins that as the declared difference (L-3), and I accept L-3 as stated. E1 is confirmed.
+> 3. T-H1 / T-H2 / T-C3 arithmetic, re-derived: T-H2 under C3 -> d1 reads yfinance 9.0 and is NOT memoized (its populate raised), d2's populate writes schwab 9.5 and returns, d2 reads 9.5 (outranks) and memoizes, d3 hits -> rows equal today's, reads 2; under M1/C1 d2-d3 carry 9.0 -> red. T-H1: reads 2, one no-bar warning, d2-d3 observe; M1 red. T-C3: reads 1; C2 red (3). All three discriminate as tabulated.
+> 4. N-V: AAA 1 + NOB 1 + RSE 2 = 4 reads in the memo world against 8; rows equal; warnings equal after popping `resolve_reads`; downloads equal by D1; Shape-A frames equal (assertion 5 pins C-2). M1 -> 3 reads (RSE det2 hits det1's empty pair) red; M4 -> 1 row red. The P12 column set is exact and `created_at` / `observation_id` are excluded by name.
+> 5. `resolve_reads` (AL-8): counted in the step by `key not in memo` BEFORE the call; under C3 a raising populate leaves the key absent so each retry counts -- the count equals the real read count exactly, and every test checks it against an independent counter around the real resolve. LAST key of `observe_load` (AL-9); F8 (c) gains one field and loses none.
+> 6. AL-12 / C-2 (`_backward_compat_rename` once per ticker per step instead of once per detection): ACCEPTED, pinned by N-V (5) and p11's byte-equal replay; its content is a fixed point after the first call absent an intervening write, and an intervening write within the step is H3/H4, already accepted.
+> 7. AL-1 (key not uppercased): accepted; raw case can only add a read, never merge two. AL-7 (the pair is never mutated): confirmed by my own read of :3123-3140 at round 0.
+> 8. L-4 (W4 an upper bound): accepted with its reason.
+>
+> MERGE REPORT, mine to read: W7's two row sets and the M1 mutation with T-H1 red, quoted; and W5 `resolve_reads` on the first post-merge nightly beside the replay count. The L-1 re-open trigger (observe wall > 1,800 s) stated.
+>
+> Executing tier `implementer-opus-high`: concur, measurement-chain code.
+>
+> TRANSCRIPTION: block-quote into the D89 plan ledger with RD as author; landed when the path is posted back.
+
+CHARC (author), `20261020T054835Z`:
+
+> CHARC PLAN-STAGE READ, D89 plan at d89-memo e1e1b442 (orchestrator query 20261020T054540Z). PRIMARY: CHARC on form. VERDICT: CLEARED, with one roster correction to land in the ledger before dispatch (a count, not a design change; no review round).
+>
+> READ AT THIS SEAT: the plan (322 lines) and the ledger (293 lines) from `git show e1e1b442:...`; `git diff --stat 31a293b4..e1e1b442` (docs only; no swing/ or tests/ change); quote fidelity -- every one of the 16 lines of my round-0 mail appears unaltered in ledger 1.2 (checked by script, 0 missing); runner.py:368-374 and :855-863 (C-1: the ladder install IS conditional on a Schwab client -- my round-0 wording "every store miss reaches it" holds only with a client; the docstring's two-branch form is the correct reading); ohlcv_archive.py:1194-1351 (K-4); the recipe section 2A (the cell tier).
+>
+> FORM ITEMS, each against the code:
+> - ENVELOPE: runner.py only -- `_observe_memo_key` (a private helper, not a module), the keyword-only `memo=None`, the local memo and `_resolve_reads` in the step, two new test files, no existing test edited. Matches the ruling. No tripwire.
+> - resolve_reads: counted in the step by the pre-check `_observe_memo_key(det.ticker, observation_date) not in memo`, sharing the helper with `_bar_for_date` so the two cannot drift; EXACT under E1 because the memo branch is the only way a read is skipped, and a raise inside `_bar_for_date` before the resolve (the L3 guard) kills the step before the entry is written, so it cannot over-count into the record. LAST key of observe_load; nothing in swing/ reads the entry. Accepted.
+> - THE DOCSTRING (AL-11): describes both branches (client -> the ladder's bars hook via `_install_pipeline_marketdata_caches`; no client -> `read_or_fetch_archive`), the TTL hit as no-I/O, and the memo rule; says nothing about D90. Accepted as the #31 rewrite. "zero schwab" closure grep stays in T2.
+> - K-4 / C-2 (`_backward_compat_rename`, flagged): VERIFIED at ohlcv_archive.py:1336-1343 -- after the first both-exist merge writes Shape A, the next call's `existing_sorted.equals(merged)` returns before `_write_archive_atomic`, so the content is a fixed point given no intervening write; within a step the only writer is a populate, which is an in-memory hit under the TTL premise (H3 covers the rest). The memo running it once per ticker instead of once per detection is a benign reduction of a read-path write (the 21-A D-row note: a read perturbs its own freshness signal). N-V (5) pins the Shape-A content. Kept claim ACCEPTED as stated.
+> - E1 (memo first): on form it composes with D1 (the populate still runs on every call, AL-4; M3 kills the skip). RD confirmed the semantics (20261020T054657Z). Not overruled.
+> - AL-1 (key not uppercased): a raw-case ticker can only ADD a read, never merge two. Accepted; D86 carries the verbatim-ticker family.
+> - CELL TIER: `implementer-opus-high` for executing is the recipe's own exception clause (section 2A: executing defaults to Sonnet/high; Opus/high "by exception with a stated reason (measurement-chain code, ...)"). The reason is stated. Correct as written.
+> - THE THIN ROUND: one counted fast round, four tool calls, citations at base lines. The plan-stage protocol permits convergence at round 1; the proposed code does not exist yet, so base-line citations are the only ones possible. The net for the code is executing Reviewer A strong with repo access and B at the orchestrator's gate on the tree being merged; this read is the net for the plan. Accepted, recorded as thin.
+>
+> ONE CORRECTION (ledger K-8, the roster's method sentence): "the six files that patch `resolve_ohlcv_window`" is SHORT. `grep -rlE "(patch|setattr)\(.*resolve_ohlcv_window|resolve_ohlcv_window.*(patch|setattr)" tests/` returns NINE: the plan's six (with `test_step_evaluate_warm_neutrality.py` patching by another form) plus `tests/cli/test_cli_latches_parity.py`, `tests/trades/test_22a_task4_authorization_ladder.py`, `tests/trades/test_22a_task6_mandate_alive_at.py`, `tests/web/test_routes/test_latches_orders_fragment.py`. All four patch the resolver for the LATCH READER (`latches/reader.py:695`) and never reach `_bar_for_date` or `_step_pattern_observe`, so the memo moves no assertion in them (AL-6 keeps the resolver's call byte-identical). Nothing changes in the plan; the ledger's K-8 states the nine with the grep, and the roster sentence reads "the nine files that patch the resolver, of which six exercise observe". The direct `_bar_for_date` caller census (six files) is COMPLETE against `grep -rln _bar_for_date tests/`.
+>
+> ALSO FOR THE EXEC LEDGER: my round-0 sentence "24 patch sites across 66 test files name the module path" was a LINE count over `patch.*resolve_ohlcv_window` (24 lines) and a file count over any mention (66); the in-function import stays for the nine patching files above. Restate it as that in the ledger if quoted.
+>
+> DISPATCH: cleared to execute on the plan as written plus the K-8 correction landed in the ledger (docs-only; no re-review). The merge request names W1-W7 in F8's form, the M1 mutation quoted, the T-E declared difference, the closure greps with outputs, the suite tail on the final head, and B's transcript on the tree being merged.
+
+**Orchestrator's note on CHARC's correction:** K-8's method sentence above now names nine files, of which six exercise observe. The plan text is unchanged, by CHARC's ruling. Separately, CHARC's round-0 phrase "24 patch sites across 66 test files" was a LINE count (24) over a FILE count of any mention (66). If quoted, it is quoted that way.
