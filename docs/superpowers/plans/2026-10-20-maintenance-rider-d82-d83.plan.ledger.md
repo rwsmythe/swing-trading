@@ -144,4 +144,8 @@ The depth column is the orchestrator's (`scripts/cell_depth.py --agent <id>`); t
 
 | round | model / effort (banner) | `^ERROR` | footer (tokens used) | verdict token (model region) | findings (crit / major / minor) | task-bearing | NEW / REOPENED | reverts | depth |
 |---|---|---|---|---|---|---|---|---|---|
-| (none yet) | | | | | | | | | |
+| 1 (cell 3; plan sha256 `abb4b4d0...`, 323 lines) | `gpt-5.6-luna` / `medium` (== the fast profile) | 0 | present, 99,191 | NEW_CRITICAL_MAJOR_FOUND, one distinct token (printed twice by codex-cli 0.162.1); the other 0 | 0 / 1 / 0 | 1 (R1-01, fail-safe) | 1 NEW, a re-raise of the DECLARED I-4 deviation | 0 | |
+
+**Round 1 evidence:** `C:\Users\rwsmy\swing-data\review-transcripts\maint-rider\plan\round1\` -- `prompt-r1.md` (8,215 B), `transcript-r1.txt` (471,078 B), `exit-r1.txt` (`exit=0 finished=2026-10-20T01:22:40Z`), `findings-r1.md` (assertions + verbatim response + adjudication), `run-r1.sh`. Prior-round reads: 0. Content-filter events: none.
+
+**R1-01** (reviewer: major, TASK-BEARING, IN-ENVELOPE; AL-14 / T4 D1). It says the plan's strict `>` departs from CHARC F12's `>=`. This is the I-4 deviation the plan already declares, and the reviewer argues procedure, not the mechanic. **Cell-3 disposition (proposed):** task-bearing by the fail-safe rule, NOT edited. The orchestrator's brief keeps I-4 flagged for CHARC's plan-stage read, and CHARC's ruling is the fix either way: keep `>`, or encode `>=`.
