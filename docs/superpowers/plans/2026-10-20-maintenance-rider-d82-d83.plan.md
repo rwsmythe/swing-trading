@@ -190,7 +190,7 @@ Commit: `fix(pipeline): T3 -- shadow-expectancy timeout 300 -> 900 s`.
 - **D4** `test_window_constant_value_is_400` (new file): `runner.DETECT_OBSERVE_WINDOW_DAYS == 400`, the behaviour-neutral guard. RED pre-fix (AttributeError).
 
 **Step 2, GREEN.** In `swing/config.py`, add one comment line directly above `archive_history_days: int = 1260` (:284): `# a count of trading ROWS retained; see ohlcv_archive.py:607`. The field line, its name and its value are unchanged; the field moves to :285. No test: it is prose. Then add `DETECT_OBSERVE_WINDOW_DAYS = 400` near the other runner module constants, with a one-line comment saying detect Pass-1, the exemplar fetch and observe's populate share it. Replace the literal at :2136, :2398 and :3054. Reword :2395 to "the SAME window constant as the Pass-1 fetch (#28/#29 historical depth preserved)" and :3052 to "the detect-step Pass-1 window constant (~400 calendar days), so the archive refresh covers the same depth". Run: D1-D4 pass, and `tests/pipeline/` stays green.
-**Step 3, closure:** `grep -rn "window_days=400" swing/` returns ZERO (5 lines before: 3 code, 2 comment).
+**Step 3, closure:** `grep -rn --include=*.py "window_days=400" swing/` returns ZERO (5 lines before: 3 code, 2 comment).
 Commit: `refactor(pipeline): T4 -- one named detect/observe window constant at the three sites; archive depth unit documented (F12, I-4)`.
 
 ### T5 -- D83: the open detection set joins the evaluate warm cohort (runner.py; tests)
