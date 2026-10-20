@@ -216,7 +216,10 @@ class OhlcvCache:
         lock is NOT held during the fetch call (prevents serialization through
         the lock + I/O). Two threads racing on the same ``(ticker, window_days)``
         each fetch independently + each write; last-writer-wins. Both fetches
-        see the same archive-source so values are identical; no data corruption.
+        see the same archive, so their values agree, EXCEPT the D90 ledger's
+        K-2 case: an empty archive with a Schwab success under
+        ``use_ladder=True``, where the ladder stores its Schwab sub-window. No
+        data corruption.
         Per-key in-flight dedup is a V2 candidate (recon §4.B).
         """
         ticker_upper = ticker.upper()
