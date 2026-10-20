@@ -90,9 +90,13 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
   - **Owed, RD's witness:** the first live exit after merge IS the witness. RD reads its fill row first. The operator's `swing web` must be restarted to serve D79.
   - **Banked:** D85 and D86 (CHARC); execution-level identity (RD); RA-07, R5-06 and B-04 (orchestrator; trigger: the next `fills.py`/`state.py` carve-out, the signed-envelope arc, or a docs rider).
 - **Operator-approved, sequenced by the orchestrator:**
-  1. A tests-only rider making the load-flaky tests robust (operator: "I also concur with fixing those tests"; CHARC to register it).
-  2. The maintenance rider: D82/D83, the shadow-expectancy timeout to 900 s, and the observe warm cohort under CHARC's six conditions. RD reads the rate constants before it merges.
-  3. The soft-stop arc (D84), with plan-stage director review.
+  1. DONE: D87, the tests-only load-robustness rider. Merged at `501247a2`, converged at round 2. Its merged head was green at `-n 8`. A third D79 merged-head run at `-n 8` was also clean (15498 / 0).
+  2. DONE: the maintenance rider. Merged at `29679b05`, converged at round 1 (A clean; B one minor, B-01, a correction to L-1's reason).
+     - **Owed at the first nightly after merge:** RD reads the live `excluded_reason_breakdown` line before anyone quotes "D82 green".
+     - **Merge report:** the F8 witness, last pre-merge night beside first post-merge night. It quotes the ladder state per night as the `schwab_api_calls` count. On a ladder-ON night, witness (a) is informative and (b), the wall, is inconclusive; (b) is then taken on the first ladder-OFF night. Record: `docs/superpowers/plans/2026-10-20-maintenance-rider-d82-d83.exec-ledger.md`.
+  3. NEXT: D89, the per-detection `resolve_ohlcv_window` cost in observe. CHARC's row; the owner is the orchestrator; it is its own rider and goes BEFORE the widening.
+  4. Then the soft-stop arc (D84), with plan-stage director review.
+- **Plan cells run out of context:** two writing-plans cells (opus-xhigh) passed 400K reading the whole comms record. Brief a plan cell with a NARROW reading list, and expect a continuation cell.
 
 ### Prior state: PHASE 22 ACTIVE — **22-F MERGED 2026-09-26 at `58368c86` (code-only, schema v41 unchanged); the `d4f2cbed` grant is SPENT; the next arc is the operator's to commission**
 
