@@ -1121,7 +1121,7 @@ def lease_data_asof(cfg: Config, lease: Lease) -> str:
 
 
 # Phase 16 Arc 5 — shadow-expectancy drumbeat tunables.
-SHADOW_EXPECTANCY_TIMEOUT_S = 300
+SHADOW_EXPECTANCY_TIMEOUT_S = 900
 _SHADOW_EXPECTANCY_KEEP = 90
 
 

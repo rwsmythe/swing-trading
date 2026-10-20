@@ -132,8 +132,9 @@ def test_argv_and_kwargs_are_the_real_cli_surface(cfg, monkeypatch):
         "--db", str(cfg.paths.db_path),
         "--output-dir", str(cfg.paths.exports_dir / "research"),
     ]
-    # cp1252-safe defensive capture + 300s timeout (locked design §3.3).
-    assert rec["kwargs"]["timeout"] == 300
+    # cp1252-safe defensive capture (locked design §3.3) + a 900 s timeout
+    # (maintenance rider; CHARC-ruled: 37 s today, ~5 min at 8x signals, 3x headroom).
+    assert rec["kwargs"]["timeout"] == 900
     assert rec["kwargs"]["encoding"] == "utf-8"
     assert rec["kwargs"]["errors"] == "replace"
     assert rec["kwargs"]["capture_output"] is True
