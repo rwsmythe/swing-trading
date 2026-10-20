@@ -1134,8 +1134,9 @@ def _envelope_case(*, d2_open: float):
     `DailyBar.__post_init__` validates FINITENESS ONLY, so `open` above `high`
     constructs happily, and `resolve_ohlcv_window` does not police the envelope
     either. This project has a MEASURED invalid-OHLC population (the 18-D
-    research monitor baselines `invalid_ohlc` at 23 of 77 unique signals), so
-    this is a real shape, not a hypothetical one.
+    research monitor judges the engine's `invalid_ohlc` exclusions as a RATE of
+    unique signals -- green at or below 5.00%, red above 10.00%), so this is a
+    real shape, not a hypothetical one.
     """
     days = _sessions(5)
     closes = [99.0, 98.0, 97.0, 96.0, 95.0]
