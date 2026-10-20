@@ -990,8 +990,8 @@ def _check_excluded_reason_breakdown(*, exports_root) -> list[ResearchHealthChec
                 f"{100 / _INVALID_OHLC_GREEN_DIVISOR:.2f}%, red above "
                 f"{100 / _INVALID_OHLC_RED_DIVISOR:.2f}%)")
         else:
-            # SCOPE LOCK: the other two reasons keep their existing RAW-count
-            # pct thresholds (NOT baselined).
+            # SCOPE LOCK: the other two reasons are judged by the _EXCL_*_PCT
+            # floors; invalid_ohlc is the rate rule above.
             parts.append(f"{reason}={count} ({pct:.1f}%)")
             if pct > _EXCL_RED_PCT:
                 reason_status = "red"
