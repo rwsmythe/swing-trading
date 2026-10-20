@@ -366,10 +366,11 @@ def _install_pipeline_marketdata_caches(
     (open-trade-ticker warm). OhlcvCache is consumed through
     ``ohlcv_cache.get_or_fetch(...)`` by ``_step_pattern_detect`` (Pass-1 and
     the exemplar fetch) and ``_step_charts`` (chart targets, the chart_renders
-    write-through, the market-weather benchmark), all through the ladder
-    hook; ``_step_pattern_observe``'s populate passes ``use_ladder=False`` and
-    never reaches it (D90). Both caches share the same ``schwab_client`` via
-    captured closures.
+    write-through, the market-weather benchmark), which reach the ladder hook
+    on a store miss (a TTL hit returns before the hook);
+    ``_step_pattern_observe``'s populate passes ``use_ladder=False`` and never
+    reaches it (D90). Both caches share the same ``schwab_client`` via captured
+    closures.
     """
     if schwab_client is None:
         return None, None, None

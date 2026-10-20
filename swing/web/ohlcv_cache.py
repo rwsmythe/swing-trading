@@ -215,11 +215,14 @@ class OhlcvCache:
         Concurrency: synchronous + thread-safe under ``self._bars_lock``. The
         lock is NOT held during the fetch call (prevents serialization through
         the lock + I/O). Two threads racing on the same ``(ticker, window_days)``
-        each fetch independently + each write; last-writer-wins. Both fetches
-        see the same archive, so their values agree, EXCEPT the D90 ledger's
-        K-2 case: an empty archive with a Schwab success under
-        ``use_ladder=True``, where the ladder stores its Schwab sub-window. No
-        data corruption.
+        each fetch independently + each write; last-writer-wins. An installed
+        hook MAY return a frame that differs from ``read_or_fetch_archive``'s,
+        and the two ``use_ladder`` settings share one key, so a racing pair of
+        misses can store either frame. The pipeline's wiring is the case where
+        they agree (the ladder hook returns a re-read of the same archive),
+        except the D90 ledger's K-2 case: an empty archive with a Schwab success
+        under ``use_ladder=True``, where the ladder stores its Schwab
+        sub-window. No data corruption.
         Per-key in-flight dedup is a V2 candidate (recon §4.B).
         """
         ticker_upper = ticker.upper()
