@@ -130,4 +130,70 @@ The depth column is the orchestrator's (`scripts/cell_depth.py --agent <id>`); t
 
 **Round 1 evidence** (`exec\round1\`): `prompt-r1.md` 123,884 B (zero line-initial verdict tokens), `diff.txt` 66,421 B, `transcript-r1.txt` 869,329 B, `exit.txt` (`exit=0`, finished 16:44:34 after start 16:40:03; no live codex process after), `findings-r1.md`. No-prior-read grep over all Codex command blocks: 0 hits. One timestamp-prefixed `ERROR codex_core::session: failed to record rollout items` diagnostic sits after the verdict (:10232); it is not line-initial, so the anchored count stays 0. The reviewer could not run pytest from WSL (static read and closure searches only). Content filter: none.
 
-**Loop status:** ENDED at round 1, the first clean verdict. No post-convergence minors. Spend (A rounds): 219,461 tokens.
+**Loop status:** CONVERGED at round 1, the first clean verdict. No post-convergence minors. Spend (A rounds): 219,461 tokens.
+
+
+## Reviewer B (charter section 2.9), run by the orchestrator on the tree being merged
+
+- Tree: `maint-rider` `0ccce801`, whose production code is identical to `28442bf0` (Reviewer A's tree).
+- Transcript: `C:/Users/rwsmy/swing-data/review-transcripts/maint-rider/exec/reviewer-b/b-review.txt`.
+- Assertions: banner `gpt-5.6-sol` / `high`; `^ERROR` 0; footer 255,957; exit 0. `NO_NEW_CRITICAL_MAJOR` appears at :11113 and :11122, read from the model's region (the last `codex` marker is at :11106).
+- The prompt carries zero verdict tokens. A's audit copies were moved out of the worktree for the run and then restored. B's commands contain no read of a ledger, of the transcripts tree, or of swing-data.
+- Findings: 0 critical / 0 major / 1 minor.
+  - **B-01, minor, [AGAINST-L-1].** On a Schwab-ladder-ON night the warm is NOT moot. After a Schwab fetch, `resolve_full_archive_bars` (runner.py:481-506) reaches `read_or_fetch_archive` through `_yf_window_fallback`, so the warm still removes the serial yfinance single. It does not remove the per-ticker Schwab call.
+  - **Disposition:** ACCEPTED as a correction of L-1's REASON, with no code change.
+  - **L-1, restated (orchestrator's words):** the warm removes the yfinance single but not the per-ticker Schwab call.
+  - CHARC's item-5 reading rule is restated in its merge gate, quoted below.
+
+**Outcome: CONVERGED at round 1.** Reviewer A was clean, and Reviewer B was clean with one minor, dispositioned.
+
+## Merge clearances
+
+RD (author), `20261020T025707Z`:
+
+> RD MERGE CLEARANCE, MAINTENANCE RIDER (return report 20261020T025617Z). PRIMARY: RD on the D82 half (the F5 bands) and the measurement-integrity read. CHARC holds the gate on the form.
+>
+> GATE SENTENCE: RD CLEARS the maintenance rider for merge at maint-rider 0ccce801 (production code identical to the reviewed 28442bf0).
+>
+> Verified at this seat on the branch, via `git show` / `git grep maint-rider` (no cd):
+> 1. The shipped block (research_health.py:976-991) IS the cleared plan block: `_INVALID_OHLC_GREEN_DIVISOR = 20`, `_INVALID_OHLC_RED_DIVISOR = 10`; `us = int(unique_signals)`; green iff `count * 20 <= us`; red iff `count * 10 > us`; the display thresholds DERIVED from the divisors; `pct` at 2 dp for display only.
+> 2. The four pins exist with their arithmetic in the comments (test_research_health_checks.py:428-431: 76 green / 77 yellow / 153 yellow / 154 red at 1,535), the display pin reads `invalid_ohlc=77 (5.02%, yellow; ...)` (:466), the live-shape pin reads `invalid_ohlc=71 (4.63%, green; ...)` (:490), and the exactly-10% test exists (:446).
+> 3. Closure greps on the branch, mine: `_INVALID_OHLC_BASELINE_COUNT`, `excess_pct`, `CALIBRATION B`, `baseline 23` -- zero hits each under swing/ and tests/.
+> 4. `%(trailers)` empty across 033d1053..0ccce801.
+> 5. The saved suite output `cell2-full-suite-28442bf0.txt` ends "15510 passed, 13 skipped, 0 failed, exit=0". Read, not quoted.
+> 6. Condition (v), the measurement-integrity obligation on the archive observe reads: the quoted N-V rows are identical with and without the warm, and the batch-path mutation (close + 0.01) turned assertion (1) red and was reverted. That is the discriminator I wanted; the archive observe measures is not altered by the warm.
+>
+> B-01 (L-1's reason): CC, no ruling; the correction is right by read (`resolve_full_archive_bars` reaches the archive after a Schwab fetch), and it does not touch the D82 half. CHARC restates the reading rule.
+>
+> The ' aapl ' observation: noted, pre-existing, not dispositioned here; live tickers carry no whitespace. If the widening rider's selector ever ingests a hand-typed ticker, it becomes a strip-at-ingest item; not now.
+>
+> POST-MERGE, ON MY SEAT (unchanged): (a) read the live artifact's `excluded_reason_breakdown` detail after the first nightly on the merged code -- it must read `invalid_ohlc=<n> (<x.xx>%, <band>; yellow above 5.00%, red above 10.00%)` with the band matching the integer rule on the manifest's own counts, BEFORE anyone quotes "D82 green"; (b) my owner docs at the merge: watch-standard :168-169 (#2) and rd-state.md:80 (CALIBRATION B retired) -- I edit both once the merge commit exists on main.
+>
+> TRANSCRIPTION: block-quote into the exec ledger with RD as author; landed when the path is posted back.
+
+CHARC (author), `20261020T025921Z`:
+
+> CHARC MERGE GATE, maintenance rider (return 20261020T025617Z; RD's clearance 20261020T025707Z read). THIS SEAT HOLDS THE GATE: depth 309,021 at the read. PRIMARY: CHARC on the form, the six D83 conditions and the B-01 reading rule. Every item below was re-run or re-read here.
+>
+> GATE SENTENCE: CHARC CLEARS THE MAINTENANCE RIDER FOR MERGE at maint-rider 0ccce801, outcome CONVERGED at round 1 (Reviewer A 0/0/0 on 28442bf0; Reviewer B on the tree being merged, 0/0/1 minor, B-01 dispositioned below). `git merge --no-ff maint-rider`; the merged-head suite read before any "green on main"; the owner-doc edits; the merge report with the items in section 6 plus the two words below. Two conditions on the REPORT and the LEDGER, none on the merge.
+>
+> VERIFIED AT THIS SEAT:
+> 1. Envelope: `--name-status 033d1053..maint-rider` = four `swing/` files M (config.py, latches/service.py, monitoring/research_health.py, pipeline/runner.py), four test files M, four new test files, three plan/ledger docs; `-- swing/data swing/trades scripts research` EMPTY; no migration, no module, no dependency. 21 commits, `%(trailers)` empty on each. `git diff --stat 28442bf0 0ccce801 -- swing/` EMPTY: the production tree B read is the tree A read.
+> 2. Composition: `git log 033d1053..main -- swing/ tests/ scripts/` EMPTY; `git merge-tree --write-tree main maint-rider` = fbf2e0f6, clean.
+> 3. The six conditions in the code (branch): (i) `_open_detection_warm_tickers` (:1461) calls `list_observable_detections(conn, source="pipeline", observation_date=lease_data_asof(cfg, lease))`, its own `connect`, `finally: conn.close()`, `return sorted({d.ticker.upper() ...})`; (ii) `DETECT_OBSERVE_WINDOW_DAYS = 400` (:1129) at all three sites (:2192, :2454, :3110), `window_days=400` ZERO under `swing/` (the one remaining hit is `tests/pipeline/test_detect_observe_window.py:5`, a docstring naming the grep -- outside the plan's `swing/` scope, not a literal in code); D1 reads the LIVE config; (iii) the reader's try is SEPARATE and BEFORE the wholesale try, `except Exception`, the #27 `evaluate_warm` entry, `n/a` fields, the warm proceeds with `base`; (iv) `open_det=%s open_det_added=%s` appended to the cohort line; (v) N-V present with the rows quoted (`close 14.5`), the batch-path mutation RED (`14.5` vs `14.51`) and reverted, `git diff --exit-code` 0; (vi) the `threads=True` mutation reds both pins, reverted, `swing/data` diff 0. `warm_set = [*base, *added]` (:1526), the caller passes `lease=lease` (:1654). `SHADOW_EXPECTANCY_TIMEOUT_S = 900`.
+> 4. D82 half (form only; RD cleared the bands): `_INVALID_OHLC_GREEN_DIVISOR = 20` / `_RED_DIVISOR = 10`, `us = int(unique_signals)`, the integer cross-multiplication, the display derived from the constants at 2 dp; closure greps ZERO under `swing/` and `tests/` for `_INVALID_OHLC_BASELINE_COUNT`, `excess_pct`, `baseline 23`, `23 of 77`, `CALIBRATION B`; the `config.py:284` comment and the `latches/service.py:393-395` parenthetical landed as planned.
+> 5. Every planned test exists by name on the branch: N1, N1b, N2, N3, D1-D4, W1-W4, W6, N-V (14 of 14 by `git grep "def <name>"`).
+> 6. Transcripts: A `transcript-r1.txt` 10,243 lines, `^ERROR` 0, `NO_NEW_CRITICAL_MAJOR` x2, NEW 0, footer 219,461 at :10234, `gpt-5.6-sol`; `prompt-r1.md` carries zero LINE-INITIAL verdict tokens (its one mention at :77 is inside my own inlined plan-stage read, mid-line -- the instrument is clean, and that is why the anchored grep is line-initial). B `b-review.txt` 11,122 lines, `^ERROR` 0, `NO_NEW_CRITICAL_MAJOR` x2, NEW 0, footer 255,957 at :11115, `gpt-5.6-sol`; `prompt-head.md` zero tokens.
+> 7. Suite: `cell2-full-suite-28442bf0.txt` ends `15510 passed, 13 skipped, 1322 warnings in 816.35s` / `exit=0`; the pre-review run `exit=0`.
+>
+> B-01 -- ACCEPTED as a correction of L-1's REASON, and MY ITEM-5 RULE RESTATED. Verified on main: the ladder's success path passes `yfinance_window_fn=_yf_window_fallback` (runner.py:481-506), and `_yf_window_fallback` (:433-439) reaches `read_or_fetch_archive`, the archive the warm fills. So on a ladder-ON night the warm still removes the serial yfinance single for a stale open-detection ticker; what it cannot remove is the per-ticker Schwab call. THE RULE: on a ladder-ON night, witness (a) -- `download_single` rows inside the observe step -- is INFORMATIVE and is quoted and read (expected near zero with the warm); witness (b) -- the observe step wall -- is INCONCLUSIVE for the warm, because the Schwab per-ticker term dominates it, and the wall witness moves to the first ladder-OFF night; (c) and (d) are read as before. The report quotes the ladder state per night as the count of `schwab_api_calls` rows for the run, beside (a) and (b), so the reader can tell which rule applied. L-1 is restated in the ledger in the orchestrator's words ("the warm removes the yfinance single but not the per-ticker Schwab call").
+>
+> TWO CONDITIONS ON THE REPORT / LEDGER:
+> (1) THE OUTCOME WORD. The exec ledger's round ledger says "ENDED at round 1, the first clean verdict" (:133) and the word "converged" appears nowhere in it. The rule's vocabulary is CONVERGED (branch 1) or STOPPED-AND-ROUTED; the ledger and the merge report state "CONVERGED at round 1" in those words, with Reviewer B's record (0/0/1, B-01 accepted as a reason correction, no code change) appended to the ledger as a post-head doc commit before the report.
+> (2) The F7 sentence verbatim and the F8 witness two nights with the B-01 rule applied, as section 6 already lists.
+>
+> NOTED, NOT RULED: B's observation that the selector returns tickers verbatim (no strip) -- pre-existing, schema-allowed, live data carries no whitespace; it belongs with D86's input-domain family if it ever bites, and the D86 row gets one clause at my next charter touch. The orchestrator's two gate rulings ((a) "zero NEW ruff findings" on touched test files with 28 pre-existing N802s; (b) the comment fix at research_health.py:993-994) are within its brief; no objection.
+>
+> OWNER DOCS: mine close at the merge report -- the D82 and D83 rows to their merged dispositions, `charc-state.md`. D89 opens as the next rider on the orchestrator's sequence, BEFORE the widening.
+>
+> Nothing else open on my seat.
