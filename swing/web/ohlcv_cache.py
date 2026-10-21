@@ -172,7 +172,9 @@ class OhlcvCache:
         """
         self._ladder_bars_fetcher = fetcher
 
-    def get_or_fetch(self, *, ticker: str, window_days: int = 180) -> pd.DataFrame:
+    def get_or_fetch(
+        self, *, ticker: str, window_days: int = 180, use_ladder: bool = True,
+    ) -> pd.DataFrame:
         """Return daily bars for ``ticker`` over a calendar-day lookback window.
 
         Phase 13 T1.SB0 (plan §G.0): closes the Phase 11 Sub-bundle C R1 M#5
@@ -194,12 +196,16 @@ class OhlcvCache:
         dashboard bundle traffic + chart bars traffic do not contend on lock
         acquisition). TTL inherited from ``cfg.web.ohlcv_cache_ttl_seconds``.
 
-        Routing: when ``set_ladder_bars_fetcher`` is installed, the ladder hook
-        is invoked + its DataFrame sliced to the calendar-day window. Otherwise
+        Routing: when ``set_ladder_bars_fetcher`` is installed AND ``use_ladder``
+        is True (the default), the ladder hook is invoked + its DataFrame sliced to
+        the calendar-day window. Otherwise (no hook, or ``use_ladder=False``)
         ``read_or_fetch_archive`` is consulted directly + sliced. Either path
         inherits the ``read_or_fetch_archive`` shape (capitalized OHLCV +
         DatetimeIndex). Sandbox short-circuit lives inside the ladder; this
-        method is env-agnostic.
+        method is env-agnostic. ``use_ladder`` is keyword-only: the pipeline's
+        observe populate passes False (D90) and every other caller takes the
+        default. The ``_bars_store`` key does not include it, so a TTL hit returns
+        whatever an earlier call stored under either setting.
 
         Empty-result semantics: raises ``ValueError("No data for {ticker}")`` —
         matches ``PriceFetcher.get``'s raise-on-empty contract so the
@@ -209,8 +215,14 @@ class OhlcvCache:
         Concurrency: synchronous + thread-safe under ``self._bars_lock``. The
         lock is NOT held during the fetch call (prevents serialization through
         the lock + I/O). Two threads racing on the same ``(ticker, window_days)``
-        each fetch independently + each write; last-writer-wins. Both fetches
-        see the same archive-source so values are identical; no data corruption.
+        each fetch independently + each write; last-writer-wins. An installed
+        hook MAY return a frame that differs from ``read_or_fetch_archive``'s,
+        and the two ``use_ladder`` settings share one key, so a racing pair of
+        misses can store either frame. The pipeline's wiring is the case where
+        they agree (the ladder hook returns a re-read of the same archive),
+        except the D90 ledger's K-2 case: an empty archive with a Schwab success
+        under ``use_ladder=True``, where the ladder stores its Schwab
+        sub-window. No data corruption.
         Per-key in-flight dedup is a V2 candidate (recon §4.B).
         """
         ticker_upper = ticker.upper()
@@ -234,6 +246,7 @@ class OhlcvCache:
             self._telemetry["fetch_window"] += 1
         bars = self._fetch_bars_window(
             ticker=ticker_upper, window_days=int(window_days),
+            use_ladder=use_ladder,
         )
         if bars is None or bars.empty:
             raise ValueError(f"No data for {ticker_upper}")
@@ -251,7 +264,7 @@ class OhlcvCache:
             return out
 
     def _fetch_bars_window(
-        self, *, ticker: str, window_days: int,
+        self, *, ticker: str, window_days: int, use_ladder: bool = True,
     ) -> pd.DataFrame | None:
         """Internal: fetch a calendar-day window of daily bars; returns
         ``DataFrame`` or ``None``. Caller maps ``None → ValueError`` so the
@@ -263,11 +276,13 @@ class OhlcvCache:
         CLAUDE.md session-anchor gotcha family), and the slice cuts on
         calendar-day cutoff. Belt-and-suspenders in-progress-bar strip mirrors
         ``swing.pipeline.ohlcv.fetch_daily_bars`` (CLAUDE.md yfinance gotcha).
+        ``use_ladder=False`` skips an installed ladder hook and takes the
+        ``read_or_fetch_archive`` branch (D90).
         """
         end = last_completed_session(_dt.now())
         cutoff = end - timedelta(days=window_days)
 
-        if self._ladder_bars_fetcher is not None:
+        if use_ladder and self._ladder_bars_fetcher is not None:
             try:
                 result = self._ladder_bars_fetcher(ticker)
             except Exception as exc:  # noqa: BLE001 — safety boundary

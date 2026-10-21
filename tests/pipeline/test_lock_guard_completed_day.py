@@ -37,11 +37,16 @@ def test_bar_for_date_allows_completed_day(monkeypatch, tmp_path):
     # A completed-day observation_date passes the guard (then proceeds to the
     # normal archive read, which returns None for an empty cache -> acceptable).
     cfg = runner_cfg_stub(tmp_path)
+    seen: list[dict] = []
 
     class _Cache:
         def get_or_fetch(self, **k):
+            seen.append(k)
             return None
     assert runner._bar_for_date(cfg, _Cache(), "AAPL", "2026-06-04") is None
+    assert seen == [{"ticker": "AAPL",
+                     "window_days": runner.DETECT_OBSERVE_WINDOW_DAYS,
+                     "use_ladder": False}]
 
 
 def test_build_ohlc_today_json_rejects_non_completed_day():

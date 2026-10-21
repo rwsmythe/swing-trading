@@ -362,11 +362,15 @@ def _install_pipeline_marketdata_caches(
         client. ``audit_conn`` is the single shared serialized audit-writer
         connection (OQ-C); the caller MUST close it in the run ``finally``.
 
-    Consumer surfaces (post-Phase-13 T1.SB0): PriceCache is consumed by
-    ``_step_evaluate`` (open-trade-ticker warm); OhlcvCache is consumed by
-    ``_step_charts`` via ``ohlcv_cache.get_or_fetch(...)`` for chart-target
-    OHLCV (closes the Phase 11 Sub-bundle C R1 M#5 V1 deferral). Both caches
-    share the same ``schwab_client`` via captured closures.
+    Consumer surfaces: PriceCache is consumed by ``_step_evaluate``
+    (open-trade-ticker warm). OhlcvCache is consumed through
+    ``ohlcv_cache.get_or_fetch(...)`` by ``_step_pattern_detect`` (Pass-1 and
+    the exemplar fetch) and ``_step_charts`` (chart targets, the chart_renders
+    write-through, the market-weather benchmark), which reach the ladder hook
+    on a store miss (a TTL hit returns before the hook);
+    ``_step_pattern_observe``'s populate passes ``use_ladder=False`` and never
+    reaches it (D90). Both caches share the same ``schwab_client`` via captured
+    closures.
     """
     if schwab_client is None:
         return None, None, None
@@ -3082,16 +3086,19 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str, *,
     None if the archive has no bar for that session.
 
     OQ-17 read path: (1) populate/refresh the archive via
-    ``ohlcv_cache.get_or_fetch`` (best-effort: a raise is logged and step 2's
-    read stays authoritative). A TTL hit does no I/O. On a miss, the pipeline's
-    cache fetches through the Schwab market-data ladder when the run has a
-    Schwab client (``_install_pipeline_marketdata_caches`` installs the ladder's
-    bars hook; the ladder applies its own environment check and yfinance
-    fallback), and through ``read_or_fetch_archive`` when it has none. (2) read
-    the date-anchored bar + provider provenance via resolve_ohlcv_window (keyed
+    ``ohlcv_cache.get_or_fetch(..., use_ladder=False)`` (best-effort: a raise
+    is logged and step 2's read stays authoritative). A TTL hit does no I/O. On
+    a miss the populate refreshes the legacy archive through
+    ``read_or_fetch_archive`` and NEVER through the Schwab market-data ladder,
+    even when the run installed the ladder's bars hook (D90): observe makes no
+    Schwab call and writes no ``schwab_api`` archive rows. (2) read the
+    date-anchored bar + provider provenance via resolve_ohlcv_window (keyed
     end=observation_date). Selects the row whose asof_date == observation_date
     (NOT iloc[-1]); freezes it; never re-reads it later (#26 elimination
-    honest).
+    honest). The provider is that date's precedence winner across the archive
+    files (``schwab_api`` over ``yfinance``), so a ``schwab_api`` row that
+    another caller's ladder fetch wrote (detect's, or the web process's) can
+    still be the one selected.
 
     ``memo`` (D89): the observe step passes one dict per step call, keyed by
     ``_observe_memo_key``. When the key is present, step 2 selects from the
@@ -3115,7 +3122,8 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str, *,
             f"completed session (cutoff {cutoff.isoformat()}); refusing to "
             f"select a partial/in-progress bar for the append-only log"
         )
-    # 1. Populate the archive (write-through; the same call detect makes).
+    # 1. Populate the archive (write-through; detect's window, but never the
+    #    Schwab ladder: use_ladder=False, D90).
     #    Best-effort by design (Codex chain #1 Major #6): the date-anchored
     #    archive read in step 2 is AUTHORITATIVE. A get_or_fetch failure here
     #    is not fatal -- if it leaves no bar for observation_date, step 2's
@@ -3129,7 +3137,8 @@ def _bar_for_date(cfg, ohlcv_cache, ticker: str, observation_date: str, *,
     try:
         # the detect-step Pass-1 window constant (~400 calendar days), so the
         # archive refresh covers the same depth.
-        ohlcv_cache.get_or_fetch(ticker=ticker, window_days=DETECT_OBSERVE_WINDOW_DAYS)
+        ohlcv_cache.get_or_fetch(ticker=ticker, window_days=DETECT_OBSERVE_WINDOW_DAYS,
+                                 use_ladder=False)
     except Exception as exc:  # noqa: BLE001 - best-effort populate; read is authoritative
         populate_ok = False
         log.debug("observe populate get_or_fetch best-effort miss for %s: %s",
@@ -3249,10 +3258,11 @@ def _step_pattern_observe(*, cfg, lease, ohlcv_cache, run_warnings):
     # Fetch-vs-write-ordering fix (locus #9): COMPUTE PASS outside the fence.
     # The per-detection body (idempotency skip, watch-shed, _bar_for_date fetch,
     # _advance_status, row-build) is fence-independent; only insert_observation
-    # needs the lease. Running _bar_for_date (-> get_or_fetch -> audit-writing
-    # market-data ladder) here means it never executes under a held write lock
-    # (Run-92 deadlock removed). Shed is evaluated BEFORE _bar_for_date, so shed
-    # tickers are still never fetched (OQ-A; identical Schwab quota to today).
+    # needs the lease. Running _bar_for_date (-> get_or_fetch -> the
+    # read_or_fetch_archive refresh, whose yfinance downloads can write audit
+    # rows; never the Schwab ladder since D90) here means it never executes under
+    # a held write lock (Run-92 deadlock removed). Shed is evaluated BEFORE
+    # _bar_for_date, so shed tickers are still never fetched (OQ-A).
     to_insert: list[PatternForwardObservation] = []
     for det in open_dets:
         prev = latest.get(det.detection_id)

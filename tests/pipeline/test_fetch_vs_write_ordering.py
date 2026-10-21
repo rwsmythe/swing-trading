@@ -48,9 +48,11 @@ class _DeadlockProbeCache:
         self._on_inject = on_inject
         self._raise_for = {t.upper() for t in raise_for}
         self.calls: list[str] = []
+        self.use_ladder_seen: list[bool] = []
         self.deadlock_observed = False
 
-    def get_or_fetch(self, *, ticker, window_days=180):
+    def get_or_fetch(self, *, ticker, window_days=180, use_ladder=True):
+        self.use_ladder_seen.append(use_ladder)
         self.calls.append(ticker.upper())
         probe = sqlite3.connect(self._db_path)
         try:
@@ -277,6 +279,7 @@ def test_observe_bar_fetch_runs_outside_fence_no_deadlock(tmp_db_at_head, tmp_pa
     cache = _DeadlockProbeCache(db_path, {"AAA": _build_bars()})
     warnings: list[dict] = []
     _drive_observe(cfg, _FakeLease(db_path, 1, _OBS), cache, warnings)
+    assert cache.use_ladder_seen == [False]  # D90: observe never takes the ladder
     # Anti-false-pass: a non-idempotent, non-shed detection MUST have fetched.
     assert "AAA" in cache.calls
     assert len(cache.calls) >= 1
@@ -295,6 +298,7 @@ def test_observe_split_preserves_idempotency_and_observed_count(
     cfg = _cfg(tmp_path, db_path)
     cache = _DeadlockProbeCache(db_path, {"AAA": _build_bars()})
     _drive_observe(cfg, _FakeLease(db_path, 1, _OBS), cache, [])
+    assert cache.use_ladder_seen == [False]  # D90: observe never takes the ladder
     assert len(get_observations_for_detection(conn, det_id)) == 1
     # Idempotent re-drive: still 1 (the idempotency skip runs in the compute
     # pass, before the fetch -> no second fetch, no duplicate row).
