@@ -107,7 +107,7 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
      - CLEARED by CHARC (`20261020T092202Z`, tree `e1c971bb`) and RD (`20261020T092235Z`), FOR EXECUTION AFTER run 196 exists and RD has read D89's W1/W5.
      - A code or test change to main or the branch before then re-opens the clearance; docs-only is fine.
      - **After the merge:** RD's VII.F boundary note; the witness night (0 Schwab calls inside observe, filtered by `pipeline_run_id`; the wall drop at least 87,395 ms; W0 with `fetch_window > 0`).
-  5. Then the soft-stop arc (D84) with its widening rider.
+  5. **HELD BY THE OPERATOR (2026-10-20, his words: "Hold off on arc execution until I direct it."):** the soft-stop arc (D84) with its widening rider. No arc opens until he directs it, D84 or any other. D90's post-merge steps (the suite read, housekeeping, the merge report, the witness night) are not arc execution and proceed.
      - Registered for after D84: D91 (stuck detections; RD semantics), D92 (range reads merging two adjustment bases on 55 tickers), D93 (zero-price bars pass the archive barriers).
 - **Plan cells run out of context:** two writing-plans cells (opus-xhigh) passed 400K reading the whole comms record. Brief a plan cell with a NARROW reading list, and expect a continuation cell.
 
