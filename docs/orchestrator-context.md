@@ -102,11 +102,17 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
      - Merged at `717e4ebe`, converged at round 1; Reviewer B 0/0/0. The merged head is green (15518 / 0).
      - Replay on run 195's copies: 7,139 archive reads down to 248, with rows byte-equal.
      - **Owed at run 196, the first D89-only nightly:** RD reads W1 (the observe wall against 541,691 ms) and W5 (live `resolve_reads`, about 248), with the ladder state, BEFORE anyone quotes the projection. I post the addendum once the run exists.
-  4. D90, observe's ladder detach. Operator-approved by name 2026-10-20 ("Yes, D90 after D89 and before soft-stop arc").
+  4. DONE: D90, observe's ladder detach. Operator-approved by name 2026-10-20 ("Yes, D90 after D89 and before soft-stop arc").
      - Branch `d90-detach` at `c0c92de7`; converged at A round 1. B-01 (major) was accepted by RD as a limitation; B-02 and B-03 are fixed.
      - CLEARED by CHARC (`20261020T092202Z`, tree `e1c971bb`) and RD (`20261020T092235Z`), FOR EXECUTION AFTER run 196 exists and RD has read D89's W1/W5.
      - A code or test change to main or the branch before then re-opens the clearance; docs-only is fine.
-     - **After the merge:** RD's VII.F boundary note; the witness night (0 Schwab calls inside observe, filtered by `pipeline_run_id`; the wall drop at least 87,395 ms; W0 with `fetch_window > 0`).
+     - **MERGED at `baac5c20`** (the merged head is green, 15525 / 0). RD's VII.F boundary note is at `d99053dd` (the boundary is run 197).
+     - **CLOSED on run 197:**
+       - 0 Schwab calls inside observe, against 241;
+       - observe wall 142,234 -> 42,758 ms;
+       - W0 met (33 pricehistory calls outside observe; fetch_window 240);
+       - all 6,835 rows are yfinance.
+     - Across runs 194 -> 197, the observe step went 1,300 s -> 43 s and the night 25 min -> 3 min.
   5. **HELD BY THE OPERATOR (2026-10-20, his words: "Hold off on arc execution until I direct it."):** the soft-stop arc (D84) with its widening rider. No arc opens until he directs it, D84 or any other. D90's post-merge steps (the suite read, housekeeping, the merge report, the witness night) are not arc execution and proceed.
      - Registered for after D84: D91 (stuck detections; RD semantics), D92 (range reads merging two adjustment bases on 55 tickers), D93 (zero-price bars pass the archive barriers).
 - **Plan cells run out of context:** two writing-plans cells (opus-xhigh) passed 400K reading the whole comms record. Brief a plan cell with a NARROW reading list, and expect a continuation cell.
