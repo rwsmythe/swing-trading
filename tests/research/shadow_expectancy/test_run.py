@@ -13,10 +13,16 @@ from tests.research.shadow_expectancy.testkit import (
 )
 
 
+# Every evaluated row production writes carries the risk layer; since D84 an
+# `aplus` candidate with NO risk row is neither H1 nor H4 (E-d), so the A+
+# fixtures carry the production `risk_feasibility` pass row.
+_RISK_PASS = (("risk_feasibility", "risk", "pass"),)
+
+
 def _seed_one_aplus_winner(conn):
     # migration 0008 already seeded the active registry via make_db.
     eval_id = insert_candidate(conn, ticker="AAA", bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     det_id = insert_detection(conn, ticker="AAA", pipeline_run_id=pr_id, pivot=10.0,
                               data_asof_date="2026-05-28", detection_date="2026-05-29")
@@ -105,7 +111,7 @@ def _seed_attributed_open_runner(conn):
     # A second aplus signal that TRIGGERS then stays OPEN through a short horizon (no stop
     # hit on its single forward bar). Attributes to H1 (A+ baseline) via the real matcher.
     eval_id = insert_candidate(conn, ticker="BBB", bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     det_id = insert_detection(conn, ticker="BBB", pipeline_run_id=pr_id, pivot=10.0,
                               data_asof_date="2026-05-28", detection_date="2026-05-29")
@@ -121,7 +127,7 @@ def _seed_no_candidate_join(conn):
     # A detection for CCC under a pipeline_run whose eval_run has NO CCC candidate row ->
     # resolve_candidate returns None -> collapse emits `no_candidate_join` (unattributed).
     eval_id = insert_candidate(conn, ticker="OTHER", bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     det_id = insert_detection(conn, ticker="CCC", pipeline_run_id=pr_id, pivot=10.0,
                               data_asof_date="2026-05-28", detection_date="2026-05-29")
@@ -135,7 +141,7 @@ def _seed_multi_match_signal(conn):
     # hypotheses for MMM (the 4 seeded hypotheses are mutually exclusive, so a real
     # multi-match is impossible -- it MUST be synthesized to exercise the guard).
     eval_id = insert_candidate(conn, ticker="MMM", bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     det_id = insert_detection(conn, ticker="MMM", pipeline_run_id=pr_id, pivot=10.0,
                               data_asof_date="2026-05-28", detection_date="2026-05-29")
@@ -204,7 +210,7 @@ def _seed_attributed_never_triggered(conn, ticker="NNN"):
     # An aplus candidate (-> H1) whose detection NEVER fires entry (only `pending`
     # observations, no entry_fired). It must still count as a SIGNAL for H1.
     eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
                               data_asof_date="2026-05-28", detection_date="2026-05-29")
@@ -255,7 +261,7 @@ def _seed_excluded_duplicate_group(conn):
     # Two detections sharing (pipeline_run_id, ticker=DDD) but NO DDD candidate row ->
     # the group is excluded (no_candidate_join) yet still collapses 2 detections to 1 signal.
     eval_id = insert_candidate(conn, ticker="OTHER2", bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     for pattern_class in ("vcp", "flat_base"):  # distinct classes dodge the UNIQUE index
         det_id = insert_detection(conn, ticker="DDD", pipeline_run_id=pr_id, pivot=10.0,
@@ -290,7 +296,7 @@ def _seed_inverted_initial_stop_winner(conn, ticker="INV"):
     # stale/inverted production stop. The mechanical trade ignores it (stop = entry_bar.low),
     # so this MUST still simulate, not be excluded as invalid_ohlc.
     eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
-                               initial_stop=10.5, close=10.0)
+                               initial_stop=10.5, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
                               data_asof_date="2026-05-28", detection_date="2026-05-29")
@@ -321,7 +327,7 @@ def _seed_never_triggers_above_pivot(conn, ticker="ZZZ"):
     # candidate.pivot 10.0; the single forward bar's high (9.8) never reaches it -> never_triggered
     # via the RECOMPUTE (not via absence of an entry_fired event).
     eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
                               data_asof_date="2026-05-28", detection_date="2026-05-29")
@@ -344,7 +350,7 @@ def _seed_trigger_on_last_bar(conn, ticker="LAST"):
     # candidate.pivot 10.0; the trigger fires on the LAST (only) bar -> forward_bars empty ->
     # insufficient_forward_depth (per-hypothesis excluded); simulate must NOT be called.
     eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
                               data_asof_date="2026-05-28", detection_date="2026-05-29")
@@ -377,7 +383,7 @@ def _seed_attributed_zero_observations(conn, ticker="NOOBS"):
     # An aplus candidate (-> H1) whose detection has ZERO frozen forward observations at all
     # (no observation rows). The canonical chain is empty.
     eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
                      data_asof_date="2026-05-28", detection_date="2026-05-29")
@@ -444,7 +450,7 @@ def _seed_weak_close_winner(conn, ticker="WEAK"):
     # entry bar breaks out intraday (high 10.5 >= pivot 10.0) but closes weak (9.8 < 10.0).
     # A clean forward bar keeps it open at horizon=1 -> a TRIGGERED trade carrying weak_close.
     eval_id = insert_candidate(conn, ticker=ticker, bucket="aplus", pivot=10.0,
-                               initial_stop=9.0, close=10.0)
+                               initial_stop=9.0, close=10.0, criteria=_RISK_PASS)
     pr_id = insert_pipeline_run(conn, eval_id)
     det_id = insert_detection(conn, ticker=ticker, pipeline_run_id=pr_id, pivot=10.0,
                               data_asof_date="2026-05-28", detection_date="2026-05-29")

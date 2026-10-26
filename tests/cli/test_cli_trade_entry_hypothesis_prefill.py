@@ -47,11 +47,18 @@ def _seed_aplus_pipeline(cfg_path: Path, ticker: str) -> None:
                 ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
             )
             eval_id = cur.lastrowid
-            conn.execute(
+            cand_cur = conn.execute(
                 """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
                    close, pivot, initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 180.0, 181.0, 170.0, 'universe')""",
                 (eval_id, ticker),
+            )
+            # The risk row production always writes (D84 E-d: an A+ with NO
+            # risk row is neither H1 nor H4).
+            conn.execute(
+                """INSERT INTO candidate_criteria (candidate_id, criterion_name,
+                   layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')""",
+                (cand_cur.lastrowid,),
             )
             conn.execute(
                 """INSERT INTO pipeline_runs
@@ -216,11 +223,17 @@ def test_entry_pre_fill_falls_back_to_standalone_eval_when_no_pipeline_FK(
                 ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
             )
             eval_id = cur.lastrowid
-            conn.execute(
+            cand_cur = conn.execute(
                 """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
                    close, pivot, initial_stop, rs_method)
                    VALUES (?, 'AAPL', 'aplus', 180.0, 181.0, 170.0, 'universe')""",
                 (eval_id,),
+            )
+            # The risk row production always writes (D84 E-d).
+            conn.execute(
+                """INSERT INTO candidate_criteria (candidate_id, criterion_name,
+                   layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')""",
+                (cand_cur.lastrowid,),
             )
             # Pipeline row with NULL FK — exercises the fallback path.
             conn.execute(

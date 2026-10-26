@@ -234,8 +234,29 @@ def _non_pass_criterion_names(candidate: Candidate) -> set[str]:
     return {c.criterion_name for c in candidate.criteria if c.result != "pass"}
 
 
+def _risk_inputs_from_candidate(candidate: Candidate):
+    """The MATCHER's adapter onto the risk layer (D84 E2): the ONE counting
+    adapter `risk_inputs_from_criteria` over the candidate's criteria, so the
+    matcher and the display marker count the risk layer the same way.
+
+    The scoring import is FUNCTION-LOCAL on purpose: the derivation-closure
+    walker keys a name by the module it is resolved in, so a module-top import
+    would record the scoring helper under THIS module and walk its body against
+    the wrong namespace.
+    """
+    from swing.evaluation.scoring import risk_inputs_from_criteria
+
+    return risk_inputs_from_criteria(candidate.criteria)
+
+
 def _aplus_baseline_match(candidate: Candidate) -> bool:
-    return candidate.bucket == "aplus"
+    """H1 = an A+ candidate whose risk layer PASSES (D84): at least one
+    risk-layer result, and every one `pass`. An A+ candidate with NO risk row
+    is not H1: an unmeasured layer is not a pass."""
+    from swing.evaluation.scoring import risk_layer_passes
+
+    return candidate.bucket == "aplus" and risk_layer_passes(
+        _risk_inputs_from_candidate(candidate))
 
 
 def _near_aplus_extension_match(candidate: Candidate) -> bool:
@@ -262,23 +283,18 @@ def _sub_aplus_vcp_not_formed_match(
 
 
 def _capital_blocked_match(candidate: Candidate) -> bool:
-    """Capital-blocked = "would be A+ except risk_feasibility is the only
-    blocker." Since `risk_feasibility` is a hard pre-filter in production
-    (`bucket_for` returns 'skip' the moment risk fails), the production-
-    realized form of this hypothesis is `bucket == 'skip'` rather than
-    `'watch'`. Adversarial review R1 Major 1: the brief's literal rule
-    `bucket == 'watch' AND non_pass == {'risk_feasibility'}` is dead-on-
-    arrival on production data; we accept matches in either bucket as
-    long as the only failing criterion is risk_feasibility.
-
-    Allowing both buckets preserves brief intent ("candidates A+ except
-    risk_feasibility") without coupling the matcher to a specific
-    production gating order. Replay-harness variants that disable the
-    hard filter (and so see these candidates in 'watch') still match.
+    """H4 = an A+ candidate whose risk layer is flagged: at least one
+    risk-layer result is not `pass` (D84). Since D84 the risk pre-filter is
+    gone, so the hypothesis's registered statement ('Candidates A+ except
+    risk_feasibility') is realised as `bucket == 'aplus'` with a risk non-pass.
+    The allowed TT8 miss is admitted, as A+ admits it (RD (iii)). An EMPTY risk
+    layer is not a flag. The pre-boundary `watch|skip` form was dropped: its
+    population is closed and was measured empty (0 rows).
     """
-    if candidate.bucket not in ("watch", "skip"):
-        return False
-    return _non_pass_criterion_names(candidate) == {"risk_feasibility"}
+    from swing.evaluation.scoring import risk_layer_flagged
+
+    return candidate.bucket == "aplus" and risk_layer_flagged(
+        _risk_inputs_from_candidate(candidate))
 
 
 def _broad_watch_baseline_match(candidate: Candidate) -> bool:
@@ -296,21 +312,12 @@ def _descriptive_label(
     `hypothesis_name`; the descriptive suffix may evolve without breaking
     matching, but the leading hypothesis name MUST stay first.
 
-    Bucket annotation rule (R2 Minor 2): for the Capital-blocked
-    hypothesis, production gating buckets candidates as `skip` even
-    though the operator's intent is to take the trade with smaller
-    position. Rendering `(skip)` would read as "rejected" in the
-    operator-facing label, which contradicts the recommendation. So we
-    annotate it as `(skip; capital-blocked)` to make the deliberate
-    nature of the recommendation clear in the saved label.
+    For the Capital-blocked hypothesis the bucket is `aplus` and the risk
+    flag is in the failed list.
     """
     non_pass = sorted(_non_pass_criterion_names(candidate))
     suffix = f"; failed: {', '.join(non_pass)}" if non_pass else ""
-    if hypothesis_name == H_CAPITAL_BLOCKED and candidate.bucket == "skip":
-        bucket_disp = "skip; capital-blocked"
-    else:
-        bucket_disp = candidate.bucket
-    return f"{hypothesis_name} ({bucket_disp}){suffix}"
+    return f"{hypothesis_name} ({candidate.bucket}){suffix}"
 
 
 def _priority_hint_for(candidate: Candidate) -> float:

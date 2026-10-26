@@ -53,6 +53,15 @@ def _seed_pipeline_with_candidates(cfg, candidates: list[dict[str, Any]]) -> int
                            VALUES (?, ?, 'vcp', ?)""",
                         (cid, crit_name, crit_result),
                     )
+                if c["bucket"] == "aplus":
+                    # D84 E-d: the risk row production always writes; an A+
+                    # with NO risk row is neither H1 nor H4.
+                    conn.execute(
+                        """INSERT INTO candidate_criteria
+                           (candidate_id, criterion_name, layer, result)
+                           VALUES (?, 'risk_feasibility', 'risk', 'pass')""",
+                        (cid,),
+                    )
             cur2 = conn.execute(
                 """INSERT INTO pipeline_runs
                    (started_ts, finished_ts, trigger, data_asof_date,

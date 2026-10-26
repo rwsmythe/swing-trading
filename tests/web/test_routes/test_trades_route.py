@@ -2267,12 +2267,19 @@ def _t5_seed_hyp_recs_aplus_candidate(cfg, *, ticker: str = "TESTAPLUS") -> int:
                 ("2026-04-29T09:00:00", "2026-04-28", "2026-04-29"),
             )
             eval_id = int(cur.lastrowid)
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates
                    (evaluation_run_id, ticker, bucket, close, pivot,
                     initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 99.0, 100.0, 95.0, 'universe')""",
                 (eval_id, ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
         return eval_id
     finally:
@@ -2286,12 +2293,19 @@ def _t5_seed_extra_aplus_candidate(cfg, *, eval_id: int, ticker: str) -> None:
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates
                    (evaluation_run_id, ticker, bucket, close, pivot,
                     initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 99.0, 100.0, 95.0, 'universe')""",
                 (eval_id, ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
     finally:
         conn.close()
@@ -2575,12 +2589,19 @@ def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_s
             )
             eval_id = int(cur.lastrowid)
             for ticker in ("TESTWATCH", "TESTWITNESS"):
-                conn.execute(
+                _risk_cand_cur = conn.execute(
                     """INSERT INTO candidates
                        (evaluation_run_id, ticker, bucket, close, pivot,
                         initial_stop, rs_method)
                        VALUES (?, ?, 'aplus', 180.0, 181.0, 170.0, 'universe')""",
                     (eval_id, ticker),
+                )
+                # D84 E-d: the risk row production always writes; an A+
+                # with NO risk row is neither H1 nor H4.
+                conn.execute(
+                    "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                    "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                    (_risk_cand_cur.lastrowid,),
                 )
     finally:
         conn.close()
@@ -2966,11 +2987,18 @@ def _seed_aplus_pipeline_for_route_test(db_path, ticker: str) -> None:
                 ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
             )
             eval_id = cur.lastrowid
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
                    close, pivot, initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 180.0, 181.0, 170.0, 'universe')""",
                 (eval_id, ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
             conn.execute(
                 """INSERT INTO pipeline_runs

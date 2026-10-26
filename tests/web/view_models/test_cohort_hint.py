@@ -20,7 +20,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from swing.data.db import connect, ensure_schema
-from swing.data.models import Candidate, WatchlistEntry
+from swing.data.models import Candidate, CriterionResult, WatchlistEntry
 from swing.data.repos.hypothesis import list_hypotheses
 from swing.data.repos.watchlist import upsert_watchlist_entry
 from swing.web.app import create_app
@@ -46,12 +46,16 @@ def _watch_candidate(ticker: str = "WCH") -> Candidate:
 
 
 def _aplus_candidate(ticker: str = "APL") -> Candidate:
+    # D84 E-d: the risk row production always writes; an A+ with NO risk row
+    # is neither H1 nor H4.
     return Candidate(
         ticker=ticker, bucket="aplus", close=180.0, pivot=181.0,
         initial_stop=170.0, adr_pct=2.0, tight_streak=None,
         pullback_pct=None, prior_trend_pct=None, rs_rank=None,
         rs_return_12w_vs_spy=None, rs_method="universe",
-        pattern_tag=None, notes=None, criteria=(),
+        pattern_tag=None, notes=None,
+        criteria=(CriterionResult(criterion_name="risk_feasibility",
+                                  layer="risk", result="pass"),),
     )
 
 

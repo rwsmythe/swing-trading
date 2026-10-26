@@ -271,6 +271,17 @@ DERIVATION_RULE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     ("function", "swing.recommendations.hypothesis:_capital_blocked_match"),
     ("function",
      "swing.recommendations.hypothesis:_broad_watch_baseline_match"),
+    # D84 (S1): H1 and H4 now read the RISK LAYER, through the matcher adapter
+    # and the scoring predicates it reaches by function-local import. The
+    # manifest hashes source and cannot see a callee it merely names, so every
+    # one is entered here. `RiskInputs` is a class; `getsource` reads it, so a
+    # field or validator change moves the digest (the `_FireKeys` precedent).
+    ("function",
+     "swing.recommendations.hypothesis:_risk_inputs_from_candidate"),
+    ("function", "swing.evaluation.scoring:risk_inputs_from_criteria"),
+    ("function", "swing.evaluation.scoring:risk_layer_passes"),
+    ("function", "swing.evaluation.scoring:risk_layer_flagged"),
+    ("function", "swing.evaluation.scoring:RiskInputs"),
     # THE AS-OF REGISTRY. These decide which hypotheses are ACTIVE as of the
     # cited record, and the matcher filters on exactly that -- so they decide
     # the selection as surely as the predicates do.
@@ -401,6 +412,13 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
     # not hash noise. Appended, never edited.
     ("2026-08-26.2",
      "5e0f5ec83eb5e8906047c2cf0b71ca3174605ba7fbc099dc79a54e6f565b2af5"),
+    # D84 -- the risk pre-filter left `bucket_for`. H1 became `aplus` AND the
+    # risk layer passes, H4 `aplus` AND the risk layer is flagged; an empty
+    # risk layer matches neither, and the old H4 form was dropped. A REAL rule
+    # change. Appended, never edited; every stored correction row keeps its
+    # own version.
+    ("D84-MERGE-DATE.1",
+     "30ac90635973ac5ea1eb5e61bcc9e60fa665e0b967e6d0407193a1e1f1a3db4b"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]

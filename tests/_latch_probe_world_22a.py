@@ -104,8 +104,16 @@ def seed_fire(
     pivot: float | None = PIVOT,
     initial_stop: float | None = STOP,
     bucket: str = "aplus",
+    risk_result: str | None = "pass",
 ) -> int:
-    """One evaluation run and one candidate on it.  Returns the candidate id."""
+    """One evaluation run and one candidate on it.  Returns the candidate id.
+
+    The candidate carries a `risk_feasibility` row (`risk_result`), the risk
+    layer every evaluated production row carries. Since D84 an `aplus`
+    candidate with NO risk row matches neither H1 nor H4 (E-d), so a fire
+    without it derives no cohort label; `risk_result=None` seeds that EMPTY
+    layer on purpose.
+    """
     seed_run(conn, run_id, action_session)
     cur = conn.execute(
         "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
@@ -113,7 +121,14 @@ def seed_fire(
         "'universe')",
         (run_id, ticker, bucket, pivot, initial_stop),
     )
-    return int(cur.lastrowid)
+    candidate_id = int(cur.lastrowid)
+    if risk_result is not None:
+        conn.execute(
+            "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+            "layer, result) VALUES (?, 'risk_feasibility', 'risk', ?)",
+            (candidate_id, risk_result),
+        )
+    return candidate_id
 
 
 def order_for_candidate(
