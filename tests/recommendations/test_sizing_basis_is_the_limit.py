@@ -531,14 +531,21 @@ def test_the_unorderable_refusal_does_NOT_swallow_a_stop_ABOVE_the_pivot():
         _recs(today_aplus=[_candidate("DEGEN", pivot=100.0, stop=101.5)])
 
 
-def test_the_INFEASIBLE_action_text_states_no_price_at_all():
-    """An infeasible row recommends nothing, so it states no price -- appending
-    a cap to "Risk infeasible" would read as an order."""
+def test_the_RISK_BOUND_zero_action_text_states_the_zero_not_a_refusal():
+    """Supersedes `test_the_INFEASIBLE_action_text_states_no_price_at_all`
+    (D84 T8 step 1; Reviewer B B2-02). WIDE (pivot 100.0, stop 50.0) is a
+    RISK-BOUND zero, not a degenerate geometry: its contract was the refusal
+    prose ("Risk infeasible ... skip or wait") that RD's floor (1) and CHARC
+    F1-A (1) replace with the STATED zero. The row still recommends nothing --
+    `shares == 0` -- and the line names its basis, the cap, so the one-share
+    risk it states is checkable rather than read as an order."""
     rec = _recs(today_aplus=[_candidate("WIDE", pivot=100.0, stop=50.0)])[0]
+    text = rec.action_text or ""
     assert rec.shares == 0
-    assert "infeasible" in (rec.action_text or "").lower()
-    assert "cap" not in (rec.action_text or "")
-    assert "$" not in (rec.action_text or "")
+    assert text.startswith("0 shares at the $")
+    assert " at cap " in text
+    assert "skip or wait" not in text
+    assert text.isascii()
 
 
 def test_the_NEAR_TRIGGER_path_sizes_off_the_limit_TOO():

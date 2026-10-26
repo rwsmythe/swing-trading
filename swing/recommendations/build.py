@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from swing.data.models import Candidate, DailyRecommendation, WatchlistEntry
 from swing.latches.constants import mandate_limit_price, zone_cap_for_pivot
 from swing.recommendations.near_trigger import is_near_trigger
-from swing.recommendations.sizing import SizingResult, compute_shares
+from swing.recommendations.sizing import (
+    SizingResult,
+    compute_shares,
+    zero_share_line,
+)
 
 
 @dataclass(frozen=True)
@@ -172,8 +176,8 @@ def _sizing_result(pivot: float | None, stop: float | None,
         position_pct_cap=ctx.position_pct_cap)
 
 
-def _format_action(shares: int, entry: float, risk_dollars: float,
-                   infeasible: bool, basis: float | None = None,
+def _format_action(sizing: SizingResult, entry: float,
+                   basis: float | None = None,
                    stop: float | None = None) -> str:
     """The row's one-line action, SELF-CHECKABLE.
 
@@ -196,9 +200,17 @@ def _format_action(shares: int, entry: float, risk_dollars: float,
     never produces, and that contract is still pinned by
     `test_aplus_action_text_does_not_say_limit`. "Cap" names the SIZING
     price without describing a second order leg.
+
+    A ZERO-SHARE ROW STATES ITS ZERO (D84, RD's floor (1)). The ONE formatter
+    `zero_share_line` owns the line, with the nightly's basis word "cap": the
+    risk-bound flag (the budget, the one-share risk at the cap), the
+    position-cap line, or -- on `_sizing_result`'s no-geometry sentinel, whose
+    basis is None -- the "Sizing infeasible: no valid cap basis" line. The
+    refusal prose it replaces was a programmatic no in prose.
     """
-    if infeasible:
-        return "Risk infeasible at current sizing — skip or wait for tighter setup"
+    if sizing.shares == 0:
+        return zero_share_line(sizing, basis_label="cap", basis_price=basis)
+    shares, risk_dollars = sizing.shares, sizing.risk_dollars
     text = f"Buy-stop ${entry:.2f} \u00b7 {shares} sh \u00b7 ${risk_dollars:.2f} risk"
     if basis is not None and stop is not None:
         text += _equation(shares, basis, stop, risk_dollars)
@@ -218,15 +230,13 @@ def build_recommendations(
     # 1. A+ names → today_decision (with sizing)
     for c in aplus_list:
         basis, sizing = _sizing_result(c.pivot, c.initial_stop, ctx)
-        infeasible = not sizing.feasible
         recs.append(DailyRecommendation(
             id=None, evaluation_run_id=ctx.evaluation_run_id,
             data_asof_date=ctx.data_asof_date,
             action_session_date=ctx.action_session_date,
             ticker=c.ticker, recommendation="today_decision",
             action_text=_format_action(
-                sizing.shares, c.pivot, sizing.risk_dollars, infeasible,
-                basis=basis, stop=c.initial_stop),
+                sizing, c.pivot, basis=basis, stop=c.initial_stop),
             entry_target=c.pivot, stop_target=c.initial_stop,
             shares=sizing.shares,
             risk_dollars=sizing.risk_dollars, risk_pct=sizing.risk_pct,
@@ -258,8 +268,7 @@ def build_recommendations(
             ticker=w.ticker, recommendation="near_trigger",
             action_text=(
                 _format_action(
-                    sizing.shares, w.entry_target,
-                    sizing.risk_dollars, not sizing.feasible,
+                    sizing, w.entry_target,
                     basis=basis, stop=w.initial_stop_target,
                 )
                 if sizing else "Pivot reached — review setup"
