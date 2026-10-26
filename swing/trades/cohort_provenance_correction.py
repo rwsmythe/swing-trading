@@ -417,7 +417,7 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
     # risk layer matches neither, and the old H4 form was dropped. A REAL rule
     # change. Appended, never edited; every stored correction row keeps its
     # own version.
-    ("D84-MERGE-DATE.1",
+    ("2026-10-26.1",
      "30ac90635973ac5ea1eb5e61bcc9e60fa665e0b967e6d0407193a1e1f1a3db4b"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
