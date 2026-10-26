@@ -30,6 +30,7 @@ from swing.metrics.equity_resolver import (
     resolve_live_capital_denominator_dollars,
 )
 from swing.metrics.policy import read_live_policy
+from swing.evaluation.scoring import risk_inputs_from_criteria
 from swing.recommendations.sizing import (
     SizingResult,
     compute_shares,
@@ -403,6 +404,12 @@ class DashboardVM:
     # watchlist_row.html.j2 via `{% set %}`, so (like pattern_tags) it does
     # NOT propagate to other base-layout VMs. Default empty dict.
     cohort_hints: Mapping[str, str] = field(default_factory=dict)
+    # D84 T9 (RD (2), CHARC P1 (c)): {ticker: 'RISK FLAG'} for candidates
+    # whose STORED risk layer is flagged. A SIBLING mapping, never the
+    # `flag_tags` tuple (the sort key), so the marker cannot re-rank names.
+    # Referenced ONLY inside the watchlist row loops via `{% set %}`, like
+    # `cohort_hints`, so it does not propagate to other base-layout VMs.
+    risk_flags: Mapping[str, str] = field(default_factory=dict)
     # Phase 6 Task 13: needs-review badge + cadence cards.
     # Default 0 / None so any ad-hoc VM construction (tests, fixtures outside
     # the phase-6 test files) remains valid without supplying these fields.
@@ -1382,6 +1389,7 @@ def build_dashboard(
         classifications,
         display_threshold=cfg.web.flag_pattern_display_threshold,
     )
+    risk_flags = _risk_flags(candidates_by_ticker)
 
     # Prices — batch fetch all tickers we need. Recommended-ticker prices
     # are added so the panel can render each row's current price live; the
@@ -1843,6 +1851,7 @@ def build_dashboard(
         hyp_recs_unavailable_text=hyp_recs_unavailable_text,
         pattern_tags=pattern_tags,
         cohort_hints=cohort_hints,
+        risk_flags=risk_flags,
         needs_review_count=needs_review,
         daily_card=cadence_cards["daily"],
         weekly_card=cadence_cards["weekly"],
@@ -1966,6 +1975,27 @@ def _flag_tags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, tu
         if row_tags:
             tags[ticker] = tuple(row_tags)
     return tags
+
+
+def _risk_flags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, str]:
+    """{ticker: 'RISK FLAG'} for each candidate whose STORED risk layer is
+    FLAGGED (D84 T9; CHARC P1 (c)).
+
+    The criteria-only MARKER form of the ONE formatter, through the ONE
+    counting adapter (`zero_share_line(risk=risk_inputs_from_criteria(...))`):
+    ASCII, no numbers, any bucket. A passing layer and an EMPTY layer (no risk
+    row, E-d) are ABSENT from the mapping, not present with "".
+
+    SIBLING to `_flag_tags`, never inside it: that tuple is the sort key read
+    by `_tag_aware_sort_key`, the top-5 and the pipeline chart scope, so a
+    flag inside it would RE-RANK names.
+    """
+    out: dict[str, str] = {}
+    for ticker, c in candidates_by_ticker.items():
+        marker = zero_share_line(risk=risk_inputs_from_criteria(c.criteria))
+        if marker is not None:
+            out[ticker] = marker
+    return out
 
 
 def _pattern_tags(
