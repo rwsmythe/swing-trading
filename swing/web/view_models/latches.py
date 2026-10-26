@@ -2868,8 +2868,13 @@ def _prompt_candidates(join, *, ticker_strays=()) -> tuple[tuple, str]:
 def _validity_prompt_for(latch, *, join, framework, place, digest,
                          snapshot_ts: str, anchor_iso: str, prior_intent_id: str,
                          is_correction: bool = False,
-                         superseded_outcome: str = "", ticker_strays=()):
+                         superseded_outcome: str = "", ticker_strays=(),
+                         accepted_gone=None):
     """`(prompt, withheld_reason)`. PURE -- every input is passed in.
+
+    `accepted_gone` is the D94 G6 gate (an accepted row whose order is absent
+    from the resting book and unexplained). It changes ONLY the ABSENCE
+    branch's headline; the PRESENCE branch asserts from presence and ignores it.
 
     EVERY WITHHELD COLLECTOR CARRIES A REASON (Codex exec R8 MAJOR). Returning a
     bare `None` made "the question was withheld" indistinguishable from "there
@@ -2991,12 +2996,19 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
     # mislabel or discard the answer -- and it does not need to be offered,
     # because the fill short-circuit already covers that case from data the
     # framework owns.
-    headline = (
-        f"You logged a {framework['order_type']} "
-        f"{_fmt_price(framework['limit_price'])} / {framework['quantity']} sh "
-        f"order for {latch.identity.ticker} on {place.action_session_date}. NO "
-        "matching resting order is visible at the broker. Was it rejected, "
-        "never submitted, or do you not know?")
+    #
+    # On an ACCEPTED row whose order is gone and unexplained (`accepted_gone`,
+    # D94 G6) the headline is RD's W1: an absent order is not evidence of a
+    # wrong acceptance, so it may not assert or insinuate rejection.
+    if accepted_gone is not None:
+        headline = _unexplained_accepted_headline(accepted_gone)
+    else:
+        headline = (
+            f"You logged a {framework['order_type']} "
+            f"{_fmt_price(framework['limit_price'])} / {framework['quantity']} sh "
+            f"order for {latch.identity.ticker} on {place.action_session_date}. "
+            "NO matching resting order is visible at the broker. Was it "
+            "rejected, never submitted, or do you not know?")
     return LatchValidityPromptVM(
         ticker=latch.identity.ticker,
         candidate_id=latch.identity.candidate_id,
@@ -3013,7 +3025,9 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
 
 
 def _displaced_cycle_prompts(latch, *, intents, current, digest,
-                             snapshot_ts, anchor_iso, prior_intent_id):
+                             snapshot_ts, anchor_iso, prior_intent_id,
+                             resting_order_ids=frozenset(), explained=None,
+                             ledger_cancels=None):
     """One control per DISPLACED place cycle -- ANSWERED OR NOT.
 
     A CHILDLESS DISPLACED CYCLE MAY NOT VANISH (RD ruling, 2026-07-30). It used
@@ -3066,6 +3080,21 @@ def _displaced_cycle_prompts(latch, *, intents, current, digest,
             # NAMED `displaced_unanswerable` category, which still counts it and
             # still discloses it beside the agreement rate.
             continue
+        # AN ANSWERED DISPLACED CYCLE RUNS THE SAME ACCEPTED-ROW GATE as the
+        # current one (CHARC D94 2A; ONE function, never a copy). The childless
+        # branch never reaches it: a first answer has no recorded acceptance to
+        # explain (RD D94 item 3).
+        gate = None
+        if answered is not None:
+            gate = _accepted_row_gate(
+                latch, place=place, intents=intents,
+                resting_order_ids=resting_order_ids)
+            if gate.kind in (_GATE_EXPLAINED_FILL, _GATE_EXPLAINED_CANCEL):
+                if explained is not None:
+                    explained.append(_explained_line(latch, gate))
+                continue
+            if gate.kind == _GATE_UNEXPLAINED and ledger_cancels is not None:
+                ledger_cancels.append(gate)
         envelope = {
             "broker_snapshot_ts": snapshot_ts,
             # The ABSENCE shape: this correction offers no observed order for a
@@ -3084,6 +3113,8 @@ def _displaced_cycle_prompts(latch, *, intents, current, digest,
             candidate_id=latch.identity.candidate_id,
             branch="absence",
             headline=(
+                _unexplained_accepted_headline(gate)
+                if gate is not None and gate.kind == _GATE_UNEXPLAINED else
                 f"An EARLIER order cycle for {latch.identity.ticker} (place "
                 f"intent {place.intent_id}, logged "
                 f"{place.action_session_date}) is recorded as "
@@ -3219,6 +3250,18 @@ def _accepted_row_gate(latch, *, place, intents,
     return _AcceptedRowGate(_GATE_UNEXPLAINED, place, child)
 
 
+def _unexplained_accepted_headline(gate: _AcceptedRowGate) -> str:
+    """RD D94 item 4, W1: the correction headline on an UNEXPLAINED accepted
+    row. It states the recorded fact and scopes the correction to a wrong
+    ACCEPTANCE; a later cancel, fill or expiry does not retract one."""
+    return (f"Recorded: the broker ACCEPTED order "
+            f"{gate.child.actual_broker_order_id} on "
+            f"{gate.child.action_session_date}. That order is not in the "
+            "current book. Correct this ONLY if the broker never accepted it as "
+            "recorded; an order that you later cancelled, or that filled or "
+            "expired, was still accepted -- do not change the answer for that.")
+
+
 def _explained_line(latch, gate: _AcceptedRowGate) -> str:
     """The READ-ONLY line for an explained accepted row (plan section 2, W3).
 
@@ -3297,6 +3340,7 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
     # statuses never reach the latch domain, so absence means "not resting".
     resting_order_ids = frozenset(o.order_id for o in orders or ())
     explained: list[str] = []
+    ledger_cancels: list[_AcceptedRowGate] = []
     # Resting BUY orders NO latch claims, per ticker. 21-A carries this set on
     # the join for LIVE latches only, so it is recomputed here for the cleared
     # ones -- whose measurement is FINAL and therefore the one that most needs
@@ -3352,10 +3396,29 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         # AND A CHILDLESS DISPLACED CYCLE GETS A FIRST-ANSWER FORM (RD ruling,
         # 2026-07-30): skipping it left a failed first attempt permanently
         # unmeasured while its accepted retry supplied the scored agreement.
-        out.extend(_displaced_cycle_prompts(
-            latch, intents=intents, current=place, digest=digest,
-            snapshot_ts=snapshot_ts, anchor_iso=anchor_iso,
-            prior_intent_id=_prior_intent_id(intents)))
+        #
+        # It runs the SAME accepted-row gate as the current cycle (CHARC D94
+        # 2A), and inside the A6 seam: a gate raise degrades ONE latch, never
+        # the fragment. Its lines and gates are collected per latch and kept only
+        # when the whole call succeeds, so a mid-loop raise leaves no half-latch.
+        displaced_explained: list[str] = []
+        displaced_ledger: list[_AcceptedRowGate] = []
+        try:
+            displaced = _displaced_cycle_prompts(
+                latch, intents=intents, current=place, digest=digest,
+                snapshot_ts=snapshot_ts, anchor_iso=anchor_iso,
+                prior_intent_id=_prior_intent_id(intents),
+                resting_order_ids=resting_order_ids,
+                explained=displaced_explained, ledger_cancels=displaced_ledger)
+        except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
+            _log.warning(
+                "latch displaced-cycle prompts degraded for candidate %s: %s",
+                cid, exc)
+            degraded.append(latch.identity.ticker)
+            continue
+        out.extend(displaced)
+        explained.extend(displaced_explained)
+        ledger_cancels.extend(displaced_ledger)
         if place is None:
             continue
         framework = framework_side_of(place)
@@ -3389,9 +3452,19 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         # line in place of the correction control.
         if gate.kind == _GATE_FILL_CHILDLESS:
             continue
-        if gate.kind == _GATE_EXPLAINED_FILL:
+        # A RECORDED CANCEL EXPLAINS AN ACCEPTED ROW the same way (RD D94 item
+        # 3): the order's absence is accounted for, so the row gets the
+        # read-only line instead of a correction control.
+        if gate.kind in (_GATE_EXPLAINED_FILL, _GATE_EXPLAINED_CANCEL):
             explained.append(_explained_line(latch, gate))
             continue
+        # UNEXPLAINED: the correction stays (an erroneous acceptance must stay
+        # correctable), and the caller ALSO offers a cancel control keyed on the
+        # ledger's order id -- on either branch, because the gone order is not
+        # the one a presence form would record.
+        accepted_gone = gate if gate.kind == _GATE_UNEXPLAINED else None
+        if accepted_gone is not None:
+            ledger_cancels.append(accepted_gone)
         is_correction = outcome != "unknown"
         strays = (
             () if latch.identity.ticker in contested
@@ -3414,7 +3487,7 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
                 prior_intent_id=_prior_intent_id(intents),
                 is_correction=is_correction,
                 superseded_outcome=outcome if is_correction else "",
-                ticker_strays=strays)
+                ticker_strays=strays, accepted_gone=accepted_gone)
         except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
             _log.warning(
                 "latch validity prompt degraded for candidate %s: %s", cid, exc)
@@ -3445,7 +3518,7 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
               "resolved.")
     return _ValidityRender(
         prompts=tuple(out), degraded=" ".join(parts),
-        explained=tuple(explained), ledger_cancels=(),
+        explained=tuple(explained), ledger_cancels=tuple(ledger_cancels),
         resting_order_ids=resting_order_ids)
 
 

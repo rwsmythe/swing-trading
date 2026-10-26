@@ -220,3 +220,172 @@ def test_t2_3_the_vm_follows_the_one_predicate_it_does_not_respell_it(
     section = _section_for_parent(forced, p1)
     assert section is not None
     assert "CORRECT THE RECORDED OUTCOME" in section
+
+
+# ---------------------------------------------------------------------------
+# Task 3 -- a recorded CANCEL explains an accepted row, on EVERY cycle (G5/G6)
+# ---------------------------------------------------------------------------
+def _w1(order_id: str, session: str) -> str:
+    """RD D94 item 4, the correction headline on an UNEXPLAINED accepted row
+    (absence branch), verbatim with the substitutions."""
+    return (f"Recorded: the broker ACCEPTED order {order_id} on {session}. That "
+            "order is not in the current book. Correct this ONLY if the broker "
+            "never accepted it as recorded; an order that you later cancelled, "
+            "or that filled or expired, was still accepted -- do not change the "
+            "answer for that.")
+
+
+def _headline(section: str) -> str:
+    m = re.search(r'<p class="latch-validity-headline">(.*?)</p>', section, re.S)
+    assert m is not None
+    return " ".join(m.group(1).split())
+
+
+def _cancel_ids(cfg) -> list[int]:
+    return [r[0] for r in _rows(cfg) if r[1] == "cancel"]
+
+
+def _accept_then_cancel_via_book(client, cfg, book, pid: int, oid: str) -> int:
+    """`pid` is accepted as order `oid` while it rests, then he records the
+    cancel through the shipped BOOK control while it still rests; the order then
+    leaves the book. Returns the cancel row's intent id."""
+    book[:] = [_order(order_id=oid)]
+    _accept(client, pid)
+    html = _fragment(client, PROMPT_ANCHOR).text
+    r = client.post("/latches/intent", headers=_HX,
+                    data=_form_fields(_cancel_form_html(html, oid)))
+    assert r.status_code == 200, r.text
+    book.clear()
+    return _cancel_ids(cfg)[-1]
+
+
+def test_t3_1_dftx_shape_a_recorded_cancel_explains_the_accepted_row(
+        seeded_db, monkeypatch, clocks):
+    """THE DFTX SHAPE (RD item 3). The accepted order left the book and a
+    `cancel` row naming it sits beside it. Pre-fix the prompt never read cancel
+    rows, so it re-prompted a correction with the explaining row in the ledger.
+    Post-fix: the read-only cancel line, and no control of either kind."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    book: list = []
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        c1 = _accept_then_cancel_via_book(client, cfg, book, p1, "5001")
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert _explained_lines(html) == [
+        f"FTRE place intent {p1}, order 5001: accepted {PLACE_ANCHOR}; "
+        f"cancelled by you {PROMPT_ANCHOR}, intent {c1}"]
+    assert _section_for_parent(html, p1) is None
+    assert _CANCEL_FORM not in html
+
+
+def test_t3_2_imnm_shape_the_gate_runs_on_displaced_cycles_too(
+        seeded_db, monkeypatch, clocks):
+    """THE IMNM SHAPE (CHARC 2A, RD item 3). Three cycles on one latch: P1
+    accepted then cancelled (displaced), P2 accepted and gone with NO cancel
+    (displaced), P3 the childless current place. A 2B implementation -- the gate
+    on the current cycle only -- fails (i): the false downward buttons stay on
+    exactly the displaced rows the ruling was written about."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    book: list = []
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        c1 = _accept_then_cancel_via_book(client, cfg, book, p1, "5001")
+        p2 = _clone_intent(cfg, p1, idempotency_key="p2",
+                           recorded_ts="2026-07-29T23:59:58")
+        book[:] = [_order(order_id="5002")]
+        _accept(client, p2)
+        book.clear()
+        p3 = _clone_intent(cfg, p1, idempotency_key="p3",
+                           recorded_ts="2026-07-29T23:59:59")
+        html = _fragment(client, PROMPT_ANCHOR).text
+    # (i) P1, displaced and explained by its cancel row.
+    assert _explained_lines(html) == [
+        f"FTRE place intent {p1}, order 5001: accepted {PLACE_ANCHOR}; "
+        f"cancelled by you {PROMPT_ANCHOR}, intent {c1}"]
+    assert _section_for_parent(html, p1) is None
+    # (ii) P2, displaced and UNEXPLAINED: RD's correction headline, which asserts
+    # nothing from absence, in place of the "correctable DOWNWARD" one.
+    p2_section = _section_for_parent(html, p2)
+    assert p2_section is not None
+    assert _headline(p2_section) == _w1("5002", PLACE_ANCHOR)
+    assert "correctable DOWNWARD" not in p2_section
+    # (iv) P3, the childless current place: its FIRST-ANSWER prompt, untouched.
+    p3_section = _section_for_parent(html, p3)
+    assert p3_section is not None
+    assert "DID THIS ORDER REACH THE BROKER?" in p3_section
+
+
+def test_t3_3_w1_replaces_the_absence_headline_on_an_unexplained_accepted_row(
+        seeded_db, monkeypatch, clocks):
+    """RD item 4: the correction control may NOT assert or insinuate rejection
+    from absence. The options stay the three non-accepted enum values (ledger
+    IC-2: an accepted answer needs an observed side an absence form lacks)."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    book = [_order(order_id="5001")]
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        _accept(client, p1)
+        book.clear()
+        html = _fragment(client, PROMPT_ANCHOR).text
+    section = _section_for_parent(html, p1)
+    assert section is not None
+    assert _headline(section) == _w1("5001", PLACE_ANCHOR)
+    assert "NO matching resting order" not in section
+    assert _radio_values(section) == {
+        "not_submitted", "rejected_by_broker", "unknown"}
+    assert "CORRECT THE RECORDED OUTCOME" in section
+
+
+def test_t3_4_the_earliest_cancel_row_is_the_record_and_the_count_is_disclosed(
+        seeded_db, monkeypatch, clocks):
+    """RD item 5: a cancel is an EVENT with no un-cancel, so a later row naming
+    the same order is a replay and can only move the date later and wrong. The
+    EARLIEST row by `_order_key` is the record; the count is disclosed. A
+    latest-wins build shows `2026-07-30, intent <C2>` and fails."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    book: list = []
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        c1 = _accept_then_cancel_via_book(client, cfg, book, p1, "5001")
+        _clone_intent(cfg, c1, idempotency_key="c2",
+                      recorded_ts="2026-07-30T09:00:00",
+                      action_session_date="2026-07-30")
+        html = _fragment(client, PROMPT_ANCHOR).text
+    lines = _explained_lines(html)
+    assert lines == [
+        f"FTRE place intent {p1}, order 5001: accepted {PLACE_ANCHOR}; "
+        f"cancelled by you {PROMPT_ANCHOR}, intent {c1} (2 cancel rows name "
+        "this order; the earliest is the record)"]
+    assert "2026-07-30" not in lines[0]
+
+
+def test_t3_5_a_resting_accepted_order_is_not_gated(
+        seeded_db, monkeypatch, clocks):
+    """GUARD (G4). The accepted order is still resting, so its absence is not
+    the question: the shipped PRESENCE correction stays and nothing is
+    explained."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    book = [_order(order_id="5001")]
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        _accept(client, p1)
+        html = _fragment(client, PROMPT_ANCHOR).text
+    section = _section_for_parent(html, p1)
+    assert section is not None
+    assert "YES - the broker accepted order 5001" in section
+    assert "latch-validity-explained" not in html
