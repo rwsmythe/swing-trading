@@ -247,8 +247,10 @@ def test_sweep_recomputes_buckets_per_variable(tmp_path):
 
 
 def test_sweep_at_current_value_matches_persisted_distribution(tmp_path):
-    """The sweep point matching current_value MUST reproduce the persisted
-    bucket counts exactly (no substitution applied at current_value)."""
+    """For rows evaluated BEFORE D84 (this fixture's shape), the sweep point
+    matching current_value MUST reproduce the persisted bucket counts exactly
+    (no substitution applied at current_value). A gate row recomputes a post-D84
+    risk-flagged A+ as skip through the pre-D84 mirror, an expected divergence."""
     conn = sqlite3.connect(":memory:")
     _plant_eval_runs_with_known_distribution(conn, aplus=2, watch=3, skip=4)
     var = SweepVariable(

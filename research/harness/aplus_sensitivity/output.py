@@ -77,8 +77,10 @@ def write_sensitivity_markdown(result: SweepResult, path: Path) -> None:
         "- Sweep is 1D (one variable at a time); cross-coupling NOT modeled.",
         (
             "- Counts at current_value match the persisted bucket distribution"
-            " (parity invariant); delta_aplus / delta_watch are relative to that"
-            " anchor."
+            " for rows evaluated BEFORE D84 (parity invariant); a gate row"
+            " recomputes a post-D84 risk-flagged A+ as skip through the pre-D84"
+            " mirror, an expected divergence. delta_aplus / delta_watch are"
+            " relative to that anchor."
         ),
         (
             "- **V1 LIMITATION: Threshold variables (kind = threshold_additive |"
