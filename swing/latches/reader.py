@@ -337,8 +337,13 @@ def structural_inputs_from_rows(
     on the live DB carry one identical 18-criterion roster, so this fires only
     on genuinely malformed data.
 
-    THE RISK LAYER IS DROPPED HERE (L4) -- `risk_feasibility` is a fact about
-    the operator's capital, not about the setup's structure.
+    THE RISK LAYER IS NOT AN INPUT TO THE STRUCTURAL GATE, so this reduction
+    projects it away (L4). `structural_gate_passes` reads TT + VCP only, and
+    since D84 `bucket_for` consults no risk result either: a `risk_feasibility`
+    fail is carried as a displayed flag, never as a bucket or gate outcome.
+    Rows persisted before the D84 boundary can carry `bucket='skip'` from the
+    retired risk pre-filter while being structurally A+; this reduction reads
+    them correctly because it never reads the bucket label.
     """
     tt_names: dict[str, str] = {}
     vcp_names: dict[str, str] = {}
@@ -352,7 +357,7 @@ def structural_inputs_from_rows(
             tt_names[name] = result
         elif layer == "vcp":
             vcp_names[name] = result
-        # `risk` is deliberately ignored, not counted.
+        # `risk` is not a structural layer; projected away (see L4).
     if not saw_any:
         # An `excluded` (held-position) or `error` sentinel: the evaluator
         # synthesises those with `criteria=()`, so zero rows means the ticker
