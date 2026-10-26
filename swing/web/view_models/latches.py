@@ -3043,8 +3043,9 @@ def _validity_prompt_for(latch, *, join, framework, place, digest,
     # ABSENCE. "Filled" is deliberately NOT an option: it is not in
     # LATCH_VALIDITY_OUTCOMES, so offering it would force the handler to
     # mislabel or discard the answer -- and it does not need to be offered,
-    # because the fill short-circuit already covers that case from data the
-    # framework owns.
+    # because the caller's accepted-row gate already settles a fill-cleared
+    # place from data the framework owns (`fill_vouches_for`), before any
+    # prompt is built.
     #
     # On an ACCEPTED row whose order is gone and unexplained (`accepted_gone`,
     # D94 G6) the headline is RD's W1: an absent order is not evidence of a
@@ -3077,7 +3078,17 @@ def _displaced_cycle_prompts(latch, *, intents, current, digest,
                              snapshot_ts, anchor_iso, prior_intent_id,
                              resting_order_ids=frozenset(), explained=None,
                              ledger_cancels=None):
-    """One control per DISPLACED place cycle -- ANSWERED OR NOT.
+    """One control per DISPLACED place cycle -- ANSWERED OR NOT -- unless the
+    accepted-row gate EXPLAINS it.
+
+    AN ANSWERED CYCLE RUNS `_accepted_row_gate`, the same function the current
+    cycle runs (CHARC D94 2A). An accepted row whose order a recorded cancel
+    explains gets the read-only line (appended to `explained`) and NO control;
+    an accepted row whose order is absent from the resting book and unexplained
+    keeps its correction control under RD's W1 headline, and its gate is
+    appended to `ledger_cancels` for the ledger-keyed cancel control. By the
+    fill rung's forward guard a fill never explains a displaced cycle while a
+    later place exists.
 
     A CHILDLESS DISPLACED CYCLE MAY NOT VANISH (RD ruling, 2026-07-30). It used
     to be skipped outright, so a FAILED FIRST ATTEMPT stayed permanently
@@ -3363,6 +3374,12 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         evidence is a real position rather than an absence, and it is also the
         one outcome NO testimony may overturn, so no testimony control is
         offered on a fill-settled place, and
+      * for an ACCEPTED row whose order is absent from the resting book, the
+        absence is UNEXPLAINED. A `cancel` row on this latch naming that order
+        explains it (the read-only line, no control); an unexplained one keeps
+        its correction under RD's W1 headline and its gate is returned in
+        `ledger_cancels`, where the caller builds the ledger-keyed cancel
+        control. The same gate runs on displaced cycles, and
       * the ticker's broker status is not INDETERMINATE (the broker's own answer
         is unknown, so the fragment renders its indeterminate note and no
         prompt), and
@@ -3440,7 +3457,9 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         # attribution, a same-session deferral, a fill settlement or a degraded
         # current prompt all silently removed it -- so on several branches an
         # erroneous, FLATTERING `accepted_by_broker` stayed browser-uncorrectable
-        # after all. It is generated FIRST, from the ledger alone.
+        # after all. It is generated FIRST, from the ledger (plus the resting
+        # set its accepted-row gate compares against), never behind the
+        # current prompt.
         #
         # AND A CHILDLESS DISPLACED CYCLE GETS A FIRST-ANSWER FORM (RD ruling,
         # 2026-07-30): skipping it left a failed first attempt permanently
