@@ -270,3 +270,29 @@ are corrected without another round).
 `run_round.sh`, `assert_round.sh`.
 
 **Spend (Reviewer A, executing):** round 1 287,340 + round 2 273,468 = **560,808** tokens.
+
+### Round-2 gate: the orchestrator's rulings, the fixes, the final head. Author of the ruling: the orchestrator.
+
+> R2-1 and R2-2: FIX, comment-only, with no new round (post-convergence minors).
+> - R2-1: the `_accepted_row_gate` docstring narrows to "a displaced cycle is explained by a cancel row or not at all, while a later place exists".
+> - R2-2: the `_explained_line` docstring names each date's source: accepted = the validity row's action_session_date; filled = latch.clear_session; cancelled = the cancel row's action_session_date.
+> The other governing-child spellings (classification.py:577, cli_latches.py:467, swing/trades/latched_origin.py:1476 and :1702) are outside the rider. They are BANKED to me as a register candidate; do not touch them.
+> Outcome: CONVERGED at Reviewer A round 2.
+
+- **Fix:** `a6a2e53b` docs(web): R2-1, R2-2. Comments only, in `swing/web/view_models/latches.py`;
+  `%(trailers)` empty. R2-1 adds "while a later place exists" and the I-4 case it carves out
+  (after a later decline the displaced place is still the latest place, and a fill can explain it).
+  R2-2 names each date's source as ruled.
+- **Banked (orchestrator, register candidate):** the four other governing-child spellings named
+  above. Not touched.
+- **Final-head suite** (`-m "not slow" -q -n 8 -p no:cacheprovider`, code head `a6a2e53b`, the sha
+  on the file's first line; `exec\cell2\final-head-suite.txt`): `1 failed, 15557 passed,
+  13 skipped` in 810.02 s. The one red is the known out-of-arc wall-clock test,
+  `tests/pipeline/test_ohlcv_cache_concurrent_fetch_no_race.py::test_ohlcv_cache_get_or_fetch_invariant`,
+  `ValueError: No data for AAPL` (fixed on main at `00d2d818`; not fixed here). No other red.
+- **Ruff:** `ruff check swing/` clean. **Envelope:**
+  `git diff --stat 8acea975..HEAD -- swing/data swing/trades swing/web/routes scripts research`
+  EMPTY; the `swing/` files changed are still `swing/latches/classification.py`,
+  `swing/web/view_models/latches.py`, `swing/web/templates/partials/latch_orders.html.j2`.
+
+**OUTCOME: CONVERGED at Reviewer A round 2.**
