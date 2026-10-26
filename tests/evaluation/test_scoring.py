@@ -241,3 +241,98 @@ def test_the_expected_criterion_rosters_match_the_real_evaluator(sample_config):
     # gate never reads (L4) -- and that it has not quietly merged into `vcp`.
     assert risk_names == {"risk_feasibility"}
     assert not (EXPECTED_TT_CRITERIA & EXPECTED_VCP_CRITERIA)
+
+
+# ===========================================================================
+# D84 T2 -- E2 with E-d REVERSED: the layer-keyed risk predicates over ONE
+# reduced form. "Risk passes" needs an EVALUATED layer with no non-pass; "risk
+# flagged" (H4's conjunct) needs at least one non-pass; an EMPTY layer is
+# NEITHER (RD: vacuous truth is the zero-data-renders-clean failure).
+# ===========================================================================
+
+
+def test_risk_layer_passes_only_on_an_evaluated_layer_with_no_non_pass():
+    """R-T2.1."""
+    from swing.evaluation.scoring import (
+        RiskInputs,
+        risk_layer_flagged,
+        risk_layer_passes,
+    )
+
+    passing = RiskInputs(risk_result_count=1, risk_non_pass_count=0)
+    assert risk_layer_passes(passing) is True
+    assert risk_layer_flagged(passing) is False
+    flagged = RiskInputs(risk_result_count=1, risk_non_pass_count=1)
+    assert risk_layer_passes(flagged) is False
+    assert risk_layer_flagged(flagged) is True
+
+
+def test_an_na_risk_result_is_a_NON_PASS():
+    """R-T2.2 -- RD (vi). An adapter that counts only `fail` lets `na` pass."""
+    from swing.evaluation.scoring import (
+        RiskInputs,
+        risk_inputs_from_criteria,
+        risk_layer_flagged,
+        risk_layer_passes,
+    )
+
+    rows = [_make("trend_template", "pass", "TT1_above_150_200"),
+            _make("risk", "na", "risk_feasibility")]
+    inputs = risk_inputs_from_criteria(rows)
+    assert inputs == RiskInputs(risk_result_count=1, risk_non_pass_count=1)
+    assert risk_layer_flagged(inputs) is True
+    assert risk_layer_passes(inputs) is False
+
+
+def test_an_EMPTY_risk_layer_is_NEITHER_pass_NOR_flag():
+    """R-T2.3 -- E-d REVERSED (RD, cell 2): the predicate's empty-layer pin.
+
+    "Every result passes" is vacuously true of no results, and vacuous truth is
+    exactly the zero-data-renders-clean failure: an unmeasured layer is closer
+    to `na` than to `pass`, so it is neither a pass nor a flag.
+    """
+    from swing.evaluation.scoring import (
+        RiskInputs,
+        risk_inputs_from_criteria,
+        risk_layer_flagged,
+        risk_layer_passes,
+    )
+
+    empty = RiskInputs(risk_result_count=0, risk_non_pass_count=0)
+    assert risk_layer_passes(empty) is False
+    assert risk_layer_flagged(empty) is False
+    rows = _tt_results(8, ()) + _vcp_results(1)
+    assert risk_inputs_from_criteria(rows) == empty
+
+
+def test_RiskInputs_rejects_an_incoherent_count():
+    """R-T2.4 -- "flagged" implies "evaluated" by construction."""
+    import pytest
+
+    from swing.evaluation.scoring import RiskInputs
+
+    with pytest.raises(ValueError):
+        RiskInputs(risk_result_count=0, risk_non_pass_count=1)
+    with pytest.raises(ValueError):
+        RiskInputs(risk_result_count=-1, risk_non_pass_count=0)
+    with pytest.raises(ValueError):
+        RiskInputs(risk_result_count=1, risk_non_pass_count=-1)
+
+
+def test_risk_inputs_from_criteria_reads_persisted_CriterionResult_rows():
+    """The ONE counting adapter serves the persisted read too (CriterionResult
+    carries `.layer` / `.result`), and it is LAYER-keyed, never name-keyed: a
+    second risk-layer criterion counts."""
+    from swing.data.models import CriterionResult
+    from swing.evaluation.scoring import RiskInputs, risk_inputs_from_criteria
+
+    rows = [
+        CriterionResult(criterion_name="risk_feasibility",
+                        layer="risk", result="pass", value="", rule=""),
+        CriterionResult(criterion_name="risk_other",
+                        layer="risk", result="fail", value="", rule=""),
+        CriterionResult(criterion_name="adr",
+                        layer="vcp", result="fail", value="", rule=""),
+    ]
+    assert risk_inputs_from_criteria(rows) == RiskInputs(
+        risk_result_count=2, risk_non_pass_count=1)

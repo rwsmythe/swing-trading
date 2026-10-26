@@ -93,6 +93,68 @@ def structural_gate_passes(inputs: StructuralInputs, config: Config) -> bool:
     return inputs.vcp_fail_count == 0
 
 
+@dataclass(frozen=True)
+class RiskInputs:
+    """The reduced form of the RISK layer (D84 E2, E-d reversed).
+
+    `risk_result_count` counts every risk-LAYER result; `risk_non_pass_count`
+    counts those whose result is not `pass` (`fail` AND `na`: RD (vi), an
+    unmeasured result is a non-pass). Layer-keyed, never name-keyed, so the
+    rule holds the day the risk layer has two criteria.
+
+    Three cases, stated ONCE here:
+      - PASSES: at least one risk result AND no non-pass;
+      - FLAGGED: at least one non-pass (H4's "risk non-pass");
+      - EMPTY (no risk result): NEITHER. "Every result passes" is vacuously
+        true of no results, and vacuous truth is the zero-data-renders-clean
+        failure; an unmeasured layer is closer to `na` than to `pass`, so it
+        is neither a pass claim nor a flag (RD, E-d).
+
+    A non-pass count above the result count, or a negative count, is refused,
+    so "flagged" implies "evaluated" by construction.
+    """
+
+    risk_result_count: int
+    risk_non_pass_count: int
+
+    def __post_init__(self) -> None:
+        if self.risk_result_count < 0 or self.risk_non_pass_count < 0:
+            raise ValueError(
+                f"RiskInputs counts must be >= 0; got {self.risk_result_count}, "
+                f"{self.risk_non_pass_count}")
+        if self.risk_non_pass_count > self.risk_result_count:
+            raise ValueError(
+                f"risk_non_pass_count {self.risk_non_pass_count} exceeds "
+                f"risk_result_count {self.risk_result_count}")
+
+
+def risk_layer_passes(inputs: RiskInputs) -> bool:
+    """The risk layer was EVALUATED and every result passed. An empty layer
+    does not pass (see `RiskInputs`)."""
+    return inputs.risk_result_count >= 1 and inputs.risk_non_pass_count == 0
+
+
+def risk_layer_flagged(inputs: RiskInputs) -> bool:
+    """At least one risk-layer result is not `pass` (H4's "risk non-pass").
+
+    Stated once here rather than as `not risk_layer_passes(...)` at each
+    consumer: that spelling would make the EMPTY layer a flag.
+    """
+    return inputs.risk_non_pass_count >= 1
+
+
+def risk_inputs_from_criteria(criteria) -> RiskInputs:
+    """The ONE counting adapter: any iterable of objects carrying `.layer` and
+    `.result` (`Result` in the evaluator, `CriterionResult` on every persisted
+    read) -> `RiskInputs`. Counts rows with `layer == "risk"`, and among them
+    those whose `result != "pass"`."""
+    risk = [c for c in criteria if c.layer == "risk"]
+    return RiskInputs(
+        risk_result_count=len(risk),
+        risk_non_pass_count=sum(1 for c in risk if c.result != "pass"),
+    )
+
+
 def bucket_for(
     trend_template_results: Sequence[Result],
     vcp_results: Sequence[Result],
