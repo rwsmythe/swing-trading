@@ -3260,15 +3260,20 @@ def _intents_by_latch(conn, latches) -> tuple[dict[int, list], frozenset[int]]:
 # A fill explains the place whatever its child says; a recorded cancel explains
 # an accepted row whose order is gone. An explained row's correction control is
 # replaced by a read-only line; an ACCEPTED row whose order is absent from the
-# resting book and unexplained keeps it. The gate kinds, evaluated G1..G6 in
-# order:
+# resting book and unexplained keeps it, on the current cycle only where the
+# shipped ambiguity guard admits a prompt (G6, below). The gate kinds,
+# evaluated G1..G6 in order:
 _GATE_NONE = "none"                            # G3/G4: today's path, unchanged
 _GATE_FILL_CHILDLESS = "fill_settled_childless"  # G1: renders nothing
 _GATE_EXPLAINED_FILL = "explained_fill"        # G2: the read-only fill line;
 #   no correction control and no LEDGER-keyed cancel control. A BOOK control
 #   for that order, if it still rests, stands as shipped (D94 exec R1-1).
 _GATE_EXPLAINED_CANCEL = "explained_cancel"    # G5: the read-only cancel line
-_GATE_UNEXPLAINED = "unexplained"              # G6: correction + ledger cancel
+_GATE_UNEXPLAINED = "unexplained"              # G6, restated (D94 B-01, RD):
+#   "G6 = the W1 correction control WHERE THE SHIPPED AMBIGUITY GUARD ADMITS
+#   A PROMPT, plus ONE ledger-keyed cancel control ALWAYS; where the guard
+#   withholds, the withheld note names the latch and its reason, and the
+#   ledger control still renders."
 
 
 @dataclass(frozen=True)
@@ -3573,10 +3578,13 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         if gate.kind in (_GATE_EXPLAINED_FILL, _GATE_EXPLAINED_CANCEL):
             explained.append(_explained_line(latch, gate))
             continue
-        # UNEXPLAINED: the correction stays (an erroneous acceptance must stay
-        # correctable), and the caller ALSO offers a cancel control keyed on the
-        # ledger's order id -- on either branch, because the gone order is not
-        # the one a presence form would record.
+        # UNEXPLAINED (G6): the correction stays WHERE THE AMBIGUITY GUARD in
+        # `_validity_prompt_for` ADMITS A PROMPT (an erroneous acceptance must
+        # stay correctable), and the caller ALWAYS offers a cancel control keyed
+        # on the ledger's order id -- on either branch, because the gone order
+        # is not the one a presence form would record. It is queued HERE, before
+        # the guard runs, so a withheld prompt (its reason in the withheld note)
+        # still leaves the ledger control (D94 B-01, declared limitation).
         accepted_gone = gate if gate.kind == _GATE_UNEXPLAINED else None
         if accepted_gone is not None:
             ledger_cancels.append(accepted_gone)

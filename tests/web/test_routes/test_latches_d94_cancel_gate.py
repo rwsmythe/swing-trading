@@ -591,6 +591,42 @@ def test_t4_6_the_ledger_keyed_control_keeps_the_htmx_swap_contract(
     assert not html.lstrip().startswith("<tr")
 
 
+def test_t4_8_g6_under_the_ambiguity_guard_keeps_the_ledger_control(
+        seeded_db, monkeypatch, clocks):
+    """B-01, ACCEPTED as a declared limitation (RD + CHARC). G6 restated: the
+    W1 correction control WHERE THE SHIPPED AMBIGUITY GUARD ADMITS A PROMPT,
+    plus ONE ledger-keyed cancel control ALWAYS; where the guard withholds, the
+    withheld note names the latch and its reason, and the ledger control still
+    renders.
+
+    The accepted order 5001 is gone and unexplained, and TWO orders attributable
+    to the same mandate rest (5002, 5003). The guard withholds the correction
+    (no single order id could be recorded) and says so; the ledger control for
+    5001 renders anyway, beside the two shipped book controls. A build that
+    drops the ledger control when the guard withholds fails on the 5001 form."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    book = [_order(order_id="5001")]
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        _accept(client, p1)
+        book[:] = [_order(order_id="5002"), _order(order_id="5003")]
+        html = _fragment(client, PROMPT_ANCHOR).text
+    ids = [f["actual_broker_order_id"] for f in _cancel_forms(html)]
+    assert ids.count("5001") == 1
+    assert sorted(ids) == ["5001", "5002", "5003"]
+    assert _status_notes(html) == [_w2("5001", PLACE_ANCHOR)]
+    assert _section_for_parent(html, p1) is None
+    assert "latch-validity-prompt" not in html
+    assert "CORRECT THE RECORDED OUTCOME" not in html
+    flat = " ".join(html.split())
+    assert ("FTRE: 2 resting orders are attributable to this mandate, so no "
+            "single broker order id could be recorded against it. Resolve the "
+            "duplicates at the broker.") in flat
+
+
 def test_t4_7_a_failed_ledger_read_offers_no_control(
         seeded_db, monkeypatch, clocks):
     """GUARD. A latch whose ledger could not be read builds no gate, so no
