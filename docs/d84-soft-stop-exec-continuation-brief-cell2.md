@@ -162,5 +162,3 @@ Literal block quote, `20261026T172440Z` (the supersession):
 > ONE supersession: the ITEM 1 form note in 20261026T172421Z lost three spans to shell quoting. Everything else in that message stands (item 1 CONFIRMED; A2-03 declined with the sharpened trigger; the merge-gate note on the D84-MERGE-DATE.1 digest). The form note, restated whole:
 > 
 > PreparedOrderVM.sizing (latches.py:244) is annotated 'object | None = None'. Annotate it 'SizingResult | None = None'. The word object hides the contract from the reader and from any type check, and the module already imports from swing.recommendations.sizing at :64 (risk_bound_zero, zero_share_line), so naming SizingResult costs no layer crossing the module has not already made. Prose-level; fold into the round-3 fixes; an annotation is not behaviour, so no RED.
-> 
-> acked 2 message(s); moved inbox -> read.
