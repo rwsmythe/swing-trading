@@ -947,3 +947,176 @@ def test_a_zero_nightly_count_maps_to_None_and_the_place_row_writes(
     finally:
         conn.close()
     assert rows == [("place", None)]
+
+
+# ===========================================================================
+# D84 T7.4 -- the flag's KEY and the attest affordance (P2 (b), CHARC
+# amendment 1's UNION). Keyed on the FIRE's STORED criteria (live AND terminal
+# cards), OR on a LIVE card's own risk-bound `sizing_infeasible`.
+# ===========================================================================
+D84_LEAD = "The framework has no order here: 0 shares at the budget."
+
+
+def _attest_section(html):
+    start = html.index('<section class="latch-attest-prompt')
+    return html[start:html.index("</section>", start)]
+
+
+def test_acceptance_v_the_risk_withheld_card_offers_the_acted_manually_declaration(
+        seeded_db):
+    """R-(v)2 -- CHARC F1-A (2): a risk-withheld card with no declaration
+    affordance IS the refusal the proposal forbids. The new field is True; the
+    attest section offers exactly ONE radio, `acted_manually`, plus the broker
+    order id; the prepared-order section still carries no form and no button."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg)
+    _seed_kod_derivation_session_close(cfg)
+    row = _vm(cfg).rows[0]
+    assert row.risk_flag_attest_available is True
+    assert row.prompt_required is False
+    assert row.attest_options == (
+        ("acted_manually", "I acted on this manually"),)
+    html = _render_card(row)
+    attest = _attest_section(html)
+    assert attest.count('type="radio"') == 1
+    assert 'value="acted_manually"' in attest
+    assert 'name="actual_broker_order_id"' in attest
+    assert D84_LEAD in attest
+    section = _prepared_section(html)
+    assert "<form" not in section and "<button" not in section
+
+
+def _seed_superseding_fire(cfg, *, ticker="KOD"):
+    """A SECOND A+ fire on run 125 with a different pivot, which supersedes the
+    run-121 latch: the run-121 card is TERMINAL and inside the lookback."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) "
+            "VALUES (125, '2026-07-23T17:30:05', '2026-07-23', '2026-07-24', "
+            "1, 1, 0, 0, 0, 0)")
+        cur = conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) "
+            "VALUES (125, ?, 'aplus', 18.0, 20.19, 16.515, 'universe')",
+            (ticker,))
+        conn.execute(
+            "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+            "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+            (cur.lastrowid,))
+    conn.close()
+
+
+def _terminal_row(cfg, monkeypatch, *, risk_result="fail", disposition=None):
+    """The TERMINAL run-121 card. The fixture predates the telemetry epoch, so
+    the classifier says `pre_telemetry`; that one value is rewritten to
+    `never_actionable` (the plan's terminal shape). Attestations and decisions
+    the classifier resolves are left untouched; `disposition` forces one."""
+    from dataclasses import replace as _replace
+
+    import swing.web.view_models.latches as vm_mod
+
+    real = vm_mod.classify_latch
+
+    def _classify(**kwargs):
+        base = real(**kwargs)
+        if disposition is not None:
+            return _replace(base, disposition=disposition)
+        if base.disposition == "pre_telemetry":
+            return _replace(base, disposition="never_actionable")
+        return base
+
+    monkeypatch.setattr(vm_mod, "classify_latch", _classify)
+    _seed_kod_fire(cfg, risk_result=risk_result)
+    _seed_superseding_fire(cfg)
+    rows = _vm(cfg).rows
+    (term,) = [r for r in rows if r.evaluation_run_id == 121]
+    assert term.is_live is False and term.prepared_order is None
+    return term
+
+
+def test_P2_the_flag_and_affordance_ride_the_FIRES_criteria_on_a_TERMINAL_card(
+        seeded_db, monkeypatch):
+    """R-T7.7 -- P2 (b): keyed on the FIRE's stored criteria, so the flag and
+    the affordance survive the latch going terminal ("attest first, then enter"
+    must not become an order he has to obey). The lead paragraph is the D84
+    one, never "went terminal with no action recorded". The four
+    counterfactuals follow as their own tests."""
+    cfg, _ = seeded_db
+    term = _terminal_row(cfg, monkeypatch)
+    assert term.disposition == "never_actionable"
+    assert term.risk_flag_marker == "RISK FLAG"
+    assert term.risk_flag_attest_available is True
+    assert term.attest_options == (
+        ("acted_manually", "I acted on this manually"),)
+    attest = _attest_section(_render_card(term))
+    assert D84_LEAD in attest
+    assert "went terminal with no action recorded" not in attest
+    assert attest.count('type="radio"') == 1
+
+
+@pytest.mark.parametrize("risk_result", ["pass", None])
+def test_P2_counterfactual_a_passing_or_EMPTY_risk_layer_renders_nothing(
+        seeded_db, monkeypatch, risk_result):
+    """R-T7.7 counterfactuals 1-2 -- a risk `pass` row, and NO risk row (E-d,
+    the latch-VM consumer): no marker and no affordance."""
+    cfg, _ = seeded_db
+    term = _terminal_row(cfg, monkeypatch, risk_result=risk_result)
+    assert term.risk_flag_marker == ""
+    assert term.risk_flag_attest_available is False
+    assert term.attest_options == ()
+
+
+def test_P2_counterfactual_an_attestation_WITHDRAWS_the_affordance(
+        seeded_db, monkeypatch):
+    """R-T7.7 counterfactual 3 -- "until an attestation or a decision governs"
+    (CHARC P2). After an `attest` the D84 affordance is gone and the correction
+    affordance takes over, with the full vocabulary. The marker stays: it
+    describes the fire."""
+    cfg, _ = seeded_db
+    attested = _terminal_row(cfg, monkeypatch,
+                             disposition="attested_acted_manually")
+    assert attested.risk_flag_attest_available is False
+    assert attested.attest_correction_available is True
+    assert attested.risk_flag_marker == "RISK FLAG"
+    assert len(attested.attest_options) == 3
+
+
+def test_P2_counterfactual_a_governing_PLACE_withdraws_the_affordance(
+        seeded_db, monkeypatch):
+    """R-T7.7 counterfactual 4 -- a governing `place` (disposition
+    `accepted`) withdraws it."""
+    cfg, _ = seeded_db
+    accepted = _terminal_row(cfg, monkeypatch, disposition="accepted")
+    assert accepted.risk_flag_attest_available is False
+    assert accepted.attest_options == ()
+
+
+def test_the_band_card_offers_the_declaration_without_a_marker(seeded_db):
+    """R-T7.8 -- a GUARD over CHARC amendment 1's leg (b). The BAND: the risk
+    criterion PASSES at the pivot (pivot 100.00, stop 63.00: one share risks
+    $37.00 against the $37.50 budget) while the limit
+    `mandate_limit_price(zone_cap_for_pivot(100.0))` = 103.00 risks $40.00, so
+    the card sizes to ZERO on the RISK leg (the position cap allows 10).
+    Without leg (b) a manual act in the band would be UNRECORDABLE: no
+    framework order, no affordance, and no later prompt. The marker stays
+    criteria-only (P1): the criterion passed, so NO marker."""
+    from swing.latches.constants import mandate_limit_price, zone_cap_for_pivot
+
+    assert mandate_limit_price(zone_cap_for_pivot(100.0)) == 103.00
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="pass", ticker="BAND", pivot=100.00,
+                   stop=63.00, close=99.0)
+    _seed_kod_derivation_session_close(cfg, price=99.0, ticker="BAND")
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.withheld_reason == "sizing_infeasible"
+    assert po.withheld_detail == (
+        "0 shares at the $37.50 budget; 1 share risks $40.00 (1.1x budget) at "
+        "limit 103.00; above budget if you proceed")
+    assert row.risk_flag_marker == ""
+    assert row.risk_flag_attest_available is True
+    assert row.attest_options == (
+        ("acted_manually", "I acted on this manually"),)

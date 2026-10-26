@@ -74,7 +74,7 @@
   {% endif %}
 </section>
 {% endif %}
-{% if row.prompt_required or row.attest_correction_available %}
+{% if row.prompt_required or row.attest_correction_available or row.risk_flag_attest_available %}
 {# THE ATTESTATION PROMPT rides on the DISPOSITION, and on exactly one:
    `discipline_lapse`. The cell has ALREADY been scored as a lapse -- attesting
    is the operator's opportunity to CORRECT it, not a request for permission to
@@ -93,9 +93,17 @@
   <p>Recorded: <strong>{{ row.attested_disposition }}</strong>. If that is not
      what happened, answer again - your LATEST answer governs and nothing is
      overwritten.</p>
-  {% else %}
+  {% elif row.prompt_required %}
   <p>This mandate went terminal with no action recorded. If that is wrong, say
      what happened - the ledger will believe you.</p>
+  {% else %}
+  {# D84 (F1-A, CHARC E-i): the DECLARATION on a risk-flagged card. Distinct
+     from the lapse paragraph above, which is false on a live risk-withheld
+     card. It is never inside the prepared-order section, which still carries
+     no control. #}
+  <p>The framework has no order here: 0 shares at the budget. If you acted at
+     the broker, declare it below with the broker order id. The ledger scores
+     it as your declaration, outside the agreement rate.</p>
   {% endif %}
   <form hx-post="/latches/intent" hx-target="this" hx-swap="outerHTML"
         hx-headers='{"HX-Request": "true"}'>

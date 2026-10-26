@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass, fields
 from datetime import UTC, date, datetime, timedelta
 
+from swing.data.repos.candidates import fetch_candidate_by_id
 from swing.data.repos.latch_order_intents import list_intents_for_latch
 from swing.data.repos.risk_policy import get_active_policy
 from swing.evaluation.dates import (
@@ -54,6 +55,11 @@ from swing.latches.reader import (
     count_session_recorded_closes,
     latest_recorded_close_stamp,
     load_last_closes,
+)
+from swing.evaluation.scoring import (
+    RiskInputs,
+    risk_inputs_from_criteria,
+    risk_layer_flagged,
 )
 from swing.recommendations.sizing import risk_bound_zero, zero_share_line
 from swing.web.view_models.journal import _base_banner_fields
@@ -321,6 +327,16 @@ class LatchRowVM:
     lapse_countdown: str = ""
     lapse_detail: str = ""
     unverifiable_label: str = ""
+    # ===== D84 T7.4 (P1, P2 (b), CHARC amendment 1) ======================
+    # The criteria-only MARKER (`zero_share_line(risk=...)`), keyed on the
+    # FIRE's STORED risk layer: `RISK FLAG` on a flagged layer, `""` on a
+    # passing layer, an EMPTY layer or a failed read. No sizing numbers.
+    risk_flag_marker: str = ""
+    # The `acted_manually` declaration affordance on a risk-flagged card. The
+    # key is a UNION: the fire's flagged risk layer, OR a LIVE card whose own
+    # result is `sizing_infeasible` with the RISK leg the zero -- in either
+    # case only while no attestation and no decision governs.
+    risk_flag_attest_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -977,10 +993,38 @@ def _unverifiable_label(latch: Latch) -> str:
     return f"UNVERIFIABLE: {tail}" + (f" ({named})" if named else "")
 
 
+def _risk_flag_attest_available(
+        latch: Latch, *, risk_inputs, prepared_order, disposition) -> bool:
+    """The D84 declaration affordance's key: a UNION (CHARC amendment 1).
+
+    (a) the FIRE's stored risk layer is FLAGGED (P2 (b)) -- live AND terminal
+        cards, so "attest first, then enter" never becomes an order he must
+        obey; OR
+    (b) the card is LIVE and its own result is `sizing_infeasible` with the
+        RISK leg the zero -- the band where the criterion PASSED at the pivot
+        but the limit sizes to zero, which has no framework order, no marker
+        and no later prompt, so without (b) a manual act there is unrecordable.
+    Either way only while NO attestation and NO decision governs (CHARC P2:
+    "until an attestation or a decision governs").
+    """
+    if _attested(disposition):
+        return False
+    if disposition is not None and disposition.disposition in (
+            "accepted", "declined"):
+        return False
+    fire_flagged = risk_inputs is not None and risk_layer_flagged(risk_inputs)
+    live_risk_zero = bool(
+        latch.is_live and prepared_order is not None
+        and prepared_order.withheld_reason == "sizing_infeasible"
+        and prepared_order.withheld_heading == _RISK_FLAG_HEADING)
+    return fire_flagged or live_risk_zero
+
+
 def _build_row(latch: Latch, *, quote, views, provenance=None,
                prepared_order=None, disposition=None,
                prior_intent_id: str = "",
-               lapse_sessions: int = DEFAULT_CRITERIA_LAPSE_SESSIONS) -> LatchRowVM:
+               lapse_sessions: int = DEFAULT_CRITERIA_LAPSE_SESSIONS,
+               risk_inputs: RiskInputs | None = None) -> LatchRowVM:
     """`quote` is `(price, asof_iso)` from the READ-ONLY last-close source, or
     `None`. `provenance` is the `CloseProvenance` for that quote, or `None`.
 
@@ -995,6 +1039,20 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
     zone_position = _zone_position(price, latch)
     price_asof, price_asof_basis = _price_asof_claim(quote, provenance)
     prompt = bool(disposition is not None and disposition.prompt_required)
+    risk_attest = _risk_flag_attest_available(
+        latch, risk_inputs=risk_inputs, prepared_order=prepared_order,
+        disposition=disposition)
+    if prompt or _attested(disposition):
+        attest_options = tuple(sorted(
+            (value, _ATTEST_OPTION_LABELS[value])
+            for value in LATCH_ATTESTED_DISPOSITIONS))
+    elif risk_attest:
+        # THE D84 DECLARATION, and ONLY it: the framework has no order here,
+        # so the one honest answer to offer is "I acted on this manually".
+        attest_options = (
+            ("acted_manually", _ATTEST_OPTION_LABELS["acted_manually"]),)
+    else:
+        attest_options = ()
     return LatchRowVM(
         ticker=latch.identity.ticker,
         fire_date=latch.anchor.isoformat(),
@@ -1045,11 +1103,7 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
         # It is offered BECAUSE the cell has already been scored as a lapse, and
         # attesting is the operator's opportunity to CORRECT it -- so the option
         # set is exactly the attestation vocabulary and nothing more.
-        attest_options=(
-            tuple(sorted(
-                (value, _ATTEST_OPTION_LABELS[value])
-                for value in LATCH_ATTESTED_DISPOSITIONS))
-            if prompt or _attested(disposition) else ()),
+        attest_options=attest_options,
         prior_intent_id=prior_intent_id,
         attest_correction_available=_attested(disposition),
         attested_disposition=(
@@ -1058,6 +1112,10 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
         lapse_countdown=_lapse_countdown(latch, sessions=lapse_sessions),
         lapse_detail=_lapse_detail(latch),
         unverifiable_label=_unverifiable_label(latch),
+        risk_flag_marker=(
+            "" if risk_inputs is None
+            else (zero_share_line(risk=risk_inputs) or "")),
+        risk_flag_attest_available=risk_attest,
     )
 
 
@@ -1070,6 +1128,32 @@ def _attested(disposition) -> bool:
     """
     return bool(disposition is not None
                 and disposition.disposition.startswith("attested_"))
+
+
+def _panel_risk_inputs(conn, displayed) -> dict[int, RiskInputs | None]:
+    """The FIRE's stored risk layer per DISPLAYED latch (live AND terminal),
+    reduced through the ONE counting adapter (D84 T7.4, P2 (b); CHARC P1: "the
+    same adapter P2 uses").
+
+    `fetch_candidate_by_id` returns a `CitedCandidate` WRAPPER, so the hydrated
+    criteria are at `.candidate.criteria`. A6: a failed read logs and yields
+    None for that latch, which renders no flag and no affordance; it never
+    degrades the panel.
+    """
+    out: dict[int, RiskInputs | None] = {}
+    for latch in displayed:
+        cid = latch.identity.candidate_id
+        try:
+            cited = fetch_candidate_by_id(conn, cid)
+            out[cid] = (
+                None if cited is None
+                else risk_inputs_from_criteria(cited.candidate.criteria))
+        except Exception as exc:  # noqa: BLE001 -- A6: never 500 the panel
+            _log.warning(
+                "latch panel risk-layer read degraded for candidate %s: %s",
+                cid, exc)
+            out[cid] = None
+    return out
 
 
 def _within_display_lookback(latch: Latch, horizon_session: date) -> bool:
@@ -1232,6 +1316,7 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
         # `views_by_latch` is narrowed to THIS session for the card's telemetry
         # echo; the classifier reads the latch's whole covered window, and
         # handing it the narrowed set would discard yesterday's actionable view.
+        risk_inputs = _panel_risk_inputs(conn, displayed)
         dispositions, priors = _panel_dispositions(
             conn, displayed,
             views_by_latch=_load_all_views(conn, displayed), health=health,
@@ -1258,6 +1343,7 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
                 lapse_sessions=getattr(
                     getattr(cfg, "latches", None), "criteria_lapse_sessions",
                     DEFAULT_CRITERIA_LAPSE_SESSIONS),
+                risk_inputs=risk_inputs.get(latch.identity.candidate_id),
             )
 
         rows = [
