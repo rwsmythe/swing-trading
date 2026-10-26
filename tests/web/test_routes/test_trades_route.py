@@ -4981,3 +4981,76 @@ def test_b1_entry_form_asides_default_collapsed(seeded_db, monkeypatch):
         f"expected exactly 8 <summary> toggles (one per aside); "
         f"got {text.count('<summary>')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# D84 T8 steps 3-4 -- the entry form and its sizing hint STATE the zero on the
+# H4 manual path (RD floor (1); CHARC E-e). The entry form sizes on the RAW
+# current equity ($1,200 here: the unfloored entry-form sizing is BANKED, not
+# changed), so a KOD-shaped entry (104.00 / 29.81) is a risk-bound zero.
+# ---------------------------------------------------------------------------
+_KOD_ENTRY_LINE = (
+    "0 shares at the $6.00 budget; 1 share risks $74.19 (12.4x budget) at "
+    "entry 104.00; above budget if you proceed")
+
+
+def _seed_kod_watchlist(cfg, monkeypatch, *, live_price):
+    from datetime import datetime
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="KOD", added_date="2026-10-20",
+                last_qualified_date="2026-10-22", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-10-22",
+                entry_target=104.0, initial_stop_target=29.81,
+                last_close=98.46, last_pivot=104.0, last_stop=29.81,
+                last_adr_pct=6.0, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "KOD": PriceSnapshot(
+                ticker="KOD", price=live_price, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+
+
+def test_the_entry_form_states_the_zero_not_enter_a_valid_price(
+        seeded_db, monkeypatch):
+    """R-E3.3 -- with VALID prices and a zero-share geometry the form states the
+    zero; "Enter a valid entry price" is reserved for INVALID prices (and that
+    guard half still shows it)."""
+    import html as _html
+
+    cfg, cfg_path = seeded_db
+    _seed_kod_watchlist(cfg, monkeypatch, live_price=104.0)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=KOD")
+    assert r.status_code == 200
+    body = _html.unescape(r.text)
+    assert _KOD_ENTRY_LINE in body
+    assert "Enter a valid entry price" not in body
+
+
+def test_the_entry_form_still_asks_for_valid_prices_when_they_are_invalid(
+        seeded_db, monkeypatch):
+    """R-E3.3 guard half -- the live price 25.00 sits BELOW the stop 29.81, so
+    the prices are invalid and the hint still asks for valid ones."""
+    cfg, cfg_path = seeded_db
+    _seed_kod_watchlist(cfg, monkeypatch, live_price=25.0)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=KOD")
+    assert r.status_code == 200
+    assert "Enter a valid entry price and stop to see sizing" in r.text
+    assert "0 shares at the $" not in r.text

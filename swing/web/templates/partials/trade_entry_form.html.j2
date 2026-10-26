@@ -103,6 +103,10 @@
               Suggested max: <strong>{{ vm.suggested_shares }} sh</strong>
               (~${{ '%.2f' | format(vm.risk_dollars) }} risk =
               {{ '%.2f' | format(vm.risk_pct) }}%)
+            {% elif vm.sizing_zero_line %}
+              {# D84 (RD floor (1)): valid prices, zero shares -- the STATED
+                 zero, never "enter a valid price". #}
+              <span class="subtitle">{{ vm.sizing_zero_line }}</span>
             {% else %}
               <span class="subtitle">Enter a valid entry price and stop to see sizing</span>
             {% endif %}
