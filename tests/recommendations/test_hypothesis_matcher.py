@@ -378,7 +378,10 @@ def test_closed_hypothesis_is_not_matched():
         consecutive_loss_tripwire=5, absolute_loss_tripwire_pct=5.0,
         created_at="2026-04-25",
     )
-    cand = _candidate("aplus")
+    # A risk PASS row, so the CLOSED status is the only reason it does not
+    # match: under D84 E-d an A+ with an EMPTY risk layer matches nothing even
+    # while H1 is active, which left this test passing for the wrong reason.
+    cand = _candidate("aplus", [("risk_feasibility", "risk", "pass")])
     matches = match_candidate_to_hypotheses(
         cand, doctrine_defensible_set=DOCTRINE_DEFENSIBLE_MISS_SET,
         registry=registry,
