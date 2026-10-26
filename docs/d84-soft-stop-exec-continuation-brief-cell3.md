@@ -72,3 +72,41 @@ Return as your final chat message:
 - every deviation.
 
 **You never post to a mailbox and never run `scripts/role_mail.py`.** The orchestrator QAs and posts.
+
+## 3. ADDENDUM: RD rules O-1 (author: RD, `20261026T180030Z`; the orchestrator is courier only)
+
+**What to do:**
+1. Transcribe the block quote below into the exec ledger, with RD as author.
+2. Make RD's ONE docs-only clause, prose under 0.3b:
+   - APPEND it to the `classify_candidate_tier` docstring in `context_builder.py`, after the B3 sentence.
+   - Keep B3 verbatim and contiguous.
+   - Choose the Returns-line form RD leaves to you.
+   - The pin count stays NINE. Add no placeholder and move no computation.
+
+**Timing:**
+- If round 4 has not launched, make the clause before round 4, so round 4 reviews it.
+- If round 4 is running or done, make it after round 4, as a prose fix with no new round. Prose never re-opens the loop.
+
+Either way, re-run the full suite on the final head, stamped with the head SHA. The minervini and H5 sites need no change; they are RD's own precondition items.
+
+Literal block quote:
+
+> PRIMARY rd on O-1 (20261026T175730Z item 1). Every site read on d84-exec at aa478cd5.
+> 
+> RULING: the existing precondition covers the pre-D84-row direction by OBLIGATION, not by DESCRIPTION, and ONE sentence in the tree reads false in that direction from the merge. So: one docs-only clause in D84 under 0.3b (T11-class prose, fixed without a round -- your branch 2), and the rest goes to my own re-use precondition line and the VII.F boundary note at the merge. The arc does not re-open; no computation moves (CHARC C1 stands); pin count stays NINE.
+> 
+> WHY NOT "covered". The nine pins say "re-align before any re-use", which is direction-agnostic as an obligation. But every pinned sentence DESCRIBES the mirror direction (a mirror pinned to the pre-D84 gate against moved production), and B3 describes the post-boundary direction (tier 2 over-assigned to post-D84 rows). The pre-D84-row direction has no mirror to re-align: the comparator's PRODUCTION side moved under persisted rows. A re-aligner following the text as written would make post-boundary rows tier 1 and leave pre-boundary risk-fail rows tier 2, which is the right TIER -- and then read a deterministic mismatch on every one of them as a surrogate condition. That is the sentence that goes false.
+> 
+> THE ONE SITE: context_builder.py classify_candidate_tier docstring (row 6, my B3 sentence; same file, so no new pin). The docstring's "Tier 2 = CONDITIONAL via surrogate" (the Returns line and the lead) is true pre-D84 and FALSE for a pre-boundary row scored against current evaluate_one: the row was persisted `skip` by the pre-skip and now recomputes to its structural bucket, so the mismatch is certain, not conditional. APPEND after B3, B3 itself verbatim and contiguous:
+> 
+> "The reverse direction holds too: a row evaluated BEFORE D84 whose risk failed was persisted `skip` by the pre-skip, and current production recomputes it to its structural bucket, so for pre-boundary rows tier 2 against CURRENT evaluate_one is an era divergence by construction, not a surrogate condition; the same re-alignment compares pre-boundary tier-2 rows against the pre-D84 mirror (aplus_sensitivity/sweep.py, _bucket_for_substituted) or counts them as era-divergent, never as parity failures."
+> 
+> The Returns line's "CONDITIONAL via surrogate" may stand with that clause in the same docstring, or carry "(pre-boundary rows under the pre-D84 gate)"; the form is yours.
+> 
+> THE OTHER TWO SITES: no sentence owed in the tree, on my read.
+> - minervini screen_eval.py: the pin at :70-72 already says the gate mirror is pre-D84 and re-align before re-use; classify_h1_outcome (:87) carries no claim. The bucket/attribution split (H1 bucket from current evaluate_one, first_rejecting_gate from the pre-D84 mirror) is a re-use precondition item, mine. If SS-2 by meaning finds a sentence asserting the two agree, 0.3b applies as usual.
+> - research/parity (closed H5): run.py:260-300 and compare carry no claim about persisted buckets or eras; the comparator takes one evaluation_run_id, so a pre-boundary run id now diverges on its risk-fail rows. Precondition item, mine.
+> 
+> WHAT I CARRY: my re-use precondition line names both directions and all three harnesses with the mechanism (V2: tier-2 lane fills with era divergence, tier 1 unaffected; H5 comparator: bucket disagreement on pre-boundary run ids; minervini: bucket follows the structural gate, attribution the pre-D84 mirror), and the VII.F boundary note states the rule: a comparison across the boundary is era-keyed on the persisted row's evaluation run date, in BOTH directions.
+> 
+> Nothing further asked of my seat. The executing-return gate stays mine when the return and Reviewer B land.
