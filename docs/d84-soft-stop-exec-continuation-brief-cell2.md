@@ -74,3 +74,33 @@ If a director rules one of them into scope, it reaches you through the orchestra
   - the summed `tokens used`;
   - every deviation.
 - **You never post to a mailbox and never run `scripts/role_mail.py`.** The orchestrator QAs and posts.
+
+## 4. ADDENDUM: CHARC's rulings on the held items 1-3 (author: CHARC, `20261026T164436Z`; the orchestrator is courier only)
+
+**Item 1 is now IN SCOPE.** It is a code change to T7.4's key that CHARC ruled as a FORM correction to his own amendment 1. Section 2's hold on items 1-3 is lifted by this ruling.
+
+**Do this:**
+1. Transcribe the block quote below into the exec ledger as **"amendment 1 CORRECTED"**, author CHARC.
+2. REPLACE (do not annotate) the plan's T7.4 text to match it.
+3. Implement (a) and (b) by TDD, showing each discriminator RED first.
+4. Re-run the full T12 gates.
+
+**Timing:**
+- If round 2's Codex run has NOT launched, do all of this BEFORE round 2, so round 2 reviews it.
+- If round 2 is already running, let it finish. Do NOT apply item 1 then. Return at the gate as briefed, and say that item 1 is pending; the orchestrator folds it into the round-3 fixes.
+
+Items 2 and 3 need no code. Transcribe them as rulings only. Item 3 corrects the record: `seed_fire(` is called by 18 test files, not 10.
+
+The ruling, literal block quote:
+
+> ITEM 1 -- IN SCOPE for D84, as a FORM correction to my own amendment 1 (20261026T084657Z). The GROUND stands; the FORM named a reason where the ground named a fact. Two clauses, both in T7.4's key (_risk_flag_attest_available, view_models/latches.py:996-1020), transcribed as 'amendment 1 CORRECTED' in the exec ledger and REPLACED (not annotated) in the plan's T7.4 text.
+> 
+> (a) Leg (b) keys on the SIZING FACT, not the withheld reason. Today: withheld_reason == 'sizing_infeasible' AND withheld_heading == _RISK_FLAG_HEADING. Rule: live card AND prepared_order.sizing is not None AND risk_bound_zero(prepared_order.sizing) (sizing.py:82). Ground: P3 admits sizing beside BOTH reasons (order_intent.py:293-297); the regime-undeterminable state is the ORDINARY intraday state of a live card (the VM docstring at :194 says so), so under the current form the band affordance exists only after a nightly dated close and never on a card withheld on regime grounds throughout -- the same unrecordable act amendment 1 was written against, behind a different gate. A heading string is a display, not a key; key on the fact it is derived from. The MARKER is unchanged (P1: the criterion passed). Discriminators, RED first: R-T7.8's geometry with regime_order_type=None -> True; the same regime-None card with FEASIBLE sizing -> False (unchanged pre-D84 posture: the offered form arrives with the close); regime-None with a CAP-bound zero -> False; R-T7.8 itself stays green.
+> 
+> (b) Leg (a) is WITHDRAWN while the card OFFERS an order. Rule: fire_flagged AND NOT (prepared_order is not None AND prepared_order.order is not None). Terminal cards (prepared_order None) keep leg (a) -- R-T7.7 unchanged. Ground: the D84 lead paragraph is a statement of fact about THIS card ('The framework has no order here'); on an offered card it is FALSE, and the act is recordable through the offered form's own place/decline path, so the declaration there is false AND redundant -- the E-i class (a true paragraph on one card is false on another; do not reuse it). The MARKER stays on an offered card: the fire's criterion did fail and the marker carries no sizing claim (P1). Reachability: by construction -- real equity rising above the 7,500 floor, or a risk-policy/config edit after the fire (the live path). A declared band is still a band (P2's own rule). Discriminators, RED first: fire flagged + live card with an order -> attest False, marker renders; fire flagged + live withheld card -> True; fire flagged + terminal -> True.
+> 
+> ITEM 2 -- CONFIRMED: computed. The roster's persisted test is 'built from a DB row by a _row_to_* mapper or a repo/reader row loop' (test_22f_inv_model_roster.py:12-15). RiskInputs has ONE constructor in swing/ by grep ('RiskInputs(' -> scoring.py:154 only), the counting adapter risk_inputs_from_criteria; the object is a reduction with no row and no CHECK to quote. The LATER_ARC_ROSTER comment carries the arc and the constructing site, the form the docstring requires. The 'reached from ...' clause in the comment is a reachability claim the test's DECLARED BOUND says it does not prove -- fine as a comment, not load-bearing.
+> 
+> ITEM 3 -- FORM PASSES. The default risk_result='pass' mirrors production: evaluator.py:51 evaluates risk_feasibility on EVERY candidate, LAYER='risk' (criteria/risk_feasibility.py:8), and the fixture's default bucket is aplus, so an aplus candidate with no risk row is a shape production never writes post-boundary; None names the exceptional shape explicitly -- the right polarity (production shape by default, the exception by name). Count correction, with method: 18 test files call seed_fire( (grep -rl 'seed_fire(' tests), not 10; all green per your report. Noted, no finding: the fixture INSERT omits value and rule, which production writes (repos/candidates.py:79-84); the counting adapter reads layer and result only, so nothing D84 reads is affected -- a future reader of those two columns through this fixture would be.
+> 
+> Evidence read at this seat: latches.py:130-146,190-240,333-345,995-1065,1176-1210; order_intent.py:281-321; sizing.py:82-160; scoring.py:99-157; evaluator.py:51; candidates.py:72-84; the plan T7.4 at 508-560; the roster test 1-40 and 315-329; the seed_fire diff.
