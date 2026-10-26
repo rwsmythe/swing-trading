@@ -787,3 +787,135 @@ def test_a_SUB_CENT_geometry_reaches_sizing_degenerate_WITHOUT_injection():
         "it is a market/quantization geometry, and the operator-facing wording "
         "must not blame the framework for it")
     assert "No order is offered." in res.withheld_detail
+
+
+# --------------------------------------------------------------------------
+# D84 T7.1 -- the zero-share mandate STATES its zero (F1-A, P3, E-f)
+# --------------------------------------------------------------------------
+KOD_PIVOT = 104.00
+KOD_STOP = 29.81
+KOD_LINE = (
+    "0 shares at the $37.50 budget; 1 share risks $77.31 (2.1x budget) at "
+    "limit 107.12; above budget if you proceed")
+
+
+def _kod_latch() -> Latch:
+    from swing.latches.constants import zone_cap_for_pivot
+
+    return _ftre_latch(latched_pivot=KOD_PIVOT, latched_initial_stop=KOD_STOP,
+                       zone_cap=zone_cap_for_pivot(KOD_PIVOT))
+
+
+def _kod_prepared(regime="LIMIT"):
+    return compute_prepared_order(
+        latch=_kod_latch(), regime_order_type=regime,
+        regime_close=None if regime is None else 98.46,
+        regime_close_session=None if regime is None else "2026-10-22",
+        sizing_inputs=_sizing())
+
+
+def test_acceptance_v_a_zero_share_mandate_STATES_its_zero():
+    """R-(v)1 -- the KOD geometry at the floored equity: withheld as
+    `sizing_infeasible` (no vocabulary change), the detail is the ruled flag
+    line, and the result CARRIES the zero-share SizingResult. Never ceiled:
+    there is no order and no quantity 1 anywhere in the result."""
+    res = _kod_prepared()
+    assert res.order is None
+    assert res.withheld_reason == "sizing_infeasible"
+    assert res.withheld_detail == KOD_LINE
+    assert res.sizing is not None and res.sizing.shares == 0
+    assert "1 share risks" in res.withheld_detail
+    assert "BUY 1" not in res.withheld_detail
+
+
+def test_the_offered_derivation_reads_risk_per_share_from_the_SizingResult(
+        monkeypatch):
+    """R-T7.1 -- E-f: ONE source. The offered branch reads `risk_per_share` and
+    `max_risk_dollars` from the SizingResult it sized on, never a local
+    recomputation."""
+    from swing.latches import order_intent as mod
+    from swing.recommendations.sizing import SizingResult
+
+    def _sized(**kw):
+        return SizingResult(
+            shares=9, risk_dollars=36.09, risk_pct=0.48, notional=170.01,
+            notional_pct=2.27, feasible=True, constraint="risk",
+            risk_per_share=123.456, max_risk_dollars=654.321)
+
+    monkeypatch.setattr(mod, "compute_shares", _sized)
+    res = _prepared()
+    assert res.order is not None
+    assert res.order.derivation.risk_per_share == 123.456
+    assert res.order.derivation.max_risk_dollars == 654.321
+
+
+def test_a_cap_bound_infeasible_is_NOT_a_risk_flag():
+    """R-T7.2 -- pivot 1100, stop 1099: the limit 1133.00 risks $34.00 for one
+    share (the risk leg allows 1), but the position cap ($1,125) allows 0. The
+    detail is the formatter's CAP line, never "above budget"."""
+    from swing.latches.constants import zone_cap_for_pivot
+
+    latch = _ftre_latch(latched_pivot=1100.0, latched_initial_stop=1099.0,
+                        zone_cap=zone_cap_for_pivot(1100.0))
+    res = compute_prepared_order(
+        latch=latch, regime_order_type="LIMIT", regime_close=1100.5,
+        regime_close_session="2026-07-27", sizing_inputs=_sizing())
+    assert res.withheld_reason == "sizing_infeasible"
+    assert res.withheld_detail == (
+        "0 shares: one share at limit 1133.00 exceeds the position cap")
+    assert "above budget" not in res.withheld_detail
+    assert res.sizing is not None and res.sizing.shares == 0
+
+
+def test_P3_a_regime_undeterminable_result_CARRIES_the_zero_and_keeps_the_precedence():
+    """R-T7.4 -- CHARC P3 (b): the sizing runs up front (its basis is
+    regime-independent) and rides on the regime-withheld result; 21-B's
+    withheld-reason precedence is unchanged, so the regime fact is never
+    masked. A below-pivot geometry computes no sizing at all."""
+    from swing.recommendations.sizing import risk_bound_zero
+
+    res = _kod_prepared(regime=None)
+    assert res.withheld_reason == "regime_undeterminable"
+    assert res.withheld_detail.startswith(
+        "No prepared order: the price regime is undeterminable")
+    assert res.sizing is not None and res.sizing.shares == 0
+    assert risk_bound_zero(res.sizing) is True
+
+    below = compute_prepared_order(
+        latch=_latch_at(SUB_DOLLAR_PIVOT, SUB_DOLLAR_STOP),
+        regime_order_type=None, regime_close=None, regime_close_session=None,
+        sizing_inputs=_sizing())
+    assert below.withheld_reason == "regime_undeterminable"
+    assert below.sizing is None
+
+
+def test_P3_sizing_is_admitted_beside_two_reasons_ONLY():
+    """R-T7.5 -- CHARC P3: `PreparedOrderResult.sizing` is admitted beside
+    `regime_undeterminable` AND `sizing_infeasible`, and nowhere else.
+    `withheld_reason=None` implies an order (the exactly-one-of check), so the
+    order case covers it."""
+    from swing.recommendations.sizing import compute_shares
+
+    zero = compute_shares(entry=107.12, stop=29.81, equity=7500.0,
+                          max_risk_pct=0.005, position_pct_cap=0.15)
+    for reason in ("limit_below_pivot", "sizing_degenerate"):
+        with pytest.raises(ValueError):
+            PreparedOrderResult(order=None, withheld_reason=reason,
+                                withheld_detail="x", sizing=zero)
+    with pytest.raises(ValueError):
+        PreparedOrderResult(order=_prepared().order, withheld_reason=None,
+                            withheld_detail="", sizing=zero)
+    with pytest.raises(ValueError):
+        PreparedOrderResult(order=None, withheld_reason="sizing_infeasible",
+                            withheld_detail="x", sizing=None)
+    feasible = compute_shares(entry=18.89, stop=14.88, equity=7500.0,
+                              max_risk_pct=0.005, position_pct_cap=0.15)
+    assert feasible.shares > 0
+    with pytest.raises(ValueError):
+        PreparedOrderResult(order=None, withheld_reason="sizing_infeasible",
+                            withheld_detail="x", sizing=feasible)
+    # The two admitted pairings construct.
+    PreparedOrderResult(order=None, withheld_reason="sizing_infeasible",
+                        withheld_detail="x", sizing=zero)
+    PreparedOrderResult(order=None, withheld_reason="regime_undeterminable",
+                        withheld_detail="x", sizing=feasible)
