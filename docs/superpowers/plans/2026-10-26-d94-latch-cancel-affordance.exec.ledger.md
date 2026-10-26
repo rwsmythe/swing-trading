@@ -187,6 +187,7 @@ Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d94-cancel\exec\cell2\`.
 | round | tier / model / effort (banner) | footer | verdict token | `^ERROR` | crit | major | minor | new / reopened | reverts | tokens used | context depth (orchestrator fills) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | strong / `gpt-5.6-sol` / `high` (equal to `~/.codex/strong.config.toml`) | present | the findings token, 2 anchored (double emission); the clean token 0 | 0 | 0 | 2 | 2 | 4 new / 0 reopened | 0 | 287,340 | |
+| 2 | strong / `gpt-5.6-sol` / `high` (equal to `~/.codex/strong.config.toml`) | present | the clean token, 2 anchored (double emission); the findings token 0 | 0 | 0 | 0 | 2 | 2 new / 0 reopened | 0 | 273,468 | |
 
 ### Round 1
 
@@ -218,3 +219,54 @@ Content filter: none ("not a safety-layer refusal or rewrite"). Codex could not 
 **Evidence:** `C:\Users\rwsmy\swing-data\review-transcripts\d94-cancel\exec\round1\`:
 `codex-review-r1.txt` (1,269,903 bytes), `prompt-r1.md` (9,910), `ledger-cut-r1.md` (38,848),
 `diff-r1.txt` (80,652), `codex-exit-r1.txt`, `assertions-r1.txt`, `run_round.sh`, `assert_round.sh`.
+
+### Round 2
+
+**Run by cell 2, after the round-1 rulings (sections 1.2-1.4, 1A, 3A).** Reviewed head
+`73487552`; diff `git diff -U8 8acea975..HEAD -- swing tests` generated on Windows.
+
+**Invocation.** `wsl.exe bash -lc 'bash .../exec/round2/run_round.sh 2'` (LF runner, checked with
+`file`). cwd = the worktree (repo read access, `-s read-only --skip-git-repo-check`); stdin = the
+prompt, the plan-ledger CUT (sections 0-5, lines 1-306, byte-identical to round 1's cut), the
+exec-ledger CUT (sections 1-3A, everything before section 4) and the diff. codex-cli 0.162.1. The
+output and exit files were pre-created Windows-side. The prompt inlines the round-1 rulings, the
+amended G2 row, DL-1 and DL-2, and adds checklist items 11-13 (R1-1, R1-2, R1-3/R1-4 as applied,
+challenge invited on the first two).
+
+**Assertions** (`exec\round2\assertions-r2.txt`): exit code MEASURED 0; transcript 1,134,094 bytes;
+`model: gpt-5.6-sol` = the profile's `model`; `reasoning effort: high` = the profile's; `^ERROR` 0;
+`^tokens used` 1 (273,468); the clean token anchored 2 (double emission), the findings token 0; no
+codex process left. Prompt and both cuts grepped for either token anywhere: 0. Scratch/ledger
+reach: the transcript's hits for `.codex|copowers|ledger.md|review-transcripts` are the prompt
+echo, the two ledger-cut echoes, and `CLAUDE.md` / `docs/orchestrator-context.md` prose read by
+its own `sed`/`cat` commands; no command read a ledger, a `.codex*`/`.copowers*` file or the
+transcripts directory. No `.codex*` / `.copowers*` file existed in the worktree for the loop (the
+working copies live in the evidence directory). Content filter: none ("No safety layer refused or
+rewrote the review"). One line after the verdict,
+`2026-10-26T04:46:40Z ERROR codex_core::session: failed to record rollout items`, is
+timestamp-prefixed, so not line-initial; the anchored assertion reads 0 and the response was
+complete before it. Codex could not run pytest (no project environment in WSL); it AST-parsed the
+changed Python files.
+
+**Checklist:** items 1-12 HOLD; item 11 AGREES with R1-1 (i) on the merits ("removing the book
+control would make a genuinely resting remainder unavailable for cancellation"); item 12 AGREES
+with keeping A ("the comment accurately describes the current skip ... without promising future
+behavior"); item 13 FAILS on R2-1 and R2-2 only, both comment-only.
+
+**Verdict: the clean token. The loop ENDS at round 2** (recipe section 3: post-convergence minors
+are corrected without another round).
+
+**Findings and proposed dispositions** (the orchestrator rules; nothing is fixed yet):
+
+| id | sev | finding | proposed disposition |
+|---|---|---|---|
+| R2-1 | minor | `_accepted_row_gate` docstring: "so a displaced cycle is explained by a cancel row or not at all" is over-wide. After place -> accepted child -> later decline the place is displaced but still the latch's LATEST place, so a qualifying fill makes `fill_vouches_for` true and renders G2's fill line (I-4). The code is right; `_displaced_cycle_prompts`' docstring already says "while a later place exists". | FIX, comment-only, no new round: qualify the sentence with "while a later place exists". |
+| R2-2 | minor | `_explained_line` docstring: "Every date is the validity row's `action_session_date`" is false. Only the accepted date is; the fill date is `latch.clear_session` and the cancel date is `gate.cancel.action_session_date`. The rendered W3 line is right. | FIX, comment-only, no new round: say the ACCEPTED date is the validity row's `action_session_date`, the fill date the latch's `clear_session`, the cancel date the cancel row's. |
+
+**Evidence:** `C:\Users\rwsmy\swing-data\review-transcripts\d94-cancel\exec\round2\`:
+`codex-review-r2.txt` (1,134,094 bytes), `prompt-r2.md` (13,889), `plan-ledger-cut-r2.md` (38,848),
+`exec-ledger-cut-r2.md` (24,844), `diff-r2.txt` (87,817), `codex-exit-r2.txt`, `assertions-r2.txt`,
+`copowers-findings.md` (the verbatim response plus this adjudication), `head-r2.txt`,
+`run_round.sh`, `assert_round.sh`.
+
+**Spend (Reviewer A, executing):** round 1 287,340 + round 2 273,468 = **560,808** tokens.
