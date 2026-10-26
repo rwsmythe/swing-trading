@@ -113,6 +113,14 @@ Both directors: identical dispositions; RD governs semantics. No clearance re-op
   accepted, absent, unexplained row. Measurement owed (CHARC, adopted by RD): the merge-gate witness
   reports that night's banner indeterminate tickers.
 
+- **DL-3 (Reviewer B-01; RD's reason; full entry in 5.3 (c)).** On the current cycle, a G6 row on a
+  latch with two or more orders attributable to the mandate in the book gets NO correction control
+  (the shipped ambiguity guard withholds it, and the withheld note names the ticker and the
+  duplicates reason); the ledger-keyed cancel control still renders. A bypass would write an audit
+  row whose envelope contradicts itself (`branch=absence, attributable_order_count=2`); the state
+  is transient and the operator resolves it at the broker. Re-open trigger: a live instance where
+  the operator CANNOT resolve the duplicates at the broker.
+
 ## 2. Deviations from the plan text (each with its authority)
 
 - **D-1 (naming, CHARC C-1; accepted in 1.1).** The gate's keyword and `_displaced_cycle_prompts`'
@@ -296,3 +304,138 @@ are corrected without another round).
   `swing/web/view_models/latches.py`, `swing/web/templates/partials/latch_orders.html.j2`.
 
 **OUTCOME: CONVERGED at Reviewer A round 2.**
+
+## 5. Reviewer B (the orchestrator's) and its dispositions
+
+**Record:** `C:\Users\rwsmy\swing-data\review-transcripts\d94-cancel\exec\reviewer-b\b-review.txt`
+(870,222 bytes; `b-prompt.md`, `b-diff.txt`, `b-exit.txt`, `run_b.sh` beside it). Run by the
+orchestrator on code head `a6a2e53b`. Severity counts **0 critical / 1 major / 2 minor**.
+
+| id | sev | disposition |
+|---|---|---|
+| B-01 | major | ACCEPTED as a declared limitation by both directors (5.1, 5.2); G6 restated; ONE discriminator (T4.8) added; NO production code change. |
+| B-02 | minor | none -- the orchestrator's own prompt wording (RD: "no ruling needed"). |
+| B-03 | minor | FIXED by the orchestrator at `d8857a73` (a stale comment in `tests/web/test_routes/test_latches_validity_prompt.py`); not redone here. |
+
+### 5.1 B-01, SEMANTICS (governs). Author: RD.
+
+Posted 2026-10-26T05:12:23Z, from rd to orchestrator, thread d94, subject "D94 B-01: RD rules
+ACCEPT, G6 restated (guard admits); no bypass; one RED test" (main
+`comms/orchestrator/read/20261026T051223Z-rd-d94-b-01-rd-rules-accept-g6-restated-gua.md`).
+Verbatim, in full:
+
+> RD RULES B-01 (orchestrator query 20261026T051030Z, thread d94). PRIMARY: RD on semantics; CHARC on form. Read at this seat on d94-cancel a6a2e53b via `git show`: `_prompt_candidates` (latches.py:2885-2925, the ambiguity reasons), `_validity_prompt_for` (:2928-2990: the count-disagreement withhold, then the ambiguity return at `if ambiguity: return None, ambiguity`, BEFORE the branch choice and the envelope), the G6 call site (:3570-3600: `ledger_cancels.append(accepted_gone)` runs BEFORE `_validity_prompt_for` is called, so the ledger control is built regardless of the guard's answer), the withheld-note collector (:3605-3612). The orchestrator's description reproduces.
+>
+> DISPOSITION: ACCEPT WITH THE RESTATED G6 READING. NO BYPASS. The restated G6, which the plan ledger, the register row and the gate's own comment carry verbatim: "G6 = the W1 correction control WHERE THE SHIPPED AMBIGUITY GUARD ADMITS A PROMPT, plus ONE ledger-keyed cancel control ALWAYS; where the guard withholds, the withheld note names the latch and its reason, and the ledger control still renders."
+>
+> PROVENANCE, stated the way the rule requires: the UNAVAILABILITY of the correction in this state is PRE-EXISTING -- before D94, an accepted-gone row on a latch with two attributable resting orders was withheld by the same guard at the same line, with no correction control and no ledger control at all. What D94 INTRODUCED is a PROMISE in its own text (plan section 1, G6: "correction + ledger cancel") that the shipped guard does not keep in that state. Contested provenance reads as introduced, and I treat it so: the defect is in the arc's TEXT, and the fix is to the text -- restate G6 -- with a discriminator that pins the state, not a code change to the guard.
+>
+> REASONS, in weight order:
+> 1. THE GUARD IS CORRECT ON ITS OWN SEMANTICS AND A BYPASS WOULD WRITE A CONTRADICTORY AUDIT ROW. The envelope every validity row carries (`broker_snapshot_branch`, `attributable_order_count`, :2958-2966) describes the MANDATE'S book at the moment of the answer. A bypass that forces the ABSENCE branch for the gone order X while two orders attributable to this mandate rest would persist `branch=absence, attributable_order_count=2` -- a row whose two fields contradict each other, written into the append-only ledger the tier-2 evidence rule reads. That is "merging categories that differ in evidence kind" inside one row. The guard's refusal ("no single broker order id could be recorded against it. Resolve the duplicates at the broker") is the honest answer, and it is DISCLOSED on the panel as a withheld note with its reason (:3605-3612), not silence.
+> 2. THE RIDER'S PURPOSE IS SERVED IN THIS STATE. D94 exists so the operator can RECORD a cancel for an order the book no longer shows. `ledger_cancels.append(accepted_gone)` precedes the guard; the ledger control renders. Verified at the call order, not from the report.
+> 3. THE STATE IS TRANSIENT AND OPERATOR-RESOLVABLE. Two attributable resting orders on one mandate is a duplicate-order condition the guard's own message tells him to resolve at the broker; the moment one is cancelled or fills, the guard admits the prompt and the correction renders. Nothing is lost from the ledger; the downgrade is deferred, and the deferral is on the operator's own clock.
+> 4. A BYPASS RE-OPENS BOTH CLEARANCES FOR A QUESTION THE GUARD SAYS CANNOT BE GROUNDED (the orchestrator's reading, concurred), and it would give the ONE gate a second behaviour depending on the guard's state -- the two-spellings risk CHARC named on R1-2 B, in a new place.
+>
+> REQUIRED BEFORE THE MERGE REQUEST (text + one test; no production code):
+> (a) G6 restated as quoted above in the plan ledger (the normative text replaced, not annotated), on the register row, and in `_accepted_row_gate`'s docstring where it says "G6: correction + ledger cancel" (#31: the comment says what the code does).
+> (b) ONE discriminator in the real row shape, RED-first against an implementation that drops the ledger control when the guard withholds: an accepted validity row whose order is ABSENT and unexplained, plus TWO orders attributable to the latch in the book -> exactly ONE ledger-keyed cancel form for the absent id, NO correction control, and a withheld note naming the ticker with the duplicates reason. The RED half: comment out the `ledger_cancels.append` and the test must fail on the ledger form. This is the state B found; it is pinned, not merely declared.
+> (c) The accepted limitation entered on the list WITH this reason, Reviewer B's challenge standing invited; re-open trigger = a live instance where the operator CANNOT resolve the duplicates at the broker (two legitimate orders for one mandate that must both rest), at which point the correction needs a path that does not write a contradictory envelope -- a (c)-tier question, since it needs the broker's per-order status.
+>
+> B-02: the prompt wording was the orchestrator's own and the guards are declared as guards; no ruling needed. B-03: FIX, comment-only, concur.
+>
+> MERGE GATE: I read the FINAL tree once after (a)-(c) land (the suite tail off the file, the census row by row, T2.1/T3.4 and the new discriminator present and green, trailers empty). The operator's browser witness is BINDING and now sits on his Schwab re-auth: `swing schwab setup` is on the merge's critical path, step by step after it.
+
+### 5.2 B-01, FORM. Author: CHARC.
+
+Posted 2026-10-26T05:12:14Z, from charc to orchestrator, thread d94, subject "D94 B-01: CHARC
+ACCEPTS as a declared limitation; G6 restated; bypass declined" (main
+`comms/orchestrator/read/20261026T051214Z-charc-d94-b-01-charc-accepts-as-a-declared-lim.md`).
+Verbatim, in full:
+
+> CHARC RULING, D94 REVIEWER B-01 (your query 20261026T051030Z). PRIMARY: CHARC on form; RD on semantics, and his governs where it differs. B-02 (your prompt's wording) and B-03 (FIX, comment-only) are yours and right. The ruling is on the D94 row at the commit named in the ping; block-quote into the exec ledger with CHARC as author.
+>
+> RUN AGAINST DISK: d94-cancel 305d6fa3, code head a6a2e53b; B's transcript exec/reviewer-b/b-review.txt -- banner gpt-5.6-sol, the last codex marker at :9887, the finding and NEW_CRITICAL_MAJOR_FOUND at :9900 in the model's region AHEAD of the tokens-used footer at :9901 (394,077), anchored ^ERROR 0, b-exit.txt exit=0, b-prompt.md carries zero verdict tokens. The review FINISHED. Code read: latches.py:2955-2967 (the count-disagreement withhold, then _prompt_candidates' ambiguity withhold, each returning a REASON), :3576-3584 (the G6 row's gate is appended to ledger_cancels BEFORE _validity_prompt_for is called), :3612-3618 (a withheld prompt is labelled with its reason in withheld_notes, which the fragment renders).
+>
+> B-01 -- ACCEPT as a declared limitation, with the G6 text restated: "the correction control WHERE the ambiguity guard admits one; the ledger-keyed cancel control regardless." The classification INTRODUCED-as-interaction is correct and stays on the ledger that way (the default-to-introduced rule): the guard predates the arc, the G6 output is new, and nobody wrote the composition down. Form reasons:
+> (1) The rider's purpose survives the state. The ledger cancel is queued at :3581 before the prompt is built, so in B's scenario the operator can still record "I cancelled it"; what is withheld is the DOWNWARD correction of an acceptance, and it is withheld with a rendered reason, not silently (:3617). An unexplained absence reading as nothing-to-see is the failure mode this instrument is built against; this is not that.
+> (2) The guard refuses to choose a BRANCH it cannot ground. For a G6 row the absence question is in fact well-grounded (the gone order's id comes from the ledger, not from attribution), so a bypass is semantically arguable -- but it is a NEW code path: the correction control carries a snapshot envelope and anchors built from the join, and an absence form that skips the guard needs its own envelope discipline and its own RED test. That is beyond the cleared plan on both clearances, and it is not the defect D94 was commissioned to close.
+> (3) The state is transient and narrow: the gone order plus TWO OR MORE other attributable resting BUY orders on the same ticker; it ends when they rest uniquely, cancel or fill. Live incidence unmeasurable tonight (empty book); zero on every census so far.
+> The bypass is DECLINED for this rider. If it is ever built, it is its own rider with the discriminator stated now, RED first: an accepted row whose order is gone + two other attributable resting orders -> the W1 correction AND the ledger cancel both render. Re-open trigger: a live instance persisting past one session, or the operator reporting an uncorrectable erroneous acceptance in that window.
+>
+> MERGE GATE (unchanged from the plan, restated so it is read): merge-integration onto main (which carries 00d2d818, so the one final-head red reads green on the merged head -- state the merged-head result off the FILE, with the head SHA on line 1); the live census row by row (plan Task 6 step 3); trailers empty across the branch; RD's read once after this; then the operator's step-by-step browser witness (plan section 5) on the merged code with a LIVE book, which needs his Schwab re-auth first -- the witness also reports the banner's indeterminate tickers (the R1-2 measurement). The IMNM ...712 click on the live ledger ONLY on his word.
+>
+> The merge request may follow on this and RD's ruling.
+
+### 5.3 B-01 as applied (text + one test; no production code)
+
+- **(a) G6 restated**, verbatim per RD: "G6 = the W1 correction control WHERE THE SHIPPED
+  AMBIGUITY GUARD ADMITS A PROMPT, plus ONE ledger-keyed cancel control ALWAYS; where the guard
+  withholds, the withheld note names the latch and its reason, and the ledger control still
+  renders."
+  - **Plan:** the normative G6 row of plan section 1's table is REPLACED, not annotated, at
+    `82cb03e5`. **Intake correction:** the ruling says "the plan ledger"; the plan LEDGER holds no
+    normative G6 rule of its own -- its G6 mentions sit inside block-quoted director rulings, which
+    are verbatim records and are not edited. The normative G6 is the plan's section-1 table, the
+    text RD's provenance cites ("plan section 1, G6: 'correction + ledger cancel'"). Encoded there.
+  - **Code comments** (`14e56b71`, comments only): "G6: correction + ledger cancel" was the
+    trailing comment on `_GATE_UNEXPLAINED` in the gate-kind block above `_accepted_row_gate` (not
+    inside its docstring); it is replaced by the restated G6. Two further comments of the same
+    class, found by re-reading every G6 / "keeps it" mention in the VM, are qualified to match: the
+    gate block header ("keeps it, on the current cycle only where the shipped ambiguity guard
+    admits a prompt") and the G6 call-site comment in `_validity_prompts` (the correction stays
+    WHERE THE GUARD ADMITS A PROMPT; the ledger control is queued before the guard runs, so a
+    withheld prompt still leaves it). The displaced-cycle docstring is unchanged: that path builds
+    its absence form without the ambiguity guard, so "keeps its correction control" is true there.
+    The production diff against `a6a2e53b` is comment-only (one changed code line, whose code text
+    is identical and only its trailing comment differs).
+  - The register row is CHARC's and is not touched.
+- **(b) T4.8** (`tests/web/test_routes/test_latches_d94_cancel_gate.py`,
+  `test_t4_8_g6_under_the_ambiguity_guard_keeps_the_ledger_control`): order 5001 accepted, then
+  gone and unexplained, with TWO orders attributable to the mandate resting (5002, 5003).
+  Asserted: exactly ONE cancel form for 5001 (beside the two shipped book forms), the W2 note for
+  5001 and no other status note, NO correction control and no prompt section, and the withheld
+  note "FTRE: 2 resting orders are attributable to this mandate, so no single broker order id
+  could be recorded against it. Resolve the duplicates at the broker."
+  - **RED** (`exec\cell2\t4_8-mutant-RED.txt`), with `ledger_cancels.append(accepted_gone)`
+    commented out in scratch (`mutant-B-01.diff`; reverted, `git diff --exit-code swing/` = 0):
+    `assert ids.count("5001") == 1` -> `AssertionError: assert 0 == 1` (the forms were
+    `['5002', '5003']`), `1 failed`.
+  - **GREEN** on the shipped code (`t4_8-shipped.txt`): `1 passed`.
+- **(c) Declared limitation DL-3** (B-01; RD's reason; Reviewer B's challenge stands invited).
+  On the CURRENT cycle, an accepted row whose order is gone and unexplained, on a latch with two or
+  more orders attributable to the mandate in the book, gets NO correction control: the shipped
+  ambiguity guard in `_validity_prompt_for` withholds the prompt, and the withheld note names the
+  ticker and the duplicates reason; the ledger-keyed cancel control still renders. RD's reason:
+  the guard is correct on its own semantics, and a bypass would persist
+  `branch=absence, attributable_order_count=2` -- an audit row whose two fields contradict each
+  other, in the append-only ledger the tier-2 evidence rule reads; the rider's purpose (record a
+  cancel for an order the book no longer shows) is served, because the ledger control is queued
+  before the guard; the state is transient and operator-resolvable (resolve the duplicates at the
+  broker and the correction renders on the next render); a bypass would re-open both clearances
+  and give the one gate a second behaviour depending on the guard's state. The unavailability of
+  the correction is pre-existing; what D94 introduced was G6's text promising it, so the fix is to
+  the text. **Re-open trigger (RD):** a live instance where the operator CANNOT resolve the
+  duplicates at the broker (two legitimate orders for one mandate that must both rest) -- then the
+  correction needs a path that does not write a contradictory envelope, a (c)-tier question.
+  (CHARC's form ruling adds a live instance persisting past one session, or the operator reporting
+  an uncorrectable erroneous acceptance in that window; a bypass, if ever built, is its own rider
+  with the discriminator CHARC states in 5.2.)
+
+### 5.4 Gates on the final code head `82cb03e5`, read off saved output
+
+- Touched test files (`tests/web/test_routes/test_latches_d94_cancel_gate.py`,
+  `tests/web/test_routes/test_latches_validity_prompt.py`, `-n 8`;
+  `exec\cell2\b01-touched-files.txt`): `46 passed`.
+- **Full fast suite** (`-m "not slow" -q -n 8 -p no:cacheprovider`;
+  `exec\cell2\final-head-suite-b01.txt`, first line
+  `head 82cb03e5c4aa91de6107bcf4d04f69d5caec2c04`): `1 failed, 15558 passed, 13 skipped` in
+  719.41 s. The one red is the known out-of-arc wall-clock test,
+  `tests/pipeline/test_ohlcv_cache_concurrent_fetch_no_race.py::test_ohlcv_cache_get_or_fetch_invariant`,
+  `ValueError: No data for AAPL` (fixed on main at `00d2d818`). 15558 = 15557 + T4.8.
+- `ruff check swing/` clean; zero findings on the touched test module. Envelope
+  `git diff --stat 8acea975..HEAD -- swing/data swing/trades swing/web/routes scripts research`
+  EMPTY; the `swing/` files changed are still `swing/latches/classification.py`,
+  `swing/web/view_models/latches.py`, `swing/web/templates/partials/latch_orders.html.j2`.
+
+**OUTCOME (unchanged): CONVERGED at Reviewer A round 2.** Reviewer B: 0/1/2; B-01 accepted as
+DL-3; B-02 none; B-03 fixed at `d8857a73`.
