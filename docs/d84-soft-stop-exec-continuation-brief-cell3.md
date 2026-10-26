@@ -110,3 +110,75 @@ Literal block quote:
 > WHAT I CARRY: my re-use precondition line names both directions and all three harnesses with the mechanism (V2: tier-2 lane fills with era divergence, tier 1 unaffected; H5 comparator: bucket disagreement on pre-boundary run ids; minervini: bucket follows the structural gate, attribution the pre-D84 mirror), and the VII.F boundary note states the rule: a comparison across the boundary is era-keyed on the persisted row's evaluation run date, in BOTH directions.
 > 
 > Nothing further asked of my seat. The executing-return gate stays mine when the return and Reviewer B land.
+
+## 4. ADDENDUM 2: the round-4 rulings, and round 5
+
+Cell 3 continues: its depth at the round-4 gate is **304,297** (`cell_depth.py --agent`, read by the orchestrator), under the cap. Do these, in order:
+1. Transcribe the three block quotes below into the exec ledger, each with its author:
+   - the orchestrator's rulings;
+   - CHARC's ruling, as **"amendment 3 (CHARC)"**;
+   - RD's item-2 answer.
+2. Fill the round-4 depth with 304,297.
+
+> **The orchestrator's round-4 rulings (author: the orchestrator, 2026-10-26).**
+>
+> **A4-01:** IN D84, as CHARC rules below (a T8.3 completion; the clearance is extended to exactly the change he names).
+> - Implement his FORM: a distinct `prefill_shares` field. `input_shares` keeps its drift-retry semantics, `suggested_shares` stays sizing-derived, and the hint's branch order is unchanged.
+> - Show his three discriminators by TestClient on the real form path, RED first.
+> - REPLACE (never annotate) the plan's T8.3 `suggested_shares == 0` sentence with the prefill/hint split.
+> - Add the auto-filled case to the plan's section 6.3 entry-form witness step: the stated zero visible, with the broker quantity in the input.
+>
+> **A4-02 (a test): ACCEPTED.**
+> - Add `fetch_candidate_by_id` (D84's read inside `_panel_risk_inputs`, `latches.py:1146-1169`) to the A6 never-500 parametrize at `test_latch_prepared_order_vm.py:608-611`.
+> - Assert that the affected row renders with no marker and no affordance.
+> - Show it RED with the local try/except removed, as a temporary mutation that is never committed.
+>
+> **A4-03 (T11 prose plus a test): ACCEPTED, on both legs.**
+> - Era-word the `instrumented_replay.py:80-87` docstring (0.3b; no computation moves).
+> - Era-pin the docstring of the test at `:244-265` as a pre-boundary-shaped fixture.
+> - ADD a pin that a risk-flagged `aplus` row returns `None` from the binding-constraint derivation (census item 3: a behaviour true after D84 with no pin). Show that it fails under a mutation.
+>
+> **Correct the SS-1 table rows for `:244`, `:248` and `:265`** (misclassified), and the SS-2 table if the same lines appear there.
+>
+> **SS-3 (uncounted), narrow, BEFORE round 5.** A4-03 escaped both sweeps as the paraphrase "genuinely A+".
+> - Grep `research/` and `tests/research/` (excluding `research/studies`) for `genuinely`, `truly`, `nothing failed`, `all criteria pass`, `all pass`, `passes everything` and `fully qualified`, each near `A+`/`aplus`.
+> - List the hits under SS-3 with the SS-1 dispositions. Fix any claim as prose.
+>
+> **Then:** the T12 gates IN FULL on the final head, every suite file head-stamped.
+>
+> **ROUND 5 is AUTHORIZED in writing.** It is justified by A4-01 and A4-02: new, in scope, not reopened, and the first code and test findings in four rounds. This is the recipe's round-5 check-in. The ledger's composition says CONTINUE: round 4 is not an oscillation and reopens nothing.
+> - Form: round 4's form. Point the reviewer at the A4 fixes, the census class, the checklist, CHARC's amendment 3, and the SS-3 list.
+> - Save it to `...\exec\round5\`.
+> - **The THREE-BRANCH STOP RULE applies unchanged** (section 1):
+>   1. **Clean:** the loop ends.
+>   2. **Only T11-class prose majors:** fix them without a round. The loop ends STOPPED-AND-ROUTED, branch 2.
+>   3. **Any critical, or any major on code behaviour, the envelope or a test:** STOP at the gate, with no fix applied.
+> - There is no round 6 without the orchestrator's written authorization.
+
+CHARC's ruling (`20261026T185127Z`), literal block quote:
+
+> PRIMARY charc on A4-01 (20261026T184907Z item 1). Read on d84-exec at 1ae5b141: view_models/trades.py:793-815, partials/trade_entry_form.html.j2:92-112, partials/sizing_hint.html.j2, routes/trades.py:579-643 and :2098, the plan's entry-form paragraph (section 3 of T8) and its witness step (plan :1024), the executing brief :13. RD CC: the clearance extension below touches the H4 manual path RD's cohort semantics ride on; no RD ruling asked.
+> 
+> RULING: (a) and (b) collapse into one answer. A4-01 is IN D84 as a T8.3 COMPLETION, and the plan-stage clearance is EXTENDED by this ruling to the change named below. The brief's STOP-and-return (:13) was the right act; this is the gate-holder's answer to it. My merge-gate read verifies the extension on the final tree, as it verifies everything else.
+> 
+> GROUND. The plan's T8.3 sentence 'the template shows it in the suggested_shares == 0 branch' carried a PREMISE: that suggested_shares is zero when the sizing is zero. The Phase-13 SB1 override at trades.py:812-815 makes that premise false whenever the Schwab auto-fill is populated, and that is not a corner: under F1-A EVERY H4 fill takes the manual path (attest on the card, then the entry form), and the entry form on that path is auto-filled FROM the fill. So D84's stated zero is absent on exactly the path D84 exists to record, and the plan's own witness step (:1024, 'the entry form for that ticker shows the H4 prefill') would have found it. This is the 0.5b census class (sections 4 and 5 are lower bounds; the plan's site list did not read the override), not a new feature. Option (c) is refused on its own terms: a declared limitation that voids the arc's purpose on its primary path is a refusal of the arc wearing a limitation's label. The pre-D84 line on that path ('Suggested max: N sh (~$0.00 risk = 0.00%)', N from the fill, the risk from a zero-share sizing) was already false; D84 inherits it only if it leaves it.
+> 
+> FORM (the cell's proposal, with one constraint). The HINT keys on the SizingResult; the shares INPUT keeps the broker quantity. Do NOT overload input_shares for it: that field is the operator's SUBMITTED value on a drift-retry (:238, '0 = no override'; set at routes/trades.py:2098) and carries resubmit semantics (the hidden-anchor family). Add a distinct prefill field -- call it prefill_shares -- equal to the auto-fill's share count when populated, else the sizing-derived shares; the input's value becomes input_shares if set, else prefill_shares; suggested_shares stays sizing-derived and the hint's existing branch order (suggested_shares > 0 -> the numbers; elif sizing_zero_line -> the stated zero; else the guidance) is unchanged. The SB1 purpose ('the input pre-population matches the actual fill') is preserved on the input, where it belonged. Side effect, correct: on an auto-filled form with FEASIBLE sizing the hint now states the sizing-derived maximum rather than echoing the fill's count -- the initial render then agrees with what the HTMX swap (sizing_hint.html.j2 Mode 1) already renders from sizing alone.
+> 
+> Envelope: swing/web only (one view model, one partial), no swing/trades, no schema, no tripwire. No order, money or cohort path reads the hint (the cell's claim; I checked suggested_shares readers by grep: the partial and the route comment only).
+> 
+> DISCRIMINATORS, RED first, TestClient on the real form path: (1) populated auto-fill + risk-bound-zero sizing -> the hint renders the stated-zero line AND the shares input is prefilled with the broker quantity (RED today: the numbers line renders); (2) populated auto-fill + feasible sizing -> the hint renders the sizing-derived shares and risk, not the fill's count, and the input is prefilled with the fill; (3) a drift-retry with input_shares set -> the input shows the submitted value (the existing behaviour, kept green).
+> 
+> RECORD: transcribe as 'amendment 3 (CHARC)' in the exec ledger, block-quoted; REPLACE the plan's T8.3 sentence (the suggested_shares == 0 premise) with the prefill/hint split -- never annotate it. The section-6.3 witness step on the entry form now includes the auto-filled case: the stated zero visible with the broker quantity in the input.
+> 
+> A4-02 and A4-03 as you hold them: no dissent. Round 5 may launch on my account.
+
+RD's answer on the fourth harness (`20261026T185015Z`), literal block quote:
+
+> PRIMARY rd on 20261026T184907Z item 2 (the fourth harness). Answer before round 5: NO 0.3b sentence in the tree. SS-2's not-a-claim classification STANDS on my read.
+> 
+> Read at 1ae5b141: diagnostic_run.py:8 names the operator HYPOTHESIS the diagnostic was built to probe ("low capital binding risk_feasibility"), dated to its run; it is not a statement about current production, so it does not go false at the merge. What changes is the probe's REACHABILITY: through current evaluate_one the risk criterion can never bind the bucket, so the capital-multiplier matrix can no longer find that hypothesis true or false -- the same O-1 family, by a different route. The module that derives the binding constraint (instrumented_replay.py:52, :74) is already under your A4-03 era-wording; recompute_binding_prod_gated.py carries its pin (row 4). Nothing else in that harness reads false to me.
+> 
+> It goes in my re-use precondition line as the fourth harness, with the mechanism: the capital-multiplier probe is unreachable under post-D84 production; re-run it against the pre-D84 mirror (recompute_binding_prod_gated.py) or re-state the hypothesis as the risk FLAG's incidence against capital, which post-D84 rows do carry (the persisted risk row), not as bucket binding.
+> 
+> A4-01 is CHARC's; A4-02/A4-03 are yours; read as CC, no dissent. Round 5 may launch on my account.
