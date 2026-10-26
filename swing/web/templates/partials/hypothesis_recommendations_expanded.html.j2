@@ -94,7 +94,8 @@
             = ${{ '%.2f' | format(expanded.sizing_risk.notional) }}
             <span class="muted">(constraint: {{ expanded.sizing_risk.constraint }})</span>
         {% else %}
-          infeasible <span class="muted">({{ expanded.sizing_risk.constraint }})</span>
+          {# D84 (RD floor (1)): the STATED zero, never "infeasible". #}
+          {{ expanded.sizing_risk_line }}
         {% endif %}
       </li>
       <li>Cash-feasible <span class="muted">(eq ${{ '%.0f' | format(expanded.current_balance) }})</span>:
@@ -103,7 +104,8 @@
             = ${{ '%.2f' | format(expanded.sizing_cash.notional) }}
             <span class="muted">(constraint: {{ expanded.sizing_cash.constraint }})</span>
         {% else %}
-          infeasible <span class="muted">({{ expanded.sizing_cash.constraint }})</span>
+          {# D84 (RD floor (1)): the STATED zero, never "infeasible". #}
+          {{ expanded.sizing_cash_line }}
         {% endif %}
       </li>
     </ul>

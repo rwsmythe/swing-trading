@@ -50,7 +50,7 @@ def evaluate_one(ctx: CandidateContext) -> Candidate:
     ]
     risk_results = [risk_feasibility.evaluate(ctx)]
 
-    bucket = bucket_for(tt_results, vcp_results, risk_results, ctx.config)
+    bucket = bucket_for(tt_results, vcp_results, ctx.config)
 
     closes = ctx.ohlcv["Close"]
     last_close = float(closes.iloc[-1])

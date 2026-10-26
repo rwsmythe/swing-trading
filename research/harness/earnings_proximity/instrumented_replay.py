@@ -77,13 +77,16 @@ def _binding_constraint(
     bucket: str,
     allowed_miss_names: frozenset[str],
 ) -> str | None:
-    """First non-pass criterion (in evaluation order) that blocked A+.
+    """The first non-pass criterion (in evaluation order) on a non-A+ row.
 
-    A+ classification is only blocked if some criterion failed AND that
-    criterion is NOT in trend_template's ``allowed_miss_names``. So we
-    walk the criteria once, skipping allowed misses, and return the
-    first remaining non-pass. Returns ``None`` when no such criterion
-    exists (i.e., bucket is genuinely A+).
+    An ``aplus`` row has no binding constraint: ``None`` whatever its
+    criteria hold -- including, since D84, a risk-FLAGGED A+, whose
+    ``risk_feasibility`` non-pass is a flag, not a gate. On any other
+    bucket we walk the criteria once, skipping trend_template's
+    ``allowed_miss_names``, and return the first remaining non-pass
+    (``None`` if there is none). Before D84 the risk pre-skip let a
+    risk-only non-pass bind a ``skip`` row; current production buckets
+    that shape ``aplus``.
     """
     if bucket == "aplus":
         return None

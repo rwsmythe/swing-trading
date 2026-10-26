@@ -611,6 +611,9 @@ def test_the_new_panel_fields_are_declared_panel_specific(seeded_db):
 @pytest.mark.parametrize("target", [
     "compute_prepared_order", "classify_latch", "assess_telemetry_health",
     "list_intents_for_latch", "get_active_policy",
+    # D84 T7.4 (Codex R4 A4-02): the fire's risk-layer read in
+    # `_panel_risk_inputs`.
+    "fetch_candidate_by_id",
 ])
 def test_every_new_read_degrades_and_the_panel_never_500s(
         seeded_db, monkeypatch, target):
@@ -774,3 +777,497 @@ def test_the_WITHHELD_branch_STILL_offers_no_control(seeded_db):
     assert "<form" not in section
     assert "<button" not in section
     assert 'value="decline"' not in section
+
+
+# ===========================================================================
+# D84 T7.2 -- the card STATES its zero (F1-A, P3, E-i). The KOD geometry
+# (pivot 104.00, stop 29.81, limit 107.12) at the $7,500 floor: one share risks
+# $77.31 against the $37.50 budget, so the risk leg is the zero.
+# ===========================================================================
+KOD_FLAG_LINE = (
+    "0 shares at the $37.50 budget; 1 share risks $77.31 (2.1x budget) at "
+    "limit 107.12; above budget if you proceed")
+KOD_DERIVATION_LINES = (
+    "1-share risk $77.31 = limit 107.12 - fire-time stop 29.81",
+    "budget $37.50 = sizing equity $7,500.00 x 0.500%",
+    "sizing equity $7,500.00 = max(real equity $1,200.00, "
+    "risk_equity_floor $7,500.00)",
+    "shares at the budget 0 = floor($37.50 / $77.31)",
+)
+
+
+def _seed_kod_fire(cfg, *, risk_result="fail", ticker="KOD", pivot=104.00,
+                   stop=29.81, close=98.46):
+    """The KOD-shaped fire on run 121 (the FTRE session frame), carrying its
+    persisted `risk_feasibility` row (the evaluation record)."""
+    rid, asof, action = 121, "2026-07-17", "2026-07-20"
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) "
+            "VALUES (?, ?, ?, ?, 1, 1, 0, 0, 0, 0)",
+            (rid, f"{asof}T17:30:05", asof, action))
+        cur = conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) "
+            "VALUES (?, ?, 'aplus', ?, ?, ?, 'universe')",
+            (rid, ticker, close, pivot, stop))
+        if risk_result is not None:
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result, value, rule) VALUES (?, 'risk_feasibility', "
+                "'risk', ?, ?, ?)",
+                (cur.lastrowid, risk_result,
+                 "0 sh, $0.00 risk" if risk_result == "fail" else "1 sh",
+                 ">= 1 share fits in 0.5% of equity ($37.50)"))
+    conn.close()
+
+
+def _seed_kod_derivation_session_close(cfg, price=98.46, ticker="KOD"):
+    """Rung A for KOD: the recorded close AND an archive bar dated S."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(900, ?, ?, '2026-07-27', 1, 0, 1, 0, 0, 0)",
+            (f"{DERIVATION_SESSION}T17:30:05", DERIVATION_SESSION))
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(900, ?, 'watch', ?, 104.0, 29.81, 'universe')",
+            (ticker, price))
+    conn.close()
+    _write_archive_bars(cfg, [(DERIVATION_SESSION, price)], ticker=ticker)
+
+
+def _render_card(row):
+    from jinja2 import Environment, FileSystemLoader
+    root = (Path(__file__).resolve().parents[3]
+            / "swing" / "web" / "templates")
+    env = Environment(loader=FileSystemLoader(str(root)), autoescape=True)
+    from types import SimpleNamespace
+    return env.get_template("partials/latch_prepared_order.html.j2").render(
+        row=row, vm=SimpleNamespace(horizon_session="2026-07-27"))
+
+
+def _prepared_section(html):
+    start = html.index('<section class="latch-prepared-order')
+    return html[start:html.index("</section>", start)]
+
+
+def test_acceptance_i_b_the_risk_flagged_card_renders_the_computed_shares_and_risk(
+        seeded_db):
+    """R-(i)b. The regime is determinable (a rung-A close), so the card is
+    withheld on `sizing_infeasible` with the RISK leg the zero: the heading is
+    the flag, the detail states the zero and the one-share risk at the limit,
+    and the four derivation lines carry the equation (the D25 rule)."""
+    import html as _html
+
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg)
+    _seed_kod_derivation_session_close(cfg)
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.offered is False
+    assert po.withheld_reason == "sizing_infeasible"
+    assert po.withheld_heading == "RISK FLAG - 0 SHARES AT THE BUDGET"
+    assert po.withheld_detail == KOD_FLAG_LINE
+    assert po.stated_zero_line == ""
+    assert po.derivation_lines == KOD_DERIVATION_LINES
+    assert all(line.isascii() for line in po.derivation_lines)
+    section = _html.unescape(_prepared_section(_render_card(row)))
+    assert "RISK FLAG - 0 SHARES AT THE BUDGET" in section
+    assert KOD_FLAG_LINE in section
+    for line in KOD_DERIVATION_LINES:
+        assert line in section
+    assert "<form" not in section
+    assert "<button" not in section
+
+
+def test_P3_the_regime_withheld_card_states_the_zero_BESIDE_the_regime_reason(  # noqa: N802
+        seeded_db):
+    """R-T7.6 -- CHARC P3: with the regime undeterminable the heading stays
+    `PREPARED ORDER WITHHELD` and the detail stays the regime text (the regime
+    fact is never masked), while the stated zero and its equation render
+    BESIDE it. Still no form and no button in the prepared-order section."""
+    import html as _html
+
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg)                  # no derivation-session close
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.withheld_heading == "PREPARED ORDER WITHHELD"
+    assert po.withheld_detail.startswith(
+        "No prepared order: the price regime is undeterminable")
+    assert po.stated_zero_line == KOD_FLAG_LINE
+    assert po.derivation_lines == KOD_DERIVATION_LINES
+    section = _html.unescape(_prepared_section(_render_card(row)))
+    assert "PREPARED ORDER WITHHELD" in section
+    assert 'class="latch-stated-zero"' in section
+    assert KOD_FLAG_LINE in section
+    assert "<form" not in section
+    assert "<button" not in section
+
+
+def test_a_zero_nightly_count_maps_to_None_and_the_place_row_writes(  # noqa: N802
+        seeded_db, monkeypatch):
+    """R-T7.3 -- CHARC F1-A (4). Since D84 a zero nightly row is ROUTINE (every
+    risk-flagged A+ sizes to zero), and 0033's CHECK
+    `derivation_nightly_recommendation_shares IS NULL OR > 0` cannot store it.
+    Seed `daily_recommendations.shares = 0` for the fire's run and session on
+    an OFFERED geometry and POST `place`: the row writes with the column NULL.
+    Before D84 the anchor carried "0" and the insert hit the CHECK."""
+    from fastapi.testclient import TestClient
+
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    from swing.web.app import create_app
+
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+    cfg, cfg_path = seeded_db
+    _seed_fire(cfg)
+    _seed_derivation_session_close(cfg, 19.20)
+    _seed_nightly_recommendation(cfg, 0)
+    row = _vm(cfg).rows[0]
+    assert row.prepared_order.offered is True
+    form = dict(row.prepared_order.anchor_fields) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.post("/latches/intent", headers={"HX-Request": "true"},
+                        data=form)
+    assert r.status_code == 200
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT intent_kind, derivation_nightly_recommendation_shares "
+            "FROM latch_order_intents").fetchall()
+    finally:
+        conn.close()
+    assert rows == [("place", None)]
+
+
+# ===========================================================================
+# D84 T7.4 -- the flag's KEY and the attest affordance (P2 (b), CHARC
+# amendment 1's UNION). Keyed on the FIRE's STORED criteria (live AND terminal
+# cards), OR on a LIVE card's own risk-bound `sizing_infeasible`.
+# ===========================================================================
+D84_LEAD = "The framework has no order here: 0 shares at the budget."
+
+
+def _attest_section(html):
+    start = html.index('<section class="latch-attest-prompt')
+    return html[start:html.index("</section>", start)]
+
+
+def test_acceptance_v_the_risk_withheld_card_offers_the_acted_manually_declaration(
+        seeded_db):
+    """R-(v)2 -- CHARC F1-A (2): a risk-withheld card with no declaration
+    affordance IS the refusal the proposal forbids. The new field is True; the
+    attest section offers exactly ONE radio, `acted_manually`, plus the broker
+    order id; the prepared-order section still carries no form and no button."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg)
+    _seed_kod_derivation_session_close(cfg)
+    row = _vm(cfg).rows[0]
+    assert row.risk_flag_attest_available is True
+    assert row.prompt_required is False
+    assert row.attest_options == (
+        ("acted_manually", "I acted on this manually"),)
+    html = _render_card(row)
+    attest = _attest_section(html)
+    assert attest.count('type="radio"') == 1
+    assert 'value="acted_manually"' in attest
+    assert 'name="actual_broker_order_id"' in attest
+    assert D84_LEAD in attest
+    section = _prepared_section(html)
+    assert "<form" not in section and "<button" not in section
+
+
+def _seed_superseding_fire(cfg, *, ticker="KOD"):
+    """A SECOND A+ fire on run 125 with a different pivot, which supersedes the
+    run-121 latch: the run-121 card is TERMINAL and inside the lookback."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) "
+            "VALUES (125, '2026-07-23T17:30:05', '2026-07-23', '2026-07-24', "
+            "1, 1, 0, 0, 0, 0)")
+        cur = conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) "
+            "VALUES (125, ?, 'aplus', 18.0, 20.19, 16.515, 'universe')",
+            (ticker,))
+        conn.execute(
+            "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+            "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+            (cur.lastrowid,))
+    conn.close()
+
+
+def _terminal_row(cfg, monkeypatch, *, risk_result="fail", disposition=None):
+    """The TERMINAL run-121 card. The fixture predates the telemetry epoch, so
+    the classifier says `pre_telemetry`; that one value is rewritten to
+    `never_actionable` (the plan's terminal shape). Attestations and decisions
+    the classifier resolves are left untouched; `disposition` forces one."""
+    from dataclasses import replace as _replace
+
+    import swing.web.view_models.latches as vm_mod
+
+    real = vm_mod.classify_latch
+
+    def _classify(**kwargs):
+        base = real(**kwargs)
+        if disposition is not None:
+            return _replace(base, disposition=disposition)
+        if base.disposition == "pre_telemetry":
+            return _replace(base, disposition="never_actionable")
+        return base
+
+    monkeypatch.setattr(vm_mod, "classify_latch", _classify)
+    _seed_kod_fire(cfg, risk_result=risk_result)
+    _seed_superseding_fire(cfg)
+    rows = _vm(cfg).rows
+    (term,) = [r for r in rows if r.evaluation_run_id == 121]
+    assert term.is_live is False and term.prepared_order is None
+    return term
+
+
+def test_P2_the_flag_and_affordance_ride_the_FIRES_criteria_on_a_TERMINAL_card(  # noqa: N802
+        seeded_db, monkeypatch):
+    """R-T7.7 -- P2 (b): keyed on the FIRE's stored criteria, so the flag and
+    the affordance survive the latch going terminal ("attest first, then enter"
+    must not become an order he has to obey). The lead paragraph is the D84
+    one, never "went terminal with no action recorded". The four
+    counterfactuals follow as their own tests."""
+    cfg, _ = seeded_db
+    term = _terminal_row(cfg, monkeypatch)
+    assert term.disposition == "never_actionable"
+    assert term.risk_flag_marker == "RISK FLAG"
+    assert term.risk_flag_attest_available is True
+    assert term.attest_options == (
+        ("acted_manually", "I acted on this manually"),)
+    attest = _attest_section(_render_card(term))
+    assert D84_LEAD in attest
+    assert "went terminal with no action recorded" not in attest
+    assert attest.count('type="radio"') == 1
+
+
+@pytest.mark.parametrize("risk_result", ["pass", None])
+def test_P2_counterfactual_a_passing_or_EMPTY_risk_layer_renders_nothing(  # noqa: N802
+        seeded_db, monkeypatch, risk_result):
+    """R-T7.7 counterfactuals 1-2 -- a risk `pass` row, and NO risk row (E-d,
+    the latch-VM consumer): no marker and no affordance."""
+    cfg, _ = seeded_db
+    term = _terminal_row(cfg, monkeypatch, risk_result=risk_result)
+    assert term.risk_flag_marker == ""
+    assert term.risk_flag_attest_available is False
+    assert term.attest_options == ()
+
+
+def test_P2_counterfactual_an_attestation_WITHDRAWS_the_affordance(  # noqa: N802
+        seeded_db, monkeypatch):
+    """R-T7.7 counterfactual 3 -- "until an attestation or a decision governs"
+    (CHARC P2). After an `attest` the D84 affordance is gone and the correction
+    affordance takes over, with the full vocabulary. The marker stays: it
+    describes the fire."""
+    cfg, _ = seeded_db
+    attested = _terminal_row(cfg, monkeypatch,
+                             disposition="attested_acted_manually")
+    assert attested.risk_flag_attest_available is False
+    assert attested.attest_correction_available is True
+    assert attested.risk_flag_marker == "RISK FLAG"
+    assert len(attested.attest_options) == 3
+
+
+def test_P2_counterfactual_a_governing_PLACE_withdraws_the_affordance(  # noqa: N802
+        seeded_db, monkeypatch):
+    """R-T7.7 counterfactual 4 -- a governing `place` (disposition
+    `accepted`) withdraws it."""
+    cfg, _ = seeded_db
+    accepted = _terminal_row(cfg, monkeypatch, disposition="accepted")
+    assert accepted.risk_flag_attest_available is False
+    assert accepted.attest_options == ()
+
+
+def test_the_band_card_offers_the_declaration_without_a_marker(seeded_db):
+    """R-T7.8 -- a GUARD over CHARC amendment 1's leg (b). The BAND: the risk
+    criterion PASSES at the pivot (pivot 100.00, stop 63.00: one share risks
+    $37.00 against the $37.50 budget) while the limit
+    `mandate_limit_price(zone_cap_for_pivot(100.0))` = 103.00 risks $40.00, so
+    the card sizes to ZERO on the RISK leg (the position cap allows 10).
+    Without leg (b) a manual act in the band would be UNRECORDABLE: no
+    framework order, no affordance, and no later prompt. The marker stays
+    criteria-only (P1): the criterion passed, so NO marker."""
+    from swing.latches.constants import mandate_limit_price, zone_cap_for_pivot
+
+    assert mandate_limit_price(zone_cap_for_pivot(100.0)) == 103.00
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="pass", ticker="BAND", pivot=100.00,
+                   stop=63.00, close=99.0)
+    _seed_kod_derivation_session_close(cfg, price=99.0, ticker="BAND")
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.withheld_reason == "sizing_infeasible"
+    assert po.withheld_detail == (
+        "0 shares at the $37.50 budget; 1 share risks $40.00 (1.1x budget) at "
+        "limit 103.00; above budget if you proceed")
+    assert row.risk_flag_marker == ""
+    assert row.risk_flag_attest_available is True
+    assert row.attest_options == (
+        ("acted_manually", "I acted on this manually"),)
+
+
+# ===========================================================================
+# D84 T7.4 -- CHARC amendment 1 CORRECTED (20261026T164436Z, item 1).
+# (a) leg (b) keys on the SIZING FACT (a live card whose own SizingResult is a
+#     risk-bound zero), not on the `sizing_infeasible` reason or its heading,
+#     so a regime-withheld card in the band still carries the declaration;
+# (b) leg (a), the fire's flagged layer, is WITHDRAWN while the card OFFERS an
+#     order: "The framework has no order here" is false on an offered card,
+#     and the offered form's own place/decline path records the act. The
+#     MARKER stays (P1: the fire's criterion did fail).
+# ===========================================================================
+
+
+def test_amendment1_corrected_a_the_regime_withheld_BAND_card_offers_the_declaration(  # noqa: N802
+        seeded_db):
+    """RED before the correction. R-T7.8's geometry (pivot 100.00, stop 63.00,
+    risk PASSES at the pivot) with NO derivation-session close, so
+    `regime_order_type` is None: the ORDINARY intraday state of a live card.
+    The result is `regime_undeterminable` and still carries the sizing, a
+    RISK-bound zero at limit 103.00. Keyed on the reason, the affordance was
+    absent here; keyed on the sizing fact, it renders. No marker (P1)."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="pass", ticker="BAND", pivot=100.00,
+                   stop=63.00, close=99.0)
+    row = _vm(cfg).rows[0]
+    assert row.is_live is True
+    po = row.prepared_order
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.withheld_heading == "PREPARED ORDER WITHHELD"
+    assert po.stated_zero_line.startswith("0 shares at the $37.50 budget")
+    assert row.risk_flag_marker == ""
+    assert row.risk_flag_attest_available is True
+    assert row.attest_options == (
+        ("acted_manually", "I acted on this manually"),)
+    assert D84_LEAD in _attest_section(_render_card(row))
+
+
+def test_amendment1_corrected_a_a_regime_withheld_FEASIBLE_card_offers_nothing(  # noqa: N802
+        seeded_db):
+    """GUARD. The same regime-None state with FEASIBLE sizing (pivot 100.00,
+    stop 90.00: one share risks $13.00 at limit 103.00, 2 shares fit): no
+    zero, so no declaration. Unchanged pre-D84 posture: the offered form
+    arrives with the close. Fails if leg (b) keys on `sizing is not None`."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="pass", ticker="FEAS", pivot=100.00,
+                   stop=90.00, close=99.0)
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.stated_zero_line == ""
+    assert row.risk_flag_marker == ""
+    assert row.risk_flag_attest_available is False
+    assert row.attest_options == ()
+
+
+def test_amendment1_corrected_a_a_regime_withheld_CAP_bound_zero_offers_nothing(  # noqa: N802
+        seeded_db):
+    """GUARD. Regime None with a CAP-bound zero (pivot 1200.00, stop 1199.00:
+    one share risks $37.00 at limit 1236.00, inside the $37.50 budget, but one
+    share's notional exceeds the position cap): the zero is the cap's, not the
+    risk leg's, so no declaration. Fails if leg (b) keys on `shares == 0`."""
+    from swing.recommendations.sizing import risk_bound_zero
+
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="pass", ticker="CAPZ", pivot=1200.00,
+                   stop=1199.00, close=1190.0)
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.sizing is not None and po.sizing.shares == 0
+    # The RISK leg allows a share ($37.50 / $37.00 floors to 1), so the zero is
+    # the position cap's.
+    assert po.sizing.max_risk_dollars == 37.5
+    assert po.sizing.risk_per_share == 37.0
+    assert risk_bound_zero(po.sizing) is False
+    assert row.risk_flag_attest_available is False
+    assert row.attest_options == ()
+
+
+def test_amendment1_corrected_b_an_OFFERED_card_withdraws_the_fire_flag_declaration(  # noqa: N802
+        seeded_db):
+    """RED before the correction. The fire's stored risk layer is FLAGGED,
+    but the live card OFFERS an order (a rung-A close; pivot 100.00, stop
+    90.00 sizes to 2 shares at limit 103.00), reachable when real equity rises
+    above the floor or the policy is edited after the fire. "The framework has
+    no order here" would be false and the act is recordable through the
+    offered form, so the declaration is withdrawn. The marker STAYS (P1)."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="fail", ticker="OFR", pivot=100.00,
+                   stop=90.00, close=99.0)
+    _seed_kod_derivation_session_close(cfg, price=99.0, ticker="OFR")
+    row = _vm(cfg).rows[0]
+    assert row.prepared_order.offered is True
+    assert row.risk_flag_marker == "RISK FLAG"
+    assert row.risk_flag_attest_available is False
+    assert row.attest_options == ()
+    assert D84_LEAD not in _render_card(row)
+
+
+def test_amendment1_corrected_b_a_flagged_WITHHELD_live_card_keeps_the_declaration(  # noqa: N802
+        seeded_db):
+    """GUARD. Fire flagged + a live WITHHELD card keeps leg (a). The geometry
+    sizes FEASIBLY (pivot 100.00, stop 90.00) and the regime is None, so no
+    order is offered and leg (b) cannot carry it: the declaration here is leg
+    (a)'s alone. Fails if leg (a) is withdrawn on every LIVE card rather than
+    on an OFFERED one. The terminal sibling is R-T7.7, unchanged."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="fail", ticker="WTH", pivot=100.00,
+                   stop=90.00, close=99.0)       # no derivation-session close
+    row = _vm(cfg).rows[0]
+    assert row.is_live is True
+    po = row.prepared_order
+    assert po.offered is False
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.stated_zero_line == ""             # feasible: no zero, no leg (b)
+    assert row.risk_flag_marker == "RISK FLAG"
+    assert row.risk_flag_attest_available is True
+
+
+def test_a_failed_risk_layer_read_degrades_only_its_row_no_marker_no_affordance(
+        seeded_db, monkeypatch):
+    """Codex R4 A4-02 (A6, D84's own read). A FLAGGED fire on a live withheld
+    card (the WTH geometry: marker and leg-(a) affordance both present when the
+    read succeeds) whose `fetch_candidate_by_id` raises: the panel stays
+    available with its row, and that row renders NO marker and NO declaration
+    affordance -- an unread layer is neither a flag nor a pass. Fails if the
+    per-latch containment in `_panel_risk_inputs` is removed (the panel then
+    degrades through its outer boundary)."""
+    import swing.web.view_models.latches as vm_mod
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="fail", ticker="WTH", pivot=100.00,
+                   stop=90.00, close=99.0)
+    witness = _vm(cfg).rows[0]
+    assert witness.risk_flag_marker == "RISK FLAG"
+    assert witness.risk_flag_attest_available is True
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("fetch_candidate_by_id exploded")
+
+    monkeypatch.setattr(vm_mod, "fetch_candidate_by_id", _boom)
+    vm = _vm(cfg)
+    assert vm.available is True
+    assert len(vm.rows) == 1
+    row = vm.rows[0]
+    assert row.risk_flag_marker == ""
+    assert row.risk_flag_attest_available is False
+    assert D84_LEAD not in _render_card(row)

@@ -24,6 +24,7 @@ from swing.web.price_cache import PriceCache, PriceSnapshot
 from swing.web.view_models.dashboard import (
     _flag_tags,
     _pattern_tags,
+    _risk_flags,
     _sort_watchlist,
     latest_evaluation_run_id,
 )
@@ -87,6 +88,9 @@ class WatchlistVM:
     # NOT propagate to base-layout VMs. Default empty dict for graceful
     # render outside the builder.
     cohort_hints: Mapping[str, str] = field(default_factory=dict)
+    # D84 T9: the RISK FLAG marker per ticker, a SIBLING of `flag_tags` (the
+    # sort key) exactly as on DashboardVM. Default empty dict.
+    risk_flags: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.banner_resolve_link is not None:
@@ -141,6 +145,9 @@ class WatchlistRowVM:
     # Arc 7 Task 6 — render-time cohort-hint preview chip for this row.
     # None matches the template's `{% if cohort_hint %}` guard.
     cohort_hint: str | None = None
+    # D84 T9: the RISK FLAG marker for this row's stored risk layer, "" when
+    # the layer passes, is empty, or the ticker has no candidate.
+    risk_flag: str = ""
 
 
 @dataclass(frozen=True)
@@ -165,6 +172,10 @@ class WatchlistExpandedVM:
     # SAME pipeline_run (Option A one-anchor LOCK; §1.5.3). None when no
     # completed pipeline_run exists at request time.
     pipeline_run_id: int | None = None
+    # D84 T9 step 2: the RISK FLAG marker for the expanded name's stored risk
+    # layer, rendered beside the heading; "" when it passes, is empty, or
+    # there is no candidate. The risk GRID renders from `candidate.criteria`.
+    risk_flag: str = ""
 
 
 def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
@@ -244,6 +255,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         hint = cohort_hint_for(by_ticker.get(r.ticker), registry)
         if hint:
             cohort_hints[r.ticker] = hint
+    risk_flags = _risk_flags(by_ticker)
     # Sort outside `with conn:` is safe — `_sort_watchlist` is pure (no DB).
     rows = _sort_watchlist(list(rows), flag_tags)
     prices = cache.get_many(
@@ -269,6 +281,7 @@ def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
         banner_resolve_link=banner_resolve_link,
         watchlist_chart_svg_bytes=watchlist_chart_svg_bytes,
         cohort_hints=cohort_hints,
+        risk_flags=risk_flags,
     )
 
 
@@ -336,6 +349,7 @@ def build_watchlist_row(
         pipeline_run_id=pipeline_run_id,
         data_asof_date=(binding.data_asof_date if binding is not None else None),
         cohort_hint=cohort_hint_for(by_ticker.get(ticker), registry),
+        risk_flag=_risk_flags(by_ticker).get(ticker, ""),
     )
 
 
@@ -427,4 +441,7 @@ def build_watchlist_expanded(
         # JIT helper threads the SAME anchor used for chart URL +
         # candidate criteria + chart-scope reason.
         pipeline_run_id=(binding.run_id if binding is not None else None),
+        risk_flag=(
+            "" if candidate is None
+            else _risk_flags({ticker: candidate}).get(ticker, "")),
     )

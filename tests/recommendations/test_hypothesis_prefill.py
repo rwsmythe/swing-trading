@@ -33,8 +33,14 @@ def _setup(tmp_path: Path) -> Path:
     return cfg
 
 
-def _seed_aplus_pipeline(cfg_path: Path, ticker: str) -> None:
-    """Seed a complete pipeline run with one A+ candidate for `ticker`."""
+def _seed_aplus_pipeline(cfg_path: Path, ticker: str, *,
+                         risk_result: str | None = None) -> None:
+    """Seed a complete pipeline run with one A+ candidate for `ticker`.
+
+    `risk_result` seeds the candidate's `risk_feasibility` row (the shape
+    production always writes). The default seeds NO risk row, the EMPTY-layer
+    shape R-T4.5 needs (D84 E-d); a test asserting an H1 label passes
+    `risk_result="pass"`."""
     cfg_data = tomllib.loads(cfg_path.read_text())
     db_path = Path(cfg_data["paths"]["db_path"])
     conn = connect(db_path)
@@ -50,12 +56,19 @@ def _seed_aplus_pipeline(cfg_path: Path, ticker: str) -> None:
                 ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
             )
             eval_id = cur.lastrowid
-            conn.execute(
+            cand_cur = conn.execute(
                 """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
                    close, pivot, initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 180.0, 181.0, 170.0, 'universe')""",
                 (eval_id, ticker),
             )
+            if risk_result is not None:
+                conn.execute(
+                    """INSERT INTO candidate_criteria (candidate_id,
+                       criterion_name, layer, result)
+                       VALUES (?, 'risk_feasibility', 'risk', ?)""",
+                    (cand_cur.lastrowid, risk_result),
+                )
             conn.execute(
                 """INSERT INTO pipeline_runs
                    (started_ts, finished_ts, trigger, data_asof_date,
@@ -91,7 +104,7 @@ def test_lookup_active_recommendation_label_returns_exact_matcher_label(
     stale evaluation_run_id, this exact-equality assertion fails.
     """
     cfg = _setup(tmp_path)
-    _seed_aplus_pipeline(cfg, ticker="AAPL")
+    _seed_aplus_pipeline(cfg, ticker="AAPL", risk_result="pass")
 
     cfg_data = tomllib.loads(cfg.read_text())
     db_path = Path(cfg_data["paths"]["db_path"])
@@ -211,7 +224,7 @@ def test_lookup_returns_narrow_label_for_aplus_candidate(tmp_path: Path):
     (baseline fires only when narrow phase returns zero matches).
     """
     cfg = _setup(tmp_path)
-    _seed_aplus_pipeline(cfg, ticker="AAPL")
+    _seed_aplus_pipeline(cfg, ticker="AAPL", risk_result="pass")
 
     cfg_data = tomllib.loads(cfg.read_text())
     db_path = Path(cfg_data["paths"]["db_path"])
@@ -226,3 +239,24 @@ def test_lookup_returns_narrow_label_for_aplus_candidate(tmp_path: Path):
     assert label == "A+ baseline (aplus)", (
         f"A+ candidate must still return narrow label (not broad-watch); got {label!r}"
     )
+
+
+def test_an_aplus_candidate_with_NO_risk_row_prefills_NOTHING(tmp_path: Path):  # noqa: N802
+    """R-T4.5 -- E-d REVERSED, the prefill consumer (R3-02). An `aplus`
+    candidate with no risk row is neither H1 nor H4 (an unmeasured layer is
+    not a pass and not a flag), and the baseline fallback is watch-only, so the
+    prefill offers NOTHING. Before D84 this returned the H1 label."""
+    cfg = _setup(tmp_path)
+    _seed_aplus_pipeline(cfg, ticker="AAPL")   # NO risk row
+
+    cfg_data = tomllib.loads(cfg.read_text())
+    db_path = Path(cfg_data["paths"]["db_path"])
+    conn = connect(db_path)
+    try:
+        label = lookup_active_recommendation_label(
+            conn, ticker="AAPL", starting_equity=1200.0,
+        )
+    finally:
+        conn.close()
+
+    assert label is None

@@ -22,8 +22,23 @@ def _active_registry(conn):
 
 def test_aplus_maps_to_h1(tmp_path):
     conn = make_db(tmp_path)  # migration 0008 seeds the 4 active hypotheses
-    names = attribute_hypotheses(_cand("aplus", []), registry=_active_registry(conn))
+    names = attribute_hypotheses(
+        _cand("aplus", [("risk_feasibility", "risk", "pass")]),
+        registry=_active_registry(conn))
     assert "A+ baseline" in names
+
+
+def test_aplus_with_empty_risk_layer_maps_to_nothing(tmp_path):
+    # D84 E-d at a direct matcher consumer (RD: one empty-risk-layer test per
+    # consumer; Codex R1 Major 3). An A+ with NO risk row is neither H1 nor H4,
+    # and the wrapper's opt-in broad-watch fallback is watch-only, so nothing is
+    # attributed even with the baseline ACTIVE (asserted, so the empty result is
+    # not vacuous). Under a matcher that treats an empty layer as passing this
+    # would return ["A+ baseline"].
+    conn = make_db(tmp_path)
+    registry = _active_registry(conn)
+    assert "Broad-watch baseline" in {h.name for h in registry}
+    assert attribute_hypotheses(_cand("aplus", []), registry=registry) == []
 
 
 def test_watch_proximity_only_maps_to_h2(tmp_path):
@@ -54,27 +69,27 @@ def test_watch_vcp_volume_contraction_miss_also_maps_to_h3(tmp_path):
         cand, registry=_active_registry(conn))
 
 
-def test_watch_risk_feasibility_only_maps_to_h4(tmp_path):
-    # Verified against _capital_blocked_match: bucket in (watch, skip) AND non-pass set
-    # is EXACTLY {risk_feasibility}.
+def test_watch_risk_feasibility_only_falls_to_the_baseline(tmp_path):
+    # Supersedes test_watch_risk_feasibility_only_maps_to_h4 (D84). H4 is now
+    # `aplus` AND a flagged risk layer, so a {risk_feasibility}-only WATCH miss
+    # is no longer H4; the wrapper opts in, so it falls to the Broad-watch
+    # baseline by the fallback rule (RD (iv)).
     conn = make_db(tmp_path)
     cand = _cand("watch", [("risk_feasibility", "risk", "fail")])
     names = attribute_hypotheses(cand, registry=_active_registry(conn))
-    assert "Capital-blocked: smaller-position test" in names
-    assert "Sub-A+ VCP-not-formed" not in names   # risk_feasibility is not a VCP trigger
+    assert names == ["Broad-watch baseline"]
 
 
-def test_skip_risk_feasibility_only_maps_to_h4(tmp_path):
-    # C-review M5 + spec 6.1: production _capital_blocked_match accepts bucket in
-    # ("watch", "skip") for a risk_feasibility-ONLY miss -- and `skip` is in fact the
-    # production-realized bucket (risk_feasibility is a hard pre-filter that drives
-    # bucket_for to 'skip'). The watch-only test above missed the dominant real case.
-    # Verified against swing/recommendations/hypothesis.py:_capital_blocked_match:254-256.
+def test_skip_risk_feasibility_only_matches_nothing(tmp_path):
+    # Supersedes test_skip_risk_feasibility_only_maps_to_h4 (D84): the
+    # pre-boundary-SHAPED `skip` + {risk_feasibility} row matches NO hypothesis,
+    # the closed-population pin (R-(iv)') at the attribution seam. RD: "0
+    # exact-{risk} rows and 0 exact-{risk, TT8_rs_rank} rows in all 312 risk
+    # non-pass rows since 2026-04-16 (runs 1-180), 0 Capital-blocked trades".
     conn = make_db(tmp_path)
     cand = _cand("skip", [("risk_feasibility", "risk", "fail")])
     names = attribute_hypotheses(cand, registry=_active_registry(conn))
-    assert "Capital-blocked: smaller-position test" in names
-    assert "Sub-A+ VCP-not-formed" not in names
+    assert names == []
 
 
 def test_unmatched_watch_falls_to_baseline(tmp_path):

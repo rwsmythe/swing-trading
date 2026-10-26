@@ -16,6 +16,8 @@ from swing.data.models import (
     WatchlistEntry,
     WeatherRun,
 )
+from swing.evaluation.scoring import risk_inputs_from_criteria
+from swing.recommendations.sizing import zero_share_line
 from swing.rendering.view_models import (
     AccountTileVM,
     AdvisorySuggestionVM,
@@ -206,12 +208,23 @@ def _expansions(inputs: BriefingInputs) -> list[TickerExpansionVM]:
                         value=cr.value, rule=cr.rule)
             for cr in c.criteria if cr.layer == "vcp"
         ]
+        risk = [
+            CriterionVM(name=cr.criterion_name, result=cr.result,
+                        value=cr.value, rule=cr.rule)
+            for cr in c.criteria if cr.layer == "risk"
+        ]
+        # D84 (CHARC P1): the criteria-only MARKER, through the one
+        # formatter and the one counting adapter; None on a passing or EMPTY
+        # layer renders nothing.
+        marker = zero_share_line(risk=risk_inputs_from_criteria(c.criteria))
         out.append(TickerExpansionVM(
             ticker=r.ticker,
             narrative=r.rationale or "",
             trend_template_grid=tt,
             vcp_grid=vcp,
             chart_b64=inputs.chart_b64s.get(r.ticker),
+            risk_grid=risk,
+            risk_flag=marker or "",
         ))
     return out
 

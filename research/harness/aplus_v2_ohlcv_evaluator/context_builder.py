@@ -428,18 +428,33 @@ def classify_candidate_tier(persisted_risk_result: str | None) -> int:
           persisted for this candidate (historical eval-run predating risk_feasibility
           criterion, or pre-schema-v-risk row). Risk was not evaluated => bucket
           independent of risk => tier-1.
-      Tier 2 = bucket DEPENDED on risk gate outcome:
-        - persisted_risk_result == 'fail': risk hard-filtered the candidate to 'skip'
-          (risk WAS evaluated and failed => load-bearing).
-        - persisted_risk_result == 'na': risk returned insufficient-data => treated as
-          fail by bucket_for => risk was load-bearing for skip outcome.
+      Tier 2 = bucket DEPENDED on risk gate outcome UNDER THE PRE-D84 bucket_for
+      (the risk pre-skip, which production removed at D84; see below):
+        - persisted_risk_result == 'fail': the pre-D84 gate hard-filtered the
+          candidate to 'skip' (risk WAS evaluated and failed => load-bearing).
+        - persisted_risk_result == 'na': risk returned insufficient-data => the
+          pre-D84 bucket_for treated it as fail => load-bearing for the skip.
+      Tier rule as written is correct for rows evaluated BEFORE D84 (risk pre-skip
+      live). For rows evaluated after D84 a risk fail/na is NEVER load-bearing for
+      the bucket, so this function over-assigns tier 2 to them (production removed
+      the risk pre-skip at D84, <D84 merge sha>); re-align (tier 1 for
+      post-boundary rows, keyed on the evaluation run's date against the boundary)
+      before any re-use. The reverse direction holds too: a row evaluated BEFORE
+      D84 whose risk failed was persisted `skip` by the pre-skip, and current
+      production recomputes it to its structural bucket, so for pre-boundary rows
+      tier 2 against CURRENT evaluate_one is an era divergence by construction, not
+      a surrogate condition; the same re-alignment compares pre-boundary tier-2 rows
+      against the pre-D84 mirror (aplus_sensitivity/sweep.py,
+      _bucket_for_substituted) or counts them as era-divergent, never as parity
+      failures.
 
-    Returns: 1 (tier-1 EXACT parity required) or 2 (tier-2 CONDITIONAL via surrogate).
+    Returns: 1 (tier-1 EXACT parity required) or 2 (tier-2 CONDITIONAL via surrogate;
+      pre-boundary rows under the pre-D84 gate).
 
-    Discriminating cases (Codex R1.C1 fix):
+    Discriminating cases (Codex R1.C1 fix; the tier-2 reasons are the pre-D84 gate's):
       pass  -> 1  (risk passed; non-load-bearing)
       None  -> 1  (risk not evaluated; non-load-bearing; was incorrectly tier-2 pre-fix)
-      fail  -> 2  (risk blocked the candidate)
-      na    -> 2  (risk returned insufficient-data; treated as fail by bucket_for)
+      fail  -> 2  (the pre-D84 gate: risk blocked the candidate)
+      na    -> 2  (the pre-D84 gate: insufficient-data treated as fail by bucket_for)
     """
     return 1 if persisted_risk_result in ("pass", None) else 2

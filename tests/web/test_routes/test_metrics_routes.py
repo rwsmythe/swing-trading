@@ -1184,3 +1184,17 @@ def test_trade_process_panel_byte_identical_across_intent_facet(seeded_db):
     # But the card body DID re-face: the standard slice is smaller (n_closed
     # differs between All=3 and standard=2), so the full pages differ.
     assert r_all.text != r_std.text
+
+
+def test_the_capital_tile_says_flagged(seeded_db):
+    """R-F4.1 -- D84 F4 (CHARC): since D84 a risk fail FLAGS and never blocks,
+    so the tile says "flagged" where it said "blocked". The field name, the
+    `data-metric` attribute and the value are UNCHANGED."""
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/metrics/capital-friction")
+    assert r.status_code == 200
+    assert 'data-metric="risk_feasibility_blocked_rate"' in r.text
+    assert "Risk-feasibility flagged rate (latest run)" in r.text
+    assert "blocked rate" not in r.text.lower()

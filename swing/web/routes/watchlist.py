@@ -171,6 +171,7 @@ def watchlist_row(request: Request, ticker: str):
             "current_pivot": row_vm.current_pivot,
             "chart_svg_bytes_for_row": chart_bytes,
             "cohort_hint": row_vm.cohort_hint,
+            "risk_flag": row_vm.risk_flag,
         },
     )
 

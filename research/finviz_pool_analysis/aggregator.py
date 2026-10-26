@@ -3,8 +3,9 @@
 All analytical primitives operate on production ``Candidate`` objects.
 Production-gated blocker classification reuses
 ``research.harness.earnings_proximity.scripts.recompute_binding_prod_gated.production_gated_binding``
-(canonical for "what would production's ``bucket_for`` reject this
-candidate for, in production gating order").
+(Mirrors bucket_for AS OF pre-D84 (risk hard filter RETAINED here);
+production removed the risk pre-skip at D84 (<D84 merge sha>);
+re-align before any re-use.)
 
 Frozen at D1 of the study (``research/studies/finviz-pool-binding-constraints.md``):
 - The doctrine-defensible miss set membership (see ``doctrine.py``).
@@ -45,12 +46,15 @@ def production_gated_blocker(candidate: Candidate) -> str:
     """Return the production-gated blocker for one candidate.
 
     Wraps ``production_gated_binding`` from the candidate-sparsity
-    diagnostic's R1 fix (canonical implementation). Returns ``"<aplus>"``
-    if all criteria pass under production gating order.
+    diagnostic's R1 fix (the pre-D84 mirror; see the module docstring).
+    Returns ``"<aplus>"`` if all criteria pass under the pre-D84 production
+    gating order.
 
     Note: this is computed from ``candidate.criteria`` alone; it does NOT
-    consult ``candidate.bucket``. The two should agree on the A+ row by
-    construction (see ``Aggregator._verify_aplus_consistency``).
+    consult ``candidate.bucket``. For rows evaluated BEFORE D84 the two agree
+    on the A+ row by construction; for a post-D84 risk-flagged A+ row they
+    disagree (production buckets it ``aplus``, this pre-D84 mirror names
+    ``risk_feasibility``), the re-use precondition in the module docstring.
     """
     return production_gated_binding(_criteria_to_row(candidate))
 
@@ -174,19 +178,26 @@ def aggregate_runs(
                 blocker = "<error>"
             blocker_counts[blocker] += 1
 
-            # Cross-check: the production-gated <aplus> row count should
-            # equal the 'aplus' bucket count. We surface drift as a
-            # consistency warning rather than a crash because the read
-            # of production data must remain robust to legacy anomalies.
+            # Cross-check against the PRE-D84 mirror: for rows evaluated
+            # before D84 its <aplus> row count equals the 'aplus' bucket
+            # count. A post-D84 risk-flagged A+ (bucket 'aplus', mirror
+            # blocker risk_feasibility) is an EXPECTED divergence from the
+            # retired risk pre-skip, not a defect in the read; see the module
+            # docstring's re-use precondition. We surface any divergence as a
+            # consistency warning rather than a crash because the read of
+            # production data must remain robust to legacy anomalies.
             if cand.bucket == "aplus" and blocker != APLUS_KEY:
                 consistency_warnings.append(
                     f"run={run_id} ticker={cand.ticker}: bucket=aplus but "
-                    f"production-gated blocker={blocker} (re-aggregation drift)"
+                    f"pre-D84 mirror blocker={blocker} (re-aggregation drift "
+                    f"vs the pre-D84 mirror; expected for a post-D84 "
+                    f"risk-flagged A+)"
                 )
             if cand.bucket != "aplus" and blocker == APLUS_KEY:
                 consistency_warnings.append(
                     f"run={run_id} ticker={cand.ticker}: bucket={cand.bucket} but "
-                    f"production-gated blocker=<aplus> (re-aggregation drift)"
+                    f"pre-D84 mirror blocker=<aplus> (re-aggregation drift "
+                    f"vs the pre-D84 mirror)"
                 )
 
             # Near-A+ classification on watch bucket only.

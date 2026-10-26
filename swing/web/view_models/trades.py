@@ -21,7 +21,7 @@ from swing.data.repos.trades import (
 )
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.evaluation.dates import PageKind, topbar_session_date
-from swing.recommendations.sizing import compute_shares
+from swing.recommendations.sizing import compute_shares, zero_share_line
 from swing.trades.entry import entry_rationale_options
 from swing.trades.equity import current_equity
 from swing.trades.exit import ExitReason, recorded_exit_identities
@@ -301,6 +301,19 @@ class TradeEntryFormVM:
     # ASCII line visible beside the Hypothesis field (the same text the
     # CLI prefill prints). None on the ordinary path.
     hypothesis_suggestion_unavailable_text: str | None = None
+    # D84 T8 step 3 (RD's floor (1)): the STATED zero when the prices are
+    # valid and the sizing comes out at zero shares -- the one formatter's
+    # line on the "entry" basis. None otherwise, so "Enter a valid entry price
+    # and stop" renders ONLY when the prices are invalid. The equity this form
+    # sizes on is the unfloored current equity (a banked item, unchanged).
+    sizing_zero_line: str | None = None
+    # D84 T8.3 completion (CHARC amendment 3): the shares INPUT's prefill,
+    # distinct from the HINT. The Schwab auto-fill's share count when the
+    # auto-fill is populated, else the sizing-derived shares. The input shows
+    # `input_shares` (the drift-retry submitted value) if set, else this;
+    # `suggested_shares` stays sizing-derived, so the hint states the sizing
+    # (including the stated zero) on an auto-filled form too.
+    prefill_shares: int = 0
     # Phase 7 Sub-C C.4 — draft_* preservation fields for the 18 pre-trade
     # required fields (spec §11.1). Mirrors the rationale/notes
     # preservation pattern: when the MissingPreTradeFieldsException catch
@@ -795,15 +808,22 @@ def build_entry_form_vm(
         suggested_shares = sizing.shares
         risk_dollars = sizing.risk_dollars
         risk_pct = sizing.risk_pct
+        sizing_zero_line = zero_share_line(
+            sizing, basis_label="entry", basis_price=entry_price)
     else:
         suggested_shares = 0
         risk_dollars = 0.0
         risk_pct = 0.0
-    # Phase 13 T3.SB1 — Schwab shares overrides sizing-derived
-    # suggested_shares so the input pre-population matches the actual
-    # fill. Cast safely: auto_fill.shares is int|None.
+        sizing_zero_line = None
+    # Phase 13 T3.SB1 — the Schwab shares prefill the INPUT so it matches
+    # the actual fill. D84 T8.3 completion (CHARC amendment 3): the fill's
+    # count goes to `prefill_shares`, never over `suggested_shares` -- the
+    # hint keys on the sizing, so a risk-bound zero still states its zero on
+    # the auto-filled (H4 manual) path. Cast safely: auto_fill.shares is
+    # int|None.
+    prefill_shares = suggested_shares
     if auto_fill.kind == "populated" and auto_fill.shares is not None:
-        suggested_shares = int(auto_fill.shares)
+        prefill_shares = int(auto_fill.shares)
 
     # Spec §3.6: only ``pattern in ('flag', 'none')`` rows count as
     # "evaluated"; classifier-error rows (pattern=NULL) and missing
@@ -830,6 +850,8 @@ def build_entry_form_vm(
         suggested_shares=suggested_shares,
         risk_dollars=risk_dollars,
         risk_pct=risk_pct,
+        sizing_zero_line=sizing_zero_line,
+        prefill_shares=prefill_shares,
         soft_warn_threshold=cfg.position_limits.soft_warn_open,
         hard_cap=cfg.position_limits.hard_cap_open,
         open_count=len(open_trades),

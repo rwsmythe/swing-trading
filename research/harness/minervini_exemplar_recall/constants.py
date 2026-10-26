@@ -6,7 +6,9 @@ from swing.config import Config
 H2_MIN_BARS = 60  # detector floor: enough bars for zigzag to emit >=1 down-swing.
 CONTROL_GAP_BARS = 120  # min |session_pos - entry_pos| for a negative-control anchor.
 DEFAULT_CONTROL_SEED = 20260608  # deterministic control-sampling base seed.
-EQUITY_FLOOR_SURROGATE = 7500.0  # flagged surrogate; H1 risk gate uses this, not a real account.
+# Flagged surrogate, not a real account: it feeds the risk criterion and this harness's own
+# pre-D84 gate mirror.
+EQUITY_FLOOR_SURROGATE = 7500.0
 
 
 def screenable_floor(config: Config) -> int:

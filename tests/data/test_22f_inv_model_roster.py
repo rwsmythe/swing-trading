@@ -184,6 +184,10 @@ LATER_ARC_ROSTER: dict[str, str] = {
     # row); reached from the web exit POST only (the CLI `trade exit` formats
     # the value-tuple text directly and never constructs the flag).
     "trades.exit_auto_fill.ExitRecordFlag.__post_init__": "computed",
+    # D84 T2: built only by `scoring.risk_inputs_from_criteria`, which COUNTS a
+    # candidate's risk-layer results (computed, never itself a DB row); reached
+    # from the matcher adapter, the latch panel, the tag sites and the briefing.
+    "evaluation.scoring.RiskInputs.__post_init__": "computed",
 }
 
 UNREACHED: dict[str, str] = {

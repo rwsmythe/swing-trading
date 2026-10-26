@@ -23,7 +23,11 @@ from swing.latches.constants import (
     PRICE_DP,
     mandate_limit_price,
 )
-from swing.recommendations.sizing import compute_shares
+from swing.recommendations.sizing import (
+    SizingResult,
+    compute_shares,
+    zero_share_line,
+)
 
 # The ONLY member of MANDATE_ORDER_DURATIONS -- resolved FROM the frozenset so no
 # site re-types the literal. GTC-ness is required of BOTH mandate forms: a DAY
@@ -286,6 +290,11 @@ class PreparedOrderResult:
     order: PreparedOrder | None
     withheld_reason: str | None
     withheld_detail: str
+    # D84 (CHARC P3 (b)): the SizingResult the framework computed for this
+    # mandate, carried on a WITHHELD result so the card can state its zero.
+    # Admitted beside `regime_undeterminable` AND `sizing_infeasible`, and
+    # nowhere else; on `sizing_infeasible` it is required and is the zero.
+    sizing: SizingResult | None = None
 
     def __post_init__(self) -> None:
         if (self.order is None) == (self.withheld_reason is None):
@@ -306,6 +315,22 @@ class PreparedOrderResult:
         elif self.withheld_detail:
             raise ValueError(
                 "withheld_detail must be '' when an order is present")
+        # D84 (CHARC P3). `withheld_reason=None` implies an `order` under the
+        # exactly-one-of check above, so the order clause covers it.
+        if self.sizing is not None and (
+                self.order is not None
+                or self.withheld_reason not in (
+                    "regime_undeterminable", "sizing_infeasible")):
+            raise ValueError(
+                "sizing is admitted beside regime_undeterminable and "
+                "sizing_infeasible only; got "
+                f"withheld_reason={self.withheld_reason!r}, "
+                f"order={self.order is not None}")
+        if self.withheld_reason == "sizing_infeasible" and (
+                self.sizing is None or self.sizing.shares != 0):
+            raise ValueError(
+                "a sizing_infeasible result must carry its zero-share "
+                "SizingResult")
 
 
 @_dataclass(frozen=True)
@@ -342,19 +367,19 @@ def compute_prepared_order(
     the type would write the WRONG TYPE into the parity ledger. That is the
     asymmetry rule again -- from an undated close you may raise a mismatch
     alarm, but you may not assert a match, and a prepared order IS an assertion.
-    """
-    if regime_order_type is None:
-        return PreparedOrderResult(
-            order=None, withheld_reason="regime_undeterminable",
-            withheld_detail=(
-                "No prepared order: the price regime is undeterminable, so the "
-                "framework cannot tell a breakout stop-limit from a pullback "
-                "limit. The mandate facts are shown; no order is offered."))
 
+    The sizing runs BEFORE the regime branch returns, because its basis is
+    regime-independent; the withheld-reason precedence is unchanged (D84 P3).
+    A regime-withheld result therefore carries the sizing, so the card can
+    state a zero BESIDE "regime undeterminable" -- the stated zero is not an
+    order and asserts nothing about the regime.
+    """
+    # THE SIZING BASIS IS REGIME-INDEPENDENT (CHARC P3): the whole-cent limit
+    # from `zone_cap` and the fire-time stop. So the limit, the below-pivot
+    # test and the sizing are all computed up front, and the RETURNS below keep
+    # 21-B's precedence: regime, then below-pivot, then degenerate, then
+    # infeasible, then the offered order.
     limit_price = mandate_limit_price(latch.zone_cap)
-    stop_price = (
-        float(latch.latched_pivot)
-        if regime_order_type == MANDATE_ORDER_TYPE_BREAKOUT else None)
 
     # THE FRAMEWORK'S OWN ORDER MUST BE POSSIBLE. The whole-cent FLOOR can drag
     # the mandate limit BELOW the latched pivot whenever the 3% pad is worth
@@ -392,7 +417,48 @@ def compute_prepared_order(
     # protect: stop 0.25, limit 0.25. Comparing the emitted limit against a
     # sub-cent artifact of the pivot is the price-precision-parity gotcha, which
     # is the same rule `PRICE_DP` was consolidated for one piece earlier.
-    if round(limit_price, PRICE_DP) < round(float(latch.latched_pivot), PRICE_DP):
+    below_pivot = (
+        round(limit_price, PRICE_DP) < round(float(latch.latched_pivot), PRICE_DP))
+
+    # RULED BY RD 2026-07-29: the LIMIT PRICE is the sizing basis in BOTH
+    # regimes, NOT pivot-parity. In the pullback regime the limit is the only
+    # price the order can fill at; in the breakout regime it is the worst case.
+    # Pivot-basis sizing produces an order whose risk at an ordinary cap fill
+    # BREACHES the policy cap -- and in the pullback regime the cap is PRECISELY
+    # WHERE THE ORDER FILLS, so that is not a tail event. A mandate that breaches
+    # the risk policy on the expected fill must not be rendered to the operator
+    # as correct.
+    #
+    # A BELOW-PIVOT limit computes NO sizing: it would understate the risk the
+    # pivot carries (the refusal reason below), so there is no zero to state.
+    sizing_basis_price = limit_price
+    sizing: SizingResult | None = None
+    sizing_error: ValueError | None = None
+    if not below_pivot:
+        try:
+            sizing = compute_shares(
+                entry=sizing_basis_price,
+                stop=float(latch.latched_initial_stop),
+                equity=sizing_inputs.sizing_equity,
+                max_risk_pct=sizing_inputs.max_risk_pct,
+                position_pct_cap=sizing_inputs.position_pct_cap)
+        except ValueError as exc:
+            sizing_error = exc
+
+    if regime_order_type is None:
+        return PreparedOrderResult(
+            order=None, withheld_reason="regime_undeterminable",
+            withheld_detail=(
+                "No prepared order: the price regime is undeterminable, so the "
+                "framework cannot tell a breakout stop-limit from a pullback "
+                "limit. The mandate facts are shown; no order is offered."),
+            sizing=sizing)
+
+    stop_price = (
+        float(latch.latched_pivot)
+        if regime_order_type == MANDATE_ORDER_TYPE_BREAKOUT else None)
+
+    if below_pivot:
         return PreparedOrderResult(
             order=None, withheld_reason="limit_below_pivot",
             withheld_detail=(
@@ -403,22 +469,8 @@ def compute_prepared_order(
                 "would understate the risk the pivot carries. The mandate "
                 "facts are shown; no order is offered."))
 
-    # RULED BY RD 2026-07-29: the LIMIT PRICE is the sizing basis in BOTH
-    # regimes, NOT pivot-parity. In the pullback regime the limit is the only
-    # price the order can fill at; in the breakout regime it is the worst case.
-    # Pivot-basis sizing produces an order whose risk at an ordinary cap fill
-    # BREACHES the policy cap -- and in the pullback regime the cap is PRECISELY
-    # WHERE THE ORDER FILLS, so that is not a tail event. A mandate that breaches
-    # the risk policy on the expected fill must not be rendered to the operator
-    # as correct.
-    sizing_basis_price = limit_price
-    try:
-        sizing = compute_shares(
-            entry=sizing_basis_price, stop=float(latch.latched_initial_stop),
-            equity=sizing_inputs.sizing_equity,
-            max_risk_pct=sizing_inputs.max_risk_pct,
-            position_pct_cap=sizing_inputs.position_pct_cap)
-    except ValueError as exc:
+    if sizing_error is not None:
+        exc = sizing_error
         # REACHABLE ON SUB-CENT GEOMETRY, AND THE ROUNDED REFUSAL IS WHAT MAKES
         # IT SO (Codex R8 MINOR -- the THIRD revision of this comment, and the
         # habit is worth naming: each rewrite asserted a reachability claim that
@@ -457,17 +509,22 @@ def compute_prepared_order(
                 "No prepared order: the sizing computation is degenerate "
                 f"({exc}). No order is offered."))
     if not sizing.feasible:
+        # D84 F1-A: the zero is STATED, never refused in prose. ONE formatter
+        # decides the line -- the risk-bound flag (the budget, the one-share
+        # risk and the basis), the position-cap line, or the no-equity line.
+        # `withheld_reason` stays `sizing_infeasible` (no vocabulary change).
         return PreparedOrderResult(
             order=None, withheld_reason="sizing_infeasible",
-            withheld_detail=(
-                "No prepared order: position sizing is infeasible at this "
-                f"geometry (constraint: {sizing.constraint}). At limit "
-                f"{limit_price:.2f} against the fire-time stop "
-                f"{float(latch.latched_initial_stop):.2f}, no whole-share "
-                "position fits inside the risk policy."))
+            withheld_detail=zero_share_line(
+                sizing, basis_label="limit", basis_price=limit_price),
+            sizing=sizing)
 
-    risk_per_share = sizing_basis_price - float(latch.latched_initial_stop)
-    max_risk_dollars = sizing_inputs.sizing_equity * sizing_inputs.max_risk_pct
+    # E-f: ONE source. The one-share risk and the budget are read from the
+    # SizingResult that sized this order -- the same float expressions on the
+    # same operands, so bit-identical to a local recomputation, and with no
+    # second spelling to drift.
+    risk_per_share = sizing.risk_per_share
+    max_risk_dollars = sizing.max_risk_dollars
     shares_by_risk = (
         _math.floor(max_risk_dollars / risk_per_share) if risk_per_share > 0
         else 0)

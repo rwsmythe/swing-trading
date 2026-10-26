@@ -77,8 +77,10 @@ def write_sensitivity_markdown(result: SweepResult, path: Path) -> None:
         "- Sweep is 1D (one variable at a time); cross-coupling NOT modeled.",
         (
             "- Counts at current_value match the persisted bucket distribution"
-            " (parity invariant); delta_aplus / delta_watch are relative to that"
-            " anchor."
+            " for rows evaluated BEFORE D84 (parity invariant); a gate row"
+            " recomputes a post-D84 risk-flagged A+ as skip through the pre-D84"
+            " mirror, an expected divergence. delta_aplus / delta_watch are"
+            " relative to that anchor."
         ),
         (
             "- **V1 LIMITATION: Threshold variables (kind = threshold_additive |"
@@ -90,8 +92,11 @@ def write_sensitivity_markdown(result: SweepResult, path: Path) -> None:
             " `research/method-records/aplus-criteria-calibration.md` V2"
             " dependencies). Gate variables (kind = gate -- 2 of 17 rows:"
             " `trend_template.min_passes`, `vcp.watch_max_fails`) DO produce real"
-            " bucket-redistribution counts via faithful `bucket_for`"
-            " resimulation.**"
+            " bucket-redistribution counts via a `bucket_for` resimulation"
+            " that mirrors bucket_for AS OF pre-D84 (risk hard filter"
+            " RETAINED here); production removed the risk pre-skip at D84"
+            " (<D84 merge sha>);"
+            " re-align before any re-use.**"
         ),
         (
             "- Margin-of-failure semantics for non-numeric criteria fold to"

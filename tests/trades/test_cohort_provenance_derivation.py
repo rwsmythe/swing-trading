@@ -784,6 +784,13 @@ def test_the_closure_actually_reaches_the_things_it_must() -> None:
         "swing.data.repos.hypothesis:list_hypotheses",
         # a constant, not a function
         "swing.recommendations.hypothesis:H_APLUS_BASELINE",
+        # D84 (S1): the matcher adapter and the scoring predicates it reaches
+        # through function-local imports, resolved in THEIR module
+        "swing.recommendations.hypothesis:_risk_inputs_from_candidate",
+        "swing.evaluation.scoring:risk_layer_passes",
+        "swing.evaluation.scoring:risk_layer_flagged",
+        "swing.evaluation.scoring:risk_inputs_from_criteria",
+        "swing.evaluation.scoring:RiskInputs",
     ):
         assert required in closure, required
     assert len(closure) > 30, len(closure)

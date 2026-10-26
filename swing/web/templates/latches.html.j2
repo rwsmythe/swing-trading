@@ -30,7 +30,7 @@
     {% for row in vm.rows %}
     <section class="latch-card latch-state-{{ row.state }}
                     latch-zone-{{ row.zone_position }}">
-      <h2>{{ row.ticker }} <span class="latch-state-label">{{ row.state_label }}</span></h2>
+      <h2>{{ row.ticker }} <span class="latch-state-label">{{ row.state_label }}</span>{% if row.risk_flag_marker %} <span class="tag tag-risk-flag">{{ row.risk_flag_marker }}</span>{% endif %}</h2>
       <dl class="latch-facts">
         <dt>Fired</dt><dd>{{ row.fire_date }}</dd>
         <dt>Latched pivot</dt><dd>{{ row.latched_pivot }}</dd>

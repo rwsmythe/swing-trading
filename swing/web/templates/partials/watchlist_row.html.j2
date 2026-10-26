@@ -1,5 +1,7 @@
 {#- Expects: w (WatchlistEntry), price (PriceSnapshot|None), tags (tuple[str]),
               pattern_tag (str|None — Phase 4 Task 4.7; spec §3.5 SIBLING to tags),
+              risk_flag (str — D84 T9: the RISK FLAG marker, a SIBLING to tags,
+              never inside them; "" or undefined renders nothing),
               chart_svg_bytes_for_row (bytes|None — the only supported source
               of the row's thumbnail SVG).
 
@@ -44,6 +46,9 @@
     {%- endif %}
     {%- if cohort_hint is defined and cohort_hint %}
       <span class="tag tag-cohort">{{ cohort_hint }}</span>
+    {%- endif %}
+    {%- if risk_flag is defined and risk_flag %}
+      <span class="tag tag-risk-flag">{{ risk_flag }}</span>
     {%- endif %}
   </td>
   <td>

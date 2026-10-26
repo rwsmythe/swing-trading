@@ -2,8 +2,9 @@
 
 Boundary conditions of the near-A+ classification (the analytically-
 sensitive primitive locked at D1) are the focus. Production-gated
-blocker correctness is delegated to the canonical implementation in
-``recompute_binding_prod_gated`` and tested at the wrapper level.
+blocker correctness is delegated to the pre-D84 mirror in
+``recompute_binding_prod_gated`` (see its module docstring) and tested at the
+wrapper level.
 """
 from __future__ import annotations
 
@@ -124,7 +125,8 @@ def test_blocker_risk_first_even_when_tt_also_fails():
         bucket="skip",
         overrides={"TT1_above_150_200": "fail", "risk_feasibility": "fail"},
     )
-    # Production gating: risk hard-filter checked FIRST.
+    # Pre-D84 production gating (the mirror's era): risk hard-filter checked
+    # FIRST. Production removed the risk pre-skip at D84.
     assert production_gated_blocker(cand) == "risk_feasibility"
 
 
@@ -234,14 +236,14 @@ def test_aggregate_buckets_blockers_and_near_aplus_one_run():
     assert result.watch_count == 2
     assert result.watch_aplus_ratio == 2 / 1
 
-    # Production-gated blocker counts: one <aplus>, one TT1, one risk_feasibility,
+    # Pre-D84-mirror blocker counts: one <aplus>, one TT1, one risk_feasibility,
     # plus the watch-bucket VCP blockers.
     assert result.blocker_counts["<aplus>"] == 1
     assert result.blocker_counts["risk_feasibility"] == 1
     assert result.blocker_counts["TT1_above_150_200"] == 1
-    # Watch-bucket VCP fails are still blockers under production gating
-    # (1-2 VCP fails → watch, but the production-gated re-aggregation
-    # surfaces the FIRST VCP-layer non-pass criterion).
+    # Watch-bucket VCP fails are still blockers under the pre-D84 mirror's
+    # gating (1-2 VCP fails → watch, but the re-aggregation through the
+    # pre-D84 mirror surfaces the FIRST VCP-layer non-pass criterion).
     assert "proximity_20ma" in result.blocker_counts
     assert "adr" in result.blocker_counts
 
@@ -302,8 +304,9 @@ def test_aggregate_sample_ordering_action_session_desc_then_ticker_asc():
 
 
 def test_aggregate_consistency_warning_on_aplus_bucket_with_blocker():
-    """If a candidate has bucket='aplus' but the production-gated
-    re-aggregation finds a blocker, surface a warning — do not crash."""
+    """If a candidate has bucket='aplus' but the re-aggregation through the
+    pre-D84 mirror finds a blocker, surface a warning — do not crash. (A
+    post-D84 risk-flagged A+ is the expected case of this divergence.)"""
     runs = [
         (
             1,
@@ -312,7 +315,7 @@ def test_aggregate_consistency_warning_on_aplus_bucket_with_blocker():
                 _candidate(
                     ticker="X",
                     bucket="aplus",
-                    overrides={"TT1_above_150_200": "fail"},  # production-gated says skip
+                    overrides={"TT1_above_150_200": "fail"},  # pre-D84 mirror says skip
                 ),
             ],
         )

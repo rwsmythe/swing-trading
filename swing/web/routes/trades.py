@@ -17,7 +17,7 @@ from swing.data.db import connect
 from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import get_trade, list_open_trades
-from swing.recommendations.sizing import SizingResult, compute_shares
+from swing.recommendations.sizing import SizingResult, compute_shares, zero_share_line
 from swing.trades.entry import (
     DuplicateOpenPositionError,
     EntryRationale,
@@ -636,7 +636,10 @@ def sizing_hint(
         if sizing.constraint == "no_equity":
             reason = "No equity recorded — add a cash_movement or set account.starting_equity"
         else:
-            reason = "Risk cap too tight for 1 share at this stop"
+            # D84 (RD's floor (1); CHARC E-e): the STATED zero, never "too
+            # tight" -- the one formatter's line on the entry basis.
+            reason = zero_share_line(
+                sizing, basis_label="entry", basis_price=entry)
         return templates.TemplateResponse(
             request, "partials/sizing_hint.html.j2",
             {"guidance": reason},

@@ -16,8 +16,10 @@ from swing.data.models import Candidate, WatchlistArchiveEntry, WatchlistEntry
 
 # Names must match the criterion_name values produced by swing.evaluation.criteria.*
 # Verified against Phase 1 modules: prior_trend.NAME, ma_stack_short.STACK_NAME/RISING_NAME,
-# adr.NAME, pullback.NAME, orderliness.NAME, risk_feasibility.NAME,
+# adr.NAME, pullback.NAME, orderliness.NAME,
 # proximity.NAME (proximity_20ma), tightness.NAME, vcp.NAME (vcp_volume_contraction).
+# `risk_feasibility` removed at D84: risk is capital, not structure, and the
+# evaluator no longer gates on it, so the watchlist must not either.
 STABLE_CRITERION_NAMES: tuple[str, ...] = (
     "prior_trend",
     "ma_stack_10_20_50",
@@ -25,7 +27,6 @@ STABLE_CRITERION_NAMES: tuple[str, ...] = (
     "adr",
     "pullback",
     "orderliness",
-    "risk_feasibility",
 )
 DYNAMIC_CRITERION_NAMES: tuple[str, ...] = (
     "proximity_20ma",

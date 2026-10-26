@@ -230,3 +230,30 @@ def test_duplicate_data_asof_qualify_is_idempotent():
     assert delta.adds == []
     assert delta.streak_increments == []
     assert delta.removes == []
+
+
+def test_a_risk_fail_watch_name_with_the_stable_roster_passing_QUALIFIES():  # noqa: N802
+    """R-F3.1 -- D84 F3 (CHARC (b)): `risk_feasibility` left the stable roster.
+    Risk is capital, not structure, and the evaluator no longer gates on it, so
+    the watchlist must not either. Six stable criteria pass, risk FAILS, bucket
+    `watch`: the name is ADDED. Before D84 the stable roster refused it."""
+    six = ("prior_trend", "ma_stack_10_20_50", "ma_short_rising", "adr",
+           "pullback", "orderliness")
+    crits = [CriterionResult(criterion_name=n, layer="vcp", result="pass")
+             for n in six]
+    crits += [CriterionResult(criterion_name=n, layer="vcp", result="pass")
+              for n in DYNAMIC_CRITERION_NAMES]
+    crits.append(CriterionResult(criterion_name="risk_feasibility",
+                                 layer="risk", result="fail",
+                                 value="0 sh, $0.00 risk"))
+    cand = Candidate(
+        ticker="KOD", bucket="watch", close=98.46, pivot=104.0,
+        initial_stop=29.81, adr_pct=6.0, tight_streak=None, pullback_pct=None,
+        prior_trend_pct=None, rs_rank=None, rs_return_12w_vs_spy=None,
+        rs_method="universe", pattern_tag=None, notes=None,
+        criteria=tuple(crits),
+    )
+    delta = compute_watchlist_changes(
+        prior=[], today_candidates=[cand], data_asof_date="2026-10-23")
+    assert [a.ticker for a in delta.adds] == ["KOD"]
+    assert "risk_feasibility" not in STABLE_CRITERION_NAMES

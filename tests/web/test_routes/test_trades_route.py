@@ -2267,12 +2267,19 @@ def _t5_seed_hyp_recs_aplus_candidate(cfg, *, ticker: str = "TESTAPLUS") -> int:
                 ("2026-04-29T09:00:00", "2026-04-28", "2026-04-29"),
             )
             eval_id = int(cur.lastrowid)
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates
                    (evaluation_run_id, ticker, bucket, close, pivot,
                     initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 99.0, 100.0, 95.0, 'universe')""",
                 (eval_id, ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
         return eval_id
     finally:
@@ -2286,12 +2293,19 @@ def _t5_seed_extra_aplus_candidate(cfg, *, eval_id: int, ticker: str) -> None:
     conn = connect(cfg.paths.db_path)
     try:
         with conn:
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates
                    (evaluation_run_id, ticker, bucket, close, pivot,
                     initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 99.0, 100.0, 95.0, 'universe')""",
                 (eval_id, ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
     finally:
         conn.close()
@@ -2575,12 +2589,19 @@ def test_entry_post_watchlist_origin_success_emits_hyp_recs_oob_swap_for_cross_s
             )
             eval_id = int(cur.lastrowid)
             for ticker in ("TESTWATCH", "TESTWITNESS"):
-                conn.execute(
+                _risk_cand_cur = conn.execute(
                     """INSERT INTO candidates
                        (evaluation_run_id, ticker, bucket, close, pivot,
                         initial_stop, rs_method)
                        VALUES (?, ?, 'aplus', 180.0, 181.0, 170.0, 'universe')""",
                     (eval_id, ticker),
+                )
+                # D84 E-d: the risk row production always writes; an A+
+                # with NO risk row is neither H1 nor H4.
+                conn.execute(
+                    "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                    "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                    (_risk_cand_cur.lastrowid,),
                 )
     finally:
         conn.close()
@@ -2966,11 +2987,18 @@ def _seed_aplus_pipeline_for_route_test(db_path, ticker: str) -> None:
                 ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
             )
             eval_id = cur.lastrowid
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
                    close, pivot, initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 180.0, 181.0, 170.0, 'universe')""",
                 (eval_id, ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
             conn.execute(
                 """INSERT INTO pipeline_runs
@@ -4953,3 +4981,231 @@ def test_b1_entry_form_asides_default_collapsed(seeded_db, monkeypatch):
         f"expected exactly 8 <summary> toggles (one per aside); "
         f"got {text.count('<summary>')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# D84 T8 steps 3-4 -- the entry form and its sizing hint STATE the zero on the
+# H4 manual path (RD floor (1); CHARC E-e). The entry form sizes on the RAW
+# current equity ($1,200 here: the unfloored entry-form sizing is BANKED, not
+# changed), so a KOD-shaped entry (104.00 / 29.81) is a risk-bound zero.
+# ---------------------------------------------------------------------------
+_KOD_ENTRY_LINE = (
+    "0 shares at the $6.00 budget; 1 share risks $74.19 (12.4x budget) at "
+    "entry 104.00; above budget if you proceed")
+
+
+def _seed_kod_watchlist(cfg, monkeypatch, *, live_price):
+    from datetime import datetime
+
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="KOD", added_date="2026-10-20",
+                last_qualified_date="2026-10-22", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-10-22",
+                entry_target=104.0, initial_stop_target=29.81,
+                last_close=98.46, last_pivot=104.0, last_stop=29.81,
+                last_adr_pct=6.0, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "KOD": PriceSnapshot(
+                ticker="KOD", price=live_price, asof=datetime.now(),
+                is_stale=False, source="live",
+            ),
+        })
+
+
+def test_the_entry_form_states_the_zero_not_enter_a_valid_price(
+        seeded_db, monkeypatch):
+    """R-E3.3 -- with VALID prices and a zero-share geometry the form states the
+    zero; "Enter a valid entry price" is reserved for INVALID prices (and that
+    guard half still shows it)."""
+    import html as _html
+
+    cfg, cfg_path = seeded_db
+    _seed_kod_watchlist(cfg, monkeypatch, live_price=104.0)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=KOD")
+    assert r.status_code == 200
+    body = _html.unescape(r.text)
+    assert _KOD_ENTRY_LINE in body
+    assert "Enter a valid entry price" not in body
+
+
+def test_the_entry_form_still_asks_for_valid_prices_when_they_are_invalid(
+        seeded_db, monkeypatch):
+    """R-E3.3 guard half -- the live price 25.00 sits BELOW the stop 29.81, so
+    the prices are invalid and the hint still asks for valid ones."""
+    cfg, cfg_path = seeded_db
+    _seed_kod_watchlist(cfg, monkeypatch, live_price=25.0)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=KOD")
+    assert r.status_code == 200
+    assert "Enter a valid entry price and stop to see sizing" in r.text
+    assert "0 shares at the $" not in r.text
+
+
+def test_the_sizing_hint_states_the_zero_not_too_tight(seeded_db):
+    """R-E3.4 -- CHARC E-e: the entry form's live hint is on the same H4
+    manual path; "Risk cap too tight for 1 share" is refusal prose."""
+    import html as _html
+
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/sizing-hint",
+                       params={"entry_price": "104.00",
+                               "initial_stop": "29.81"})
+    assert r.status_code == 200
+    body = _html.unescape(r.text)
+    assert _KOD_ENTRY_LINE in body
+    assert "too tight" not in body
+
+
+# ---------------------------------------------------------------------------
+# D84 T8.3 completion (CHARC amendment 3, Codex R4 A4-01). Under F1-A every H4
+# fill takes the manual path, and the entry form on that path is AUTO-FILLED
+# from the Schwab fill. The prefilled QUANTITY belongs to the shares input
+# (`prefill_shares`); the hint keys on the sizing (`suggested_shares` stays
+# sizing-derived), so the stated zero survives a populated auto-fill.
+# ---------------------------------------------------------------------------
+def _populated_entry_auto_fill(monkeypatch, *, entry_price, shares):
+    from swing.trades.entry_auto_fill import EntryAutoFillResult
+
+    result = EntryAutoFillResult(
+        kind="populated", fill_origin="schwab_auto",
+        entry_date="2026-10-23", entry_price=entry_price, shares=shares,
+        advisory_text=None,
+        schwab_source_value_json=(
+            f'{{"entry_date": "2026-10-23", "entry_price": {entry_price}, '
+            f'"shares": {shares}, "schwab_order_id": "order-d84"}}'),
+        auto_fill_audit_at="2026-10-23T14:30:00.000000+00:00",
+    )
+    monkeypatch.setattr(
+        "swing.trades.entry_auto_fill.resolve_entry_auto_fill",
+        lambda **_kw: result)
+
+
+def _shares_input_value(body):
+    import re
+
+    m = re.search(r'name="shares"\s+value="(\d+)"', body)
+    assert m is not None, "the shares input is missing"
+    return int(m.group(1))
+
+
+def test_an_auto_filled_risk_bound_zero_states_the_zero_with_the_fill_in_the_input(
+        seeded_db, monkeypatch):
+    """Discriminator (1). Populated auto-fill + a risk-bound-zero sizing (the KOD
+    geometry at the raw $1,200 equity): the hint states the zero AND the shares
+    input carries the broker quantity. Pre-fix the fill's count overwrote
+    `suggested_shares`, so the hint rendered "Suggested max: 7 sh (~$0.00
+    risk = 0.00%)" and the stated zero never showed."""
+    import html as _html
+
+    cfg, cfg_path = seeded_db
+    _seed_kod_watchlist(cfg, monkeypatch, live_price=104.0)
+    _populated_entry_auto_fill(monkeypatch, entry_price=104.0, shares=7)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=KOD")
+    assert r.status_code == 200
+    body = _html.unescape(r.text)
+    assert _KOD_ENTRY_LINE in body
+    assert "Suggested max" not in body
+    assert "~$0.00 risk" not in body
+    assert _shares_input_value(r.text) == 7
+
+
+def test_an_auto_filled_feasible_sizing_hints_the_sizing_not_the_fill(
+        seeded_db, monkeypatch):
+    """Discriminator (2). Populated auto-fill + FEASIBLE sizing: the hint states
+    the sizing-derived maximum (entry 20.00 / stop 19.50 at $1,200: budget $6
+    -> 12 by risk, 15% position cap -> 9 shares, $4.50 risk = 0.38%), not the
+    fill's 50; the shares input is prefilled with the fill's 50."""
+    from datetime import datetime
+
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="FEZ", added_date="2026-10-20",
+                last_qualified_date="2026-10-22", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-10-22",
+                entry_target=20.0, initial_stop_target=19.5,
+                last_close=19.9, last_pivot=20.0, last_stop=19.5,
+                last_adr_pct=3.0, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "FEZ": PriceSnapshot(ticker="FEZ", price=20.0, asof=datetime.now(),
+                                 is_stale=False, source="live"),
+        })
+    _populated_entry_auto_fill(monkeypatch, entry_price=20.0, shares=50)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=FEZ")
+    assert r.status_code == 200
+    assert "Suggested max: <strong>9 sh</strong>" in r.text
+    assert "~$4.50 risk" in r.text
+    assert "Suggested max: <strong>50 sh</strong>" not in r.text
+    assert _shares_input_value(r.text) == 50
+
+
+def test_an_auto_filled_drift_retry_keeps_the_submitted_shares(
+        seeded_db, monkeypatch):
+    """Discriminator (3). A drift-retry (duplicate open position) on an
+    auto-filled form: the shares input shows the operator's SUBMITTED value
+    (`input_shares`, the resubmit semantics), not the fill's prefill."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    cfg, cfg_path = seeded_db
+    _seed_kod_watchlist(cfg, monkeypatch, live_price=104.0)
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="KOD", entry_date="2026-10-21",
+                entry_price=100.0, initial_shares=1, initial_stop=90.0,
+                current_stop=90.0, state="entered",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-10-21T09:30:00")
+    finally:
+        conn.close()
+    _populated_entry_auto_fill(monkeypatch, entry_price=104.0, shares=7)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data=full_phase7_entry_payload(
+                ticker="KOD", entry_date="2026-10-23",
+                entry_price="104.00", shares="3",
+                initial_stop="29.81", rationale="aplus-setup",
+            ),
+        )
+    assert r.status_code == 400
+    assert _shares_input_value(r.text) == 3

@@ -119,7 +119,7 @@ def _seed_sort_neutrality_fixture(cfg: Config) -> None:
                         initial_stop_target=stop, last_close=pivot * 0.99,
                     ),
                 )
-                conn.execute(
+                _risk_cand_cur = conn.execute(
                     """INSERT INTO candidates
                        (evaluation_run_id, ticker, bucket, close, pivot,
                         initial_stop, adr_pct, tight_streak, pullback_pct,
@@ -129,6 +129,13 @@ def _seed_sort_neutrality_fixture(cfg: Config) -> None:
                                NULL, NULL, NULL, NULL, 'fallback_spy',
                                NULL, NULL, 'Technology', 'Semiconductors')""",
                     (eval_id, tk, pivot * 0.99, pivot, stop),
+                )
+                # D84 E-d: the risk row production always writes; an A+
+                # with NO risk row is neither H1 nor H4.
+                conn.execute(
+                    "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                    "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                    (_risk_cand_cur.lastrowid,),
                 )
     finally:
         conn.close()
@@ -250,7 +257,7 @@ def _seed_non_equal_priority_fixture(cfg: Config) -> None:
                         initial_stop_target=pivot * 0.95, last_close=close,
                     ),
                 )
-                conn.execute(
+                _risk_cand_cur = conn.execute(
                     """INSERT INTO candidates
                        (evaluation_run_id, ticker, bucket, close, pivot,
                         initial_stop, adr_pct, tight_streak, pullback_pct,
@@ -260,6 +267,13 @@ def _seed_non_equal_priority_fixture(cfg: Config) -> None:
                                NULL, NULL, NULL, NULL, 'fallback_spy',
                                NULL, NULL, 'Technology', 'Semiconductors')""",
                     (eval_id, tk, close, pivot, pivot * 0.95),
+                )
+                # D84 E-d: the risk row production always writes; an A+
+                # with NO risk row is neither H1 nor H4.
+                conn.execute(
+                    "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                    "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                    (_risk_cand_cur.lastrowid,),
                 )
     finally:
         conn.close()

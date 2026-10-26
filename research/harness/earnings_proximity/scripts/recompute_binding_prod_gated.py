@@ -1,12 +1,12 @@
-"""Re-aggregate per-criterion binding-constraint counts using production gating order.
+"""Re-aggregate per-criterion binding-constraint counts using the pre-D84 production gating order.
 
 Adversarial-review (Round 1) found that the diagnostic's original
 ``binding_constraint`` field walked emitted criterion order (TT1-TT8 →
-VCP → risk_feasibility), but ``swing.evaluation.scoring.bucket_for``
+VCP → risk_feasibility), while the gating order this script encodes
 checks ``risk_feasibility`` FIRST as a hard filter, then trend-template
-gating, then VCP fail-count thresholds. A candidate failing both TT1 and
-risk_feasibility is "skipped due to risk" in production, not "skipped
-due to TT1."
+gating, then VCP fail-count thresholds. Mirrors bucket_for AS OF pre-D84
+(risk hard filter RETAINED here); production removed the risk pre-skip at
+D84 (<D84 merge sha>); re-align before any re-use.
 
 This script reads each run's evaluations.csv (gitignored, on disk), and
 writes ``binding_constraints_prod_gated.csv`` alongside the existing
@@ -59,7 +59,7 @@ APLUS_KEY = "<aplus>"
 
 
 def production_gated_binding(row: dict[str, str]) -> str:
-    """Determine the binding criterion using production scoring.bucket_for order."""
+    """Determine the binding criterion using the pre-D84 production ``bucket_for`` order (risk first; see the module docstring)."""
     # 1. Risk first (hard filter).
     for name in RISK_NAMES_IN_ORDER:
         result = row.get(name, "")
@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="recompute_binding_prod_gated",
         description="Recompute per-criterion binding-constraint counts using "
-                    "production-faithful gating order (risk → TT → VCP).",
+                    "pre-D84 production gating order (risk → TT → VCP).",
     )
     parser.add_argument(
         "--run-dirs",

@@ -1,7 +1,8 @@
 """CLI entrypoint for the Finviz-pool binding-constraint aggregation.
 
 Outputs (locked by D1 §"Outputs"):
-- ``per_criterion_blockers.csv`` — production-gated blocker counts.
+- ``per_criterion_blockers.csv`` — blocker counts through the pre-D84
+  production gate (the mirror pinned in ``aggregator.py``'s module docstring).
 - ``bucket_distribution.csv`` — per-bucket counts + watch:A+ ratio.
 - ``per_run_summary.csv`` — per-run bucket counts + per-run watch:A+ ratio.
 - ``near_aplus_defensible_sample.csv`` — ≤10 ticker rows.
@@ -299,7 +300,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="finviz_pool_analysis",
         description=(
-            "Aggregate per-criterion production-gated blocker distribution + "
+            "Aggregate per-criterion blocker distribution through the pre-D84 "
+            "production gate + "
             "bucket counts + watch:A+ ratio + near-A+ defensible subset "
             "across all production evaluation_runs whose Finviz CSVs are "
             "present on disk."

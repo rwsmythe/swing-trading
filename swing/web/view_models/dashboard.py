@@ -24,13 +24,18 @@ from swing.data.repos.trades import list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import PageKind, action_session_for_run, topbar_session_date
+from swing.evaluation.scoring import risk_inputs_from_criteria
 from swing.journal.stats import HypothesisProgress
 from swing.latches.constants import mandate_limit_price, zone_cap_for_pivot
 from swing.metrics.equity_resolver import (
     resolve_live_capital_denominator_dollars,
 )
 from swing.metrics.policy import read_live_policy
-from swing.recommendations.sizing import SizingResult, compute_shares
+from swing.recommendations.sizing import (
+    SizingResult,
+    compute_shares,
+    zero_share_line,
+)
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.trades.daily_management import compute_position_capital_utilization
 from swing.trades.equity import (
@@ -399,6 +404,12 @@ class DashboardVM:
     # watchlist_row.html.j2 via `{% set %}`, so (like pattern_tags) it does
     # NOT propagate to other base-layout VMs. Default empty dict.
     cohort_hints: Mapping[str, str] = field(default_factory=dict)
+    # D84 T9 (RD (2), CHARC P1 (c)): {ticker: 'RISK FLAG'} for candidates
+    # whose STORED risk layer is flagged. A SIBLING mapping, never the
+    # `flag_tags` tuple (the sort key), so the marker cannot re-rank names.
+    # Referenced ONLY inside the watchlist row loops via `{% set %}`, like
+    # `cohort_hints`, so it does not propagate to other base-layout VMs.
+    risk_flags: Mapping[str, str] = field(default_factory=dict)
     # Phase 6 Task 13: needs-review badge + cadence cards.
     # Default 0 / None so any ad-hoc VM construction (tests, fixtures outside
     # the phase-6 test files) remains valid without supplying these fields.
@@ -754,6 +765,21 @@ class HypRecsExpandedVM:
         """Does this card's buy limit differ from the latch mandate's?"""
         return (self.mandate_buy_limit is not None
                 and self.buy_limit != self.mandate_buy_limit)
+
+    # D84 T8 step 2 (RD's floor (1)): each regime STATES its own zero off the
+    # buy limit -- the risk regime at the floored equity, the cash regime at
+    # the real balance -- through the ONE formatter, never "infeasible". None
+    # when that regime sizes above zero. DERIVED, like the flag above, so it
+    # cannot disagree with the SizingResult it states.
+    @property
+    def sizing_risk_line(self) -> str | None:
+        return zero_share_line(
+            self.sizing_risk, basis_label="limit", basis_price=self.buy_limit)
+
+    @property
+    def sizing_cash_line(self) -> str | None:
+        return zero_share_line(
+            self.sizing_cash, basis_label="limit", basis_price=self.buy_limit)
 
 
 def build_hyp_recs_expanded(
@@ -1363,6 +1389,7 @@ def build_dashboard(
         classifications,
         display_threshold=cfg.web.flag_pattern_display_threshold,
     )
+    risk_flags = _risk_flags(candidates_by_ticker)
 
     # Prices — batch fetch all tickers we need. Recommended-ticker prices
     # are added so the panel can render each row's current price live; the
@@ -1824,6 +1851,7 @@ def build_dashboard(
         hyp_recs_unavailable_text=hyp_recs_unavailable_text,
         pattern_tags=pattern_tags,
         cohort_hints=cohort_hints,
+        risk_flags=risk_flags,
         needs_review_count=needs_review,
         daily_card=cadence_cards["daily"],
         weekly_card=cadence_cards["weekly"],
@@ -1947,6 +1975,27 @@ def _flag_tags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, tu
         if row_tags:
             tags[ticker] = tuple(row_tags)
     return tags
+
+
+def _risk_flags(candidates_by_ticker: Mapping[str, Candidate]) -> Mapping[str, str]:
+    """{ticker: 'RISK FLAG'} for each candidate whose STORED risk layer is
+    FLAGGED (D84 T9; CHARC P1 (c)).
+
+    The criteria-only MARKER form of the ONE formatter, through the ONE
+    counting adapter (`zero_share_line(risk=risk_inputs_from_criteria(...))`):
+    ASCII, no numbers, any bucket. A passing layer and an EMPTY layer (no risk
+    row, E-d) are ABSENT from the mapping, not present with "".
+
+    SIBLING to `_flag_tags`, never inside it: that tuple is the sort key read
+    by `_tag_aware_sort_key`, the top-5 and the pipeline chart scope, so a
+    flag inside it would RE-RANK names.
+    """
+    out: dict[str, str] = {}
+    for ticker, c in candidates_by_ticker.items():
+        marker = zero_share_line(risk=risk_inputs_from_criteria(c.criteria))
+        if marker is not None:
+            out[ticker] = marker
+    return out
 
 
 def _pattern_tags(

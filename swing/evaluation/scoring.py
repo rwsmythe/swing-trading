@@ -10,10 +10,12 @@ REDUCTION both can produce (`StructuralInputs`) — one rule, two adapters, neve
 two rules. A second independently-plausible implementation of one rule is the
 drift class that produced `mandate_limit_price`'s round-vs-floor split.
 
-`risk_feasibility` is EXCLUDED from the gate and that exclusion is RD's, not a
-convenience: a `skip` produced by the risk pre-filter alone is STRUCTURALLY A+,
-so reading the bucket label instead would let the operator's own capital
-withdraw his mandate.
+`risk_feasibility` is not an input to the structural gate, and since D84 it is
+not an input to `bucket_for` either: the risk layer is computed, persisted and
+displayed as a flag (`risk_layer_passes` / `risk_layer_flagged`). Rows persisted
+before the D84 boundary can carry `skip` from the retired risk pre-filter while
+being structurally A+, which is why the latch reader recomputes the gate instead
+of reading the bucket label.
 """
 from __future__ import annotations
 
@@ -79,11 +81,11 @@ def structural_inputs_from_results(
 
 
 def structural_gate_passes(inputs: StructuralInputs, config: Config) -> bool:
-    """Does this name pass the A+ STRUCTURAL gate? RISK IS NOT CONSULTED.
+    """Does this name pass the A+ STRUCTURAL gate?
 
-    The gate is `bucket_for` MINUS its risk pre-filter and MINUS the `watch`
-    band: the TT gate, then zero vcp failures. `bucket_for` composes this
-    function, so the two can never disagree about what "structurally A+" means.
+    The gate is `bucket_for` minus the `watch` band: the TT gate, then zero vcp
+    failures. `bucket_for` composes this function, so the two can never
+    disagree about what structurally A+ means; neither reads the risk layer.
     """
     allowed = set(config.trend_template.allowed_miss_names)
     if inputs.tt_pass_count < config.trend_template.min_passes:
@@ -93,16 +95,75 @@ def structural_gate_passes(inputs: StructuralInputs, config: Config) -> bool:
     return inputs.vcp_fail_count == 0
 
 
+@dataclass(frozen=True)
+class RiskInputs:
+    """The reduced form of the RISK layer (D84 E2, E-d reversed).
+
+    `risk_result_count` counts every risk-LAYER result; `risk_non_pass_count`
+    counts those whose result is not `pass` (`fail` AND `na`: RD (vi), an
+    unmeasured result is a non-pass). Layer-keyed, never name-keyed, so the
+    rule holds the day the risk layer has two criteria.
+
+    Three cases, stated ONCE here:
+      - PASSES: at least one risk result AND no non-pass;
+      - FLAGGED: at least one non-pass (H4's "risk non-pass");
+      - EMPTY (no risk result): NEITHER. "Every result passes" is vacuously
+        true of no results, and vacuous truth is the zero-data-renders-clean
+        failure; an unmeasured layer is closer to `na` than to `pass`, so it
+        is neither a pass claim nor a flag (RD, E-d).
+
+    A non-pass count above the result count, or a negative count, is refused,
+    so "flagged" implies "evaluated" by construction.
+    """
+
+    risk_result_count: int
+    risk_non_pass_count: int
+
+    def __post_init__(self) -> None:
+        if self.risk_result_count < 0 or self.risk_non_pass_count < 0:
+            raise ValueError(
+                f"RiskInputs counts must be >= 0; got {self.risk_result_count}, "
+                f"{self.risk_non_pass_count}")
+        if self.risk_non_pass_count > self.risk_result_count:
+            raise ValueError(
+                f"risk_non_pass_count {self.risk_non_pass_count} exceeds "
+                f"risk_result_count {self.risk_result_count}")
+
+
+def risk_layer_passes(inputs: RiskInputs) -> bool:
+    """The risk layer was EVALUATED and every result passed. An empty layer
+    does not pass (see `RiskInputs`)."""
+    return inputs.risk_result_count >= 1 and inputs.risk_non_pass_count == 0
+
+
+def risk_layer_flagged(inputs: RiskInputs) -> bool:
+    """At least one risk-layer result is not `pass` (H4's "risk non-pass").
+
+    Stated once here rather than as `not risk_layer_passes(...)` at each
+    consumer: that spelling would make the EMPTY layer a flag.
+    """
+    return inputs.risk_non_pass_count >= 1
+
+
+def risk_inputs_from_criteria(criteria) -> RiskInputs:
+    """The ONE counting adapter: any iterable of objects carrying `.layer` and
+    `.result` (`Result` in the evaluator, `CriterionResult` on every persisted
+    read) -> `RiskInputs`. Counts rows with `layer == "risk"`, and among them
+    those whose `result != "pass"`."""
+    risk = [c for c in criteria if c.layer == "risk"]
+    return RiskInputs(
+        risk_result_count=len(risk),
+        risk_non_pass_count=sum(1 for c in risk if c.result != "pass"),
+    )
+
+
 def bucket_for(
     trend_template_results: Sequence[Result],
     vcp_results: Sequence[Result],
-    risk_results: Sequence[Result],
     config: Config,
 ) -> str:
-    # Risk is a hard filter
-    if any(r.result != "pass" for r in risk_results):
-        return "skip"
-
+    """Bucket from the TT and VCP layers. The risk layer is not an input (D84):
+    a `risk_feasibility` fail is a displayed flag, never a bucket."""
     # Trend Template gate: (a) enough passes AND (b) every failing TT is in
     # allowed_miss_names. This matches spec §4.1 — the allowed fail is
     # configurable, TT8 is the default. Composed from `structural_gate_passes`

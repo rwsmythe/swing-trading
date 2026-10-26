@@ -30,11 +30,18 @@ def _seed_aplus_pipeline(db_path, ticker: str) -> None:
                 ("2026-04-17T21:49:00", "2026-04-17", "2026-04-20"),
             )
             eval_id = cur.lastrowid
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
                    close, pivot, initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 180.0, 181.0, 170.0, 'universe')""",
                 (eval_id, ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
             conn.execute(
                 """INSERT INTO pipeline_runs

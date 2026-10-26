@@ -68,12 +68,19 @@ def _seed_standalone_eval_with_aplus_candidate(
                 ("2026-04-29T09:00:00", "2026-04-28", "2026-04-29"),
             )
             eval_id = int(cur.lastrowid)
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates
                    (evaluation_run_id, ticker, bucket, close, pivot,
                     initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 99.0, 100.0, 95.0, 'universe')""",
                 (eval_id, ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
         return eval_id
     finally:
@@ -109,12 +116,19 @@ def _seed_two_pipeline_runs_tied_finished_ts(
                 ("2026-04-29T08:55:00", "2026-04-28", "2026-04-29"),
             )
             lower_eval_id = int(cur.lastrowid)
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates
                    (evaluation_run_id, ticker, bucket, close, pivot,
                     initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 99.0, 100.0, 95.0, 'universe')""",
                 (lower_eval_id, lower_id_eval_candidate_ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
             conn.execute(
                 """INSERT INTO pipeline_runs
@@ -137,12 +151,19 @@ def _seed_two_pipeline_runs_tied_finished_ts(
                 ("2026-04-29T08:56:00", "2026-04-28", "2026-04-29"),
             )
             higher_eval_id = int(cur.lastrowid)
-            conn.execute(
+            _risk_cand_cur = conn.execute(
                 """INSERT INTO candidates
                    (evaluation_run_id, ticker, bucket, close, pivot,
                     initial_stop, rs_method)
                    VALUES (?, ?, 'aplus', 99.0, 100.0, 95.0, 'universe')""",
                 (higher_eval_id, higher_id_eval_candidate_ticker),
+            )
+            # D84 E-d: the risk row production always writes; an A+
+            # with NO risk row is neither H1 nor H4.
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result) VALUES (?, 'risk_feasibility', 'risk', 'pass')",
+                (_risk_cand_cur.lastrowid,),
             )
             conn.execute(
                 """INSERT INTO pipeline_runs

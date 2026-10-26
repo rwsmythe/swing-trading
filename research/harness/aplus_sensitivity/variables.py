@@ -1,7 +1,7 @@
 """Variable enumeration for the A+ criteria sensitivity sweep.
 
 Surveys ``swing.config.Config`` for all per-criterion thresholds gated by
-``bucket_for`` (``swing/evaluation/scoring.py``) and emits one ``SweepVariable``
+the pre-D84 ``bucket_for`` (``swing/evaluation/scoring.py``) and emits one ``SweepVariable``
 per dial. Sweep ranges follow first-order heuristics keyed off the
 variable's kind (multiplicative for ratios/percentages; additive for counts).
 

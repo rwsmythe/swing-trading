@@ -1900,3 +1900,161 @@ def test_the_REPLAY_ORDERING_is_UNCHANGED_by_the_decline_freshness_gate(
         replay = client.post("/latches/intent", headers=_HX, data=form)
     assert replay.status_code == 200, replay.text
     assert len(_intents(cfg)) == 1
+
+
+# ===========================================================================
+# D84 T7.4 -- the H4 manual path's DECLARATION: an `acted_manually` attest on a
+# risk-flagged latch with NO framework order (F1-A, DEVIATING-BY-DECLARATION).
+# ===========================================================================
+def _seed_kod(cfg):
+    """The KOD-shaped fire (pivot 104.00, stop 29.81 -> limit 107.12; one share
+    risks $77.31 against the $37.50 budget) carrying its persisted risk FAIL,
+    plus a close the archive dates to the derivation session (rung A), so the
+    card is withheld on `sizing_infeasible` with the RISK leg the zero."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(121, '2026-07-17T17:30:05', '2026-07-17', '2026-07-20', 1, 1, 0, "
+            "0, 0, 0)")
+        cur = conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(121, 'KOD', 'aplus', 98.46, 104.0, 29.81, 'universe')")
+        cid = int(cur.lastrowid)
+        conn.execute(
+            "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+            "layer, result, value, rule) VALUES (?, 'risk_feasibility', 'risk', "
+            "'fail', '0 sh, $0.00 risk', '>= 1 share fits in 0.5% of equity "
+            "($37.50)')", (cid,))
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, "
+            "watch_count, skip_count, excluded_count, error_count) VALUES "
+            "(900, ?, ?, ?, 1, 0, 1, 0, 0, 0)",
+            (f"{DERIVATION_SESSION}T17:30:05", DERIVATION_SESSION, ANCHOR))
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, "
+            "close, pivot, initial_stop, rs_method) VALUES "
+            "(900, 'KOD', 'watch', 98.46, 104.0, 29.81, 'universe')")
+    conn.close()
+    _write_archive_bars(cfg, [(DERIVATION_SESSION, 98.46)], ticker="KOD")
+    return cid
+
+
+def _rendered_attest_fields(client, cid):
+    """The `acted_manually` affordance's EXACT form fields, read off the
+    rendered panel (hidden inputs plus the one radio)."""
+    import re
+
+    page = client.get("/latches").text
+    for m in re.finditer(r'<section class="latch-attest-prompt.*?</section>',
+                         page, re.S):
+        section = m.group(0)
+        if f'name="candidate_id" value="{cid}"' not in section:
+            continue
+        fields = dict(re.findall(
+            r'<input type="hidden" name="([^"]+)" value="([^"]*)"', section))
+        radios = re.findall(
+            r'<input type="radio" name="attested_disposition" value="([^"]+)"',
+            section)
+        return fields, radios
+    raise AssertionError("the card renders no attest affordance")
+
+
+def test_acceptance_v_an_acted_manually_attest_WRITES_on_a_latch_with_no_place_row(  # noqa: N802
+        seeded_db, frozen_clocks):
+    """R-(v)3. POST the affordance's EXACT rendered form fields: 200, ONE
+    `attest` row with `acted_manually` and the broker order id stored, and
+    ZERO `place` rows for the latch (0033's place/decline completeness CHECK
+    is scoped to place/decline; no attest CHECK references a place row)."""
+    cfg, cfg_path = seeded_db
+    cid = _seed_kod(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        fields, radios = _rendered_attest_fields(client, cid)
+        assert radios == ["acted_manually"]
+        r = client.post("/latches/intent", headers=_HX, data=fields | {
+            "attested_disposition": radios[0],
+            "actual_broker_order_id": "1004455667"})
+    assert r.status_code == 200
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT intent_kind, attested_disposition, actual_broker_order_id "
+            "FROM latch_order_intents WHERE candidate_id = ?", (cid,)).fetchall()
+    finally:
+        conn.close()
+    assert rows == [("attest", "acted_manually", "1004455667")]
+
+
+def test_acceptance_v_the_declaration_scores_DEVIATING_BY_DECLARATION_not_a_deviation_from_zero(  # noqa: N802
+        seeded_db, frozen_clocks, monkeypatch):
+    """R-(v)4. The RED half is the end-to-end path through R-(v)3's row; the
+    GUARD half shows the classifier was not edited: the row classifies
+    `attested_acted_manually`, maps to `decision_r` subkind `attested`, and
+    `compute_execution_parity` adds 1 to `decision_r_attested` and 0 to the
+    agreement denominator (only `accepted` enters the agreement rate)."""
+    from dataclasses import replace as _replace
+
+    import swing.web.view_models.latches as vm_mod
+    from swing.latches.classification import (
+        ParityObservation,
+        TelemetryHealth,
+        compute_execution_parity,
+        r_bucket_for,
+    )
+
+    cfg, cfg_path = seeded_db
+    cid = _seed_kod(cfg)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        fields, radios = _rendered_attest_fields(client, cid)
+        r = client.post("/latches/intent", headers=_HX, data=fields | {
+            "attested_disposition": "acted_manually"})
+    assert r.status_code == 200
+
+    captured = {}
+    real = vm_mod.classify_latch
+
+    def _capture(**kwargs):
+        out = real(**kwargs)
+        captured[out.candidate_id] = out
+        return out
+
+    monkeypatch.setattr(vm_mod, "classify_latch", _capture)
+    conn = connect(cfg.paths.db_path)
+    try:
+        row = next(x for x in vm_mod.build_latch_panel_vm(conn, cfg, now=NOW).rows
+                   if x.candidate_id == cid)
+    finally:
+        conn.close()
+    assert row.disposition == "attested_acted_manually"
+    assert row.risk_flag_attest_available is False
+    d = captured[cid]
+    assert r_bucket_for(d.disposition, is_terminal=True) == "decision_r"
+    # Scored as the terminal observation it becomes; the classifier's own
+    # attested rung decides the subkind.
+    report = compute_execution_parity(
+        [ParityObservation(disposition=_replace(d, is_terminal=True))],
+        health=TelemetryHealth(verdict="ok"))
+    assert report.decision_r_attested == 1
+    assert report.agreement_denominator == 0
+
+
+def test_a_place_row_at_quantity_zero_is_UNWRITABLE_is_pinned_elsewhere():  # noqa: N802
+    """R-(v)5 -- "deviation from a framework order of zero" is UNWRITABLE: the
+    0033 CHECK `framework_quantity > 0`. Already pinned by
+    `tests/data/test_migration_0033.py::test_non_positive_is_rejected_by_column_name[framework_quantity]`
+    (it rejects 0 and -1 on a `place` row), so the plan's rule applies: cite it
+    by name in place of a new test. This test asserts the citation resolves."""
+    import ast
+
+    src = (Path(__file__).resolve().parents[2] / "data"
+           / "test_migration_0033.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    assert "test_non_positive_is_rejected_by_column_name" in names
+    assert '"framework_quantity",' in src

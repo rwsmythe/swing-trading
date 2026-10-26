@@ -10,8 +10,9 @@ production cfg). Per Phase 13 T4.SB spec sec1.5.1 amendment for OQ-1.3.
 V1 substitution semantics support two classes of variables:
 
   - **Gate variables** (``trend_template.min_passes``, ``vcp.watch_max_fails``):
-    full bucket-level resimulation -- substitute the gate value + walk
-    ``bucket_for`` semantics including the ``allowed_miss_names`` invariant.
+    full bucket-level resimulation -- substitute the gate value + walk the
+    pre-D84 ``bucket_for`` semantics (see ``_bucket_for_substituted``) including
+    the ``allowed_miss_names`` invariant.
   - **Threshold variables** (15 = 3 trend_template + 8 vcp + 1 risk + 3 rs):
     V1 LIMITATION -- per-criterion bucket resimulation requires the criterion
     evaluator harness to re-run against original OHLCV bars with the
@@ -204,11 +205,13 @@ def _bucket_for_substituted(
     allowed_miss_names: set[str],
     prod_trend_template_min_passes: int,
 ) -> str:
-    """Mirror of ``swing.evaluation.scoring.bucket_for`` for the 2 gate
+    """Mirror of the pre-D84 ``swing.evaluation.scoring.bucket_for`` for the 2 gate
     variables. For threshold variables, returns ``persisted_bucket`` (V1
     limitation per ``_recompute_counts_at`` docstring).
 
-    Faithfully encodes the bucket_for semantics:
+    Mirrors bucket_for AS OF pre-D84 (risk hard filter RETAINED here);
+    production removed the risk pre-skip at D84 (<D84 merge sha>);
+    re-align before any re-use. Its steps:
 
       1. Risk hard filter -- any non-pass = skip.
       2. Trend-template gate -- ``tt_passes >= min_passes`` AND every TT

@@ -124,3 +124,30 @@ def test_infeasible_sizing_still_produces_today_decision_with_zero_shares():
     assert len(recs) == 1
     assert recs[0].shares == 0
     assert "infeasible" in (recs[0].action_text or "").lower() or recs[0].risk_dollars == 0.0
+
+
+def test_a_risk_bound_zero_row_states_the_zero_not_refusal():
+    """R-E3.1 -- RD's floor (1): the nightly row on the H4 manual path STATES
+    its zero. KOD (pivot 104.00, stop 29.81) at the $7,500 sizing equity sizes
+    off the cap 107.12: one share risks $77.31 against the $37.50 budget. The
+    line is the ONE formatter's, with the nightly's basis word "cap"; the
+    refusal prose ("skip or wait") and its cp1252-crashing em-dash are gone."""
+    ctx = BuildContext(
+        evaluation_run_id=1, data_asof_date="2026-10-22",
+        action_session_date="2026-10-23", current_equity=7500.0,
+        max_risk_pct=0.005, position_pct_cap=0.15,
+    )
+    (rec,) = build_recommendations(
+        ctx=ctx,
+        today_aplus=[_candidate("KOD", "aplus", close=98.46, pivot=104.0,
+                                stop=29.81)],
+        prior_watchlist=[],
+    )
+    assert rec.recommendation == "today_decision"
+    assert rec.shares == 0
+    assert rec.action_text == (
+        "0 shares at the $37.50 budget; 1 share risks $77.31 (2.1x budget) at "
+        "cap 107.12; above budget if you proceed")
+    assert "skip or wait" not in rec.action_text
+    assert rec.action_text.isascii()
+

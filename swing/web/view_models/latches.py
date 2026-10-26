@@ -14,12 +14,18 @@ import logging
 from dataclasses import dataclass, fields
 from datetime import UTC, date, datetime, timedelta
 
+from swing.data.repos.candidates import fetch_candidate_by_id
 from swing.data.repos.latch_order_intents import list_intents_for_latch
 from swing.data.repos.risk_policy import get_active_policy
 from swing.evaluation.dates import (
     PageKind,
     sessions_behind,
     topbar_session_date,
+)
+from swing.evaluation.scoring import (
+    RiskInputs,
+    risk_inputs_from_criteria,
+    risk_layer_flagged,
 )
 from swing.latches.classification import (
     assess_telemetry_health,
@@ -55,6 +61,7 @@ from swing.latches.reader import (
     latest_recorded_close_stamp,
     load_last_closes,
 )
+from swing.recommendations.sizing import SizingResult, risk_bound_zero, zero_share_line
 from swing.web.view_models.journal import _base_banner_fields
 
 _log = logging.getLogger(__name__)
@@ -123,6 +130,10 @@ LOG_ONLY_NOTICE = "PREPARED ORDER (LOG ONLY - nothing is sent to the broker)"
 # renders on that prompt may never appear. Advertising a control that is not
 # there is worse than admitting there is none: it sends him looking, and what he
 # learns is that the panel's instructions are approximate.
+# That claim is about the discipline-lapse PROMPT. Since D84 a SEPARATE
+# affordance exists on a risk-flagged card -- `LatchRowVM.risk_flag_attest_
+# available`, the `acted_manually` declaration -- and this note does not name it
+# because it renders in its own section, keyed on its own condition.
 DECISION_UNAVAILABLE_NOTE = (
     "No DECLINE control: a decline is recorded as a decision about the "
     "framework's own order, and the ledger requires that order on the row. "
@@ -181,10 +192,9 @@ class PreparedOrderVM:
 
     THE WITHHELD BRANCH IS THE EXPRESSIVE ONE, not the afterthought. It is the
     CURRENT live state -- the regime is undeterminable whenever no close is
-    dated the derivation session -- so it carries a display-ready reason and,
-    deliberately, NO order numbers at all: rendering a quantity or a limit under
-    a withheld heading would present as a mandate something the framework
-    refused to assert.
+    dated the derivation session -- so it carries a display-ready reason and
+    carries NO order numbers: a stated zero and its equation are not an order
+    (D84).
     """
 
     offered: bool
@@ -219,6 +229,19 @@ class PreparedOrderVM:
     # exists to remove. So the SILENT absence is converted into a LABELLED one,
     # which is the project's standing rule and the honest interim.
     decision_unavailable_note: str = ""
+    # ===== D84 (F1-A, P3, E-i): the stated zero ==========================
+    # The withheld heading: the default, or the RISK FLAG heading when the
+    # result is `sizing_infeasible` with the RISK leg the zero.
+    withheld_heading: str = "PREPARED ORDER WITHHELD"
+    # The stated-zero line rendered BESIDE a regime-withheld detail (P3), so
+    # the regime fact is never masked; `""` when there is no zero to state.
+    stated_zero_line: str = ""
+    # The result's own SizingResult, carried on the WITHHELD branch only
+    # (beside `regime_undeterminable` and `sizing_infeasible`, as the result
+    # admits it), so the D84 declaration keys on the SIZING FACT rather than
+    # on the reason or the heading derived from it (CHARC amendment 1
+    # CORRECTED). Never an order: it renders nothing by itself.
+    sizing: SizingResult | None = None
 
 
 @dataclass(frozen=True)
@@ -310,6 +333,20 @@ class LatchRowVM:
     lapse_countdown: str = ""
     lapse_detail: str = ""
     unverifiable_label: str = ""
+    # ===== D84 T7.4 (P1, P2 (b), CHARC amendment 1) ======================
+    # The criteria-only MARKER (`zero_share_line(risk=...)`), keyed on the
+    # FIRE's STORED risk layer: `RISK FLAG` on a flagged layer, `""` on a
+    # passing layer, an EMPTY layer or a failed read. No sizing numbers.
+    risk_flag_marker: str = ""
+    # The `acted_manually` declaration affordance (CHARC amendment 1
+    # CORRECTED). The key is a UNION of two legs, either one only while no
+    # attestation and no decision governs: (a) the fire's stored risk layer is
+    # flagged AND the card does not offer an order (a terminal card, or a live
+    # card withheld); (b) a LIVE card whose prepared sizing is a risk-bound
+    # zero, for EITHER withheld reason (`sizing_infeasible` or
+    # `regime_undeterminable`). Leg (b) can hold on a band card whose risk
+    # criterion PASSED -- that card shows the affordance and no marker.
+    risk_flag_attest_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -504,20 +541,65 @@ def _prior_intent_id(intents) -> str:
     return str(latest.intent_id)
 
 
-def _withheld_block(reason: str | None, detail: str) -> PreparedOrderVM:
-    """A withheld block carries the REASON and NOTHING that reads as a mandate.
+_RISK_FLAG_HEADING = "RISK FLAG - 0 SHARES AT THE BUDGET"
 
-    No headline, no derivation lines, no hidden anchor: a quantity or a limit
-    rendered under a withheld heading would present as an order to place
-    something the framework explicitly refused to assert -- and the ledger's
-    whole claim is that a recorded framework order is byte-identically what the
-    operator was looking at.
+
+def _zero_derivation_lines(latch: Latch, sizing, sizing_inputs) -> tuple[str, ...]:
+    """The equation of a RISK-BOUND zero, ASCII, one line per operand step.
+
+    Every operand is read from the SizingResult it was sized on or from the
+    SizingInputs (CHARC F1 (3)); the limit is the SAME `mandate_limit_price`
+    the sizing used, and the stop is the fire-time stop. The derivation travels
+    with the numbers (the D25 rule).
     """
+    limit = mandate_limit_price(latch.zone_cap)
+    risk = sizing.risk_per_share
+    budget = sizing.max_risk_dollars
+    return (
+        f"1-share risk {_fmt_money(risk)} = limit {limit:.2f} - fire-time "
+        f"stop {float(latch.latched_initial_stop):.2f}",
+        f"budget {_fmt_money(budget)} = sizing equity "
+        f"{_fmt_money(sizing_inputs.sizing_equity)} x "
+        f"{sizing_inputs.max_risk_pct * 100:.3f}%",
+        f"sizing equity {_fmt_money(sizing_inputs.sizing_equity)} = max(real "
+        f"equity {_fmt_money(sizing_inputs.real_equity)}, risk_equity_floor "
+        f"{_fmt_money(sizing_inputs.equity_floor)})",
+        f"shares at the budget 0 = floor({_fmt_money(budget)} / "
+        f"{_fmt_money(risk)})",
+    )
+
+
+def _withheld_block(reason: str | None, detail: str, *, latch: Latch | None = None,
+                    sizing=None, sizing_inputs=None) -> PreparedOrderVM:
+    """A withheld block carries NO order: no headline, no hidden anchor,
+    nothing the operator could accept. When the sizing came out at zero (D84
+    F1-A, P3) it states the zero, and on the risk-bound zero its equation,
+    because the derivation travels with the numbers; it is still not an order.
+
+    `sizing` is the result's own SizingResult (present beside
+    `regime_undeterminable` and `sizing_infeasible` only). A FEASIBLE sizing on
+    a regime-withheld card renders NOTHING new: the formatter returns None
+    above zero shares, so no quantity reads as a mandate.
+    """
+    heading = "PREPARED ORDER WITHHELD"
+    stated_zero = ""
+    lines: tuple[str, ...] = ()
+    if sizing is not None and sizing.shares == 0 and latch is not None:
+        limit = mandate_limit_price(latch.zone_cap)
+        risk_zero = risk_bound_zero(sizing)
+        if reason == "sizing_infeasible" and risk_zero:
+            heading = _RISK_FLAG_HEADING
+        elif reason == "regime_undeterminable":
+            stated_zero = zero_share_line(
+                sizing, basis_label="limit", basis_price=limit) or ""
+        if risk_zero and sizing_inputs is not None:
+            lines = _zero_derivation_lines(latch, sizing, sizing_inputs)
     return PreparedOrderVM(
-        offered=False, headline="", derivation_lines=(),
+        offered=False, headline="", derivation_lines=lines,
         rendered_derivation_columns=frozenset(), anchor_fields=(),
         anchor_digest="", withheld_reason=reason, withheld_detail=detail,
-        decision_unavailable_note=DECISION_UNAVAILABLE_NOTE)
+        decision_unavailable_note=DECISION_UNAVAILABLE_NOTE,
+        withheld_heading=heading, stated_zero_line=stated_zero, sizing=sizing)
 
 
 def _derivation_block(latch: Latch, order) -> tuple[tuple[str, ...], frozenset[str]]:
@@ -623,11 +705,13 @@ def _derivation_block(latch: Latch, order) -> tuple[tuple[str, ...], frozenset[s
 
 
 def _build_prepared_order_vm(
-    latch: Latch, result, *, view_session_date: str,
+    latch: Latch, result, *, view_session_date: str, sizing_inputs=None,
 ) -> PreparedOrderVM:
     """Turn a `PreparedOrderResult` into the card block plus its hidden anchor."""
     if result.order is None:
-        return _withheld_block(result.withheld_reason, result.withheld_detail)
+        return _withheld_block(
+            result.withheld_reason, result.withheld_detail, latch=latch,
+            sizing=getattr(result, "sizing", None), sizing_inputs=sizing_inputs)
     order = result.order
     lines, columns = _derivation_block(latch, order)
     # ONE enumeration, GENERATED from the manifest. No site re-lists the
@@ -919,10 +1003,45 @@ def _unverifiable_label(latch: Latch) -> str:
     return f"UNVERIFIABLE: {tail}" + (f" ({named})" if named else "")
 
 
+def _risk_flag_attest_available(
+        latch: Latch, *, risk_inputs, prepared_order, disposition) -> bool:
+    """The D84 declaration affordance's key: a UNION (CHARC amendment 1
+    CORRECTED, `20261026T164436Z`).
+
+    (a) the FIRE's stored risk layer is FLAGGED (P2 (b)) -- live AND terminal
+        cards, so "attest first, then enter" never becomes an order he must
+        obey -- EXCEPT while the card OFFERS an order: there "the framework
+        has no order here" is false, and the offered form's own place/decline
+        path records the act. The MARKER is not keyed here and stays; OR
+    (b) the card is LIVE and its own SizingResult is a RISK-bound zero -- the
+        SIZING FACT, whichever reason withheld the card (`sizing_infeasible`
+        OR `regime_undeterminable`, the ordinary intraday state of a live
+        card). A heading string is a display, not a key. This is the band
+        where the criterion PASSED at the pivot but the limit sizes to zero:
+        no framework order, no marker and no later prompt, so without (b) a
+        manual act there is unrecordable. A FEASIBLE or CAP-bound sizing is
+        not it.
+    Either way only while NO attestation and NO decision governs (CHARC P2:
+    "until an attestation or a decision governs").
+    """
+    if _attested(disposition):
+        return False
+    if disposition is not None and disposition.disposition in (
+            "accepted", "declined"):
+        return False
+    fire_flagged = risk_inputs is not None and risk_layer_flagged(risk_inputs)
+    offers_order = prepared_order is not None and prepared_order.offered
+    sizing = None if prepared_order is None else prepared_order.sizing
+    live_risk_zero = bool(
+        latch.is_live and sizing is not None and risk_bound_zero(sizing))
+    return (fire_flagged and not offers_order) or live_risk_zero
+
+
 def _build_row(latch: Latch, *, quote, views, provenance=None,
                prepared_order=None, disposition=None,
                prior_intent_id: str = "",
-               lapse_sessions: int = DEFAULT_CRITERIA_LAPSE_SESSIONS) -> LatchRowVM:
+               lapse_sessions: int = DEFAULT_CRITERIA_LAPSE_SESSIONS,
+               risk_inputs: RiskInputs | None = None) -> LatchRowVM:
     """`quote` is `(price, asof_iso)` from the READ-ONLY last-close source, or
     `None`. `provenance` is the `CloseProvenance` for that quote, or `None`.
 
@@ -937,6 +1056,20 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
     zone_position = _zone_position(price, latch)
     price_asof, price_asof_basis = _price_asof_claim(quote, provenance)
     prompt = bool(disposition is not None and disposition.prompt_required)
+    risk_attest = _risk_flag_attest_available(
+        latch, risk_inputs=risk_inputs, prepared_order=prepared_order,
+        disposition=disposition)
+    if prompt or _attested(disposition):
+        attest_options = tuple(sorted(
+            (value, _ATTEST_OPTION_LABELS[value])
+            for value in LATCH_ATTESTED_DISPOSITIONS))
+    elif risk_attest:
+        # THE D84 DECLARATION, and ONLY it: the framework has no order here,
+        # so the one honest answer to offer is "I acted on this manually".
+        attest_options = (
+            ("acted_manually", _ATTEST_OPTION_LABELS["acted_manually"]),)
+    else:
+        attest_options = ()
     return LatchRowVM(
         ticker=latch.identity.ticker,
         fire_date=latch.anchor.isoformat(),
@@ -987,11 +1120,7 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
         # It is offered BECAUSE the cell has already been scored as a lapse, and
         # attesting is the operator's opportunity to CORRECT it -- so the option
         # set is exactly the attestation vocabulary and nothing more.
-        attest_options=(
-            tuple(sorted(
-                (value, _ATTEST_OPTION_LABELS[value])
-                for value in LATCH_ATTESTED_DISPOSITIONS))
-            if prompt or _attested(disposition) else ()),
+        attest_options=attest_options,
         prior_intent_id=prior_intent_id,
         attest_correction_available=_attested(disposition),
         attested_disposition=(
@@ -1000,6 +1129,10 @@ def _build_row(latch: Latch, *, quote, views, provenance=None,
         lapse_countdown=_lapse_countdown(latch, sessions=lapse_sessions),
         lapse_detail=_lapse_detail(latch),
         unverifiable_label=_unverifiable_label(latch),
+        risk_flag_marker=(
+            "" if risk_inputs is None
+            else (zero_share_line(risk=risk_inputs) or "")),
+        risk_flag_attest_available=risk_attest,
     )
 
 
@@ -1012,6 +1145,32 @@ def _attested(disposition) -> bool:
     """
     return bool(disposition is not None
                 and disposition.disposition.startswith("attested_"))
+
+
+def _panel_risk_inputs(conn, displayed) -> dict[int, RiskInputs | None]:
+    """The FIRE's stored risk layer per DISPLAYED latch (live AND terminal),
+    reduced through the ONE counting adapter (D84 T7.4, P2 (b); CHARC P1: "the
+    same adapter P2 uses").
+
+    `fetch_candidate_by_id` returns a `CitedCandidate` WRAPPER, so the hydrated
+    criteria are at `.candidate.criteria`. A6: a failed read logs and yields
+    None for that latch, which renders no flag and no affordance; it never
+    degrades the panel.
+    """
+    out: dict[int, RiskInputs | None] = {}
+    for latch in displayed:
+        cid = latch.identity.candidate_id
+        try:
+            cited = fetch_candidate_by_id(conn, cid)
+            out[cid] = (
+                None if cited is None
+                else risk_inputs_from_criteria(cited.candidate.criteria))
+        except Exception as exc:  # noqa: BLE001 -- A6: never 500 the panel
+            _log.warning(
+                "latch panel risk-layer read degraded for candidate %s: %s",
+                cid, exc)
+            out[cid] = None
+    return out
 
 
 def _within_display_lookback(latch: Latch, horizon_session: date) -> bool:
@@ -1083,6 +1242,13 @@ def _nightly_shares(conn, latch: Latch) -> int | None:
          latch.anchor.isoformat()),
     ).fetchone()
     if row is None or row[0] is None:
+        return None
+    # 0033's CHECK `derivation_nightly_recommendation_shares IS NULL OR > 0`
+    # (`:390-391`) cannot store a zero, and since D84 a zero nightly row is
+    # ROUTINE (every risk-flagged A+ sizes to zero). The `daily_recommendations`
+    # row itself is the record of the zero; the ledger column records only a
+    # positive count.
+    if int(row[0]) == 0:
         return None
     return int(row[0])
 
@@ -1167,6 +1333,7 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
         # `views_by_latch` is narrowed to THIS session for the card's telemetry
         # echo; the classifier reads the latch's whole covered window, and
         # handing it the narrowed set would discard yesterday's actionable view.
+        risk_inputs = _panel_risk_inputs(conn, displayed)
         dispositions, priors = _panel_dispositions(
             conn, displayed,
             views_by_latch=_load_all_views(conn, displayed), health=health,
@@ -1193,6 +1360,7 @@ def build_latch_panel_vm(conn, cfg, *, now=None) -> LatchPanelVM:
                 lapse_sessions=getattr(
                     getattr(cfg, "latches", None), "criteria_lapse_sessions",
                     DEFAULT_CRITERIA_LAPSE_SESSIONS),
+                risk_inputs=risk_inputs.get(latch.identity.candidate_id),
             )
 
         rows = [
@@ -1357,7 +1525,8 @@ def _panel_prepared_orders(
                     regime_session_iso if regime_close is not None else None),
                 sizing_inputs=sizing)
             out[cid] = _build_prepared_order_vm(
-                latch, result, view_session_date=view_session_date)
+                latch, result, view_session_date=view_session_date,
+                sizing_inputs=sizing)
         except Exception as exc:  # noqa: BLE001 -- A6: degrade VISIBLY
             _log.warning(
                 "latch prepared order degraded for candidate %s: %s", cid, exc)
