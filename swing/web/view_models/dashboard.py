@@ -30,7 +30,11 @@ from swing.metrics.equity_resolver import (
     resolve_live_capital_denominator_dollars,
 )
 from swing.metrics.policy import read_live_policy
-from swing.recommendations.sizing import SizingResult, compute_shares
+from swing.recommendations.sizing import (
+    SizingResult,
+    compute_shares,
+    zero_share_line,
+)
 from swing.trades.advisory import AdvisoryContext, compute_all_suggestions
 from swing.trades.daily_management import compute_position_capital_utilization
 from swing.trades.equity import (
@@ -754,6 +758,21 @@ class HypRecsExpandedVM:
         """Does this card's buy limit differ from the latch mandate's?"""
         return (self.mandate_buy_limit is not None
                 and self.buy_limit != self.mandate_buy_limit)
+
+    # D84 T8 step 2 (RD's floor (1)): each regime STATES its own zero off the
+    # buy limit -- the risk regime at the floored equity, the cash regime at
+    # the real balance -- through the ONE formatter, never "infeasible". None
+    # when that regime sizes above zero. DERIVED, like the flag above, so it
+    # cannot disagree with the SizingResult it states.
+    @property
+    def sizing_risk_line(self) -> str | None:
+        return zero_share_line(
+            self.sizing_risk, basis_label="limit", basis_price=self.buy_limit)
+
+    @property
+    def sizing_cash_line(self) -> str | None:
+        return zero_share_line(
+            self.sizing_cash, basis_label="limit", basis_price=self.buy_limit)
 
 
 def build_hyp_recs_expanded(

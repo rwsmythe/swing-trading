@@ -1738,3 +1738,71 @@ def test_c9_expand_route_uses_fills_for_current_balance(
             headers={"HX-Request": "true"},
         )
     assert resp.status_code == 200, resp.text
+
+
+# ---------------------------------------------------------------------------
+# D84 T8 step 2 -- the hyp-rec card STATES each regime's zero (RD floor (1)).
+# ---------------------------------------------------------------------------
+def _seed_kod_hyp_rec(cfg):
+    """A KOD-geometry A+ candidate (pivot 104.00, stop 29.81 -> limit 107.12)
+    carrying its persisted risk FAIL, so it is an H4 recommendation, on a
+    COMPLETED pipeline run."""
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                """INSERT INTO evaluation_runs
+                   (run_ts, data_asof_date, action_session_date, finviz_csv_path,
+                    tickers_evaluated, aplus_count, watch_count, skip_count,
+                    excluded_count, error_count,
+                    rs_universe_version, rs_universe_hash)
+                   VALUES (?, ?, ?, NULL, 1, 1, 0, 0, 0, 0, 'v1', 'h1')""",
+                ("2026-04-29T09:00:00", "2026-04-28", "2026-04-29"),
+            )
+            eval_id = cur.lastrowid
+            cand = conn.execute(
+                """INSERT INTO candidates (evaluation_run_id, ticker, bucket,
+                   close, pivot, initial_stop, rs_method)
+                   VALUES (?, 'KOD', 'aplus', 98.46, 104.0, 29.81, 'universe')""",
+                (eval_id,),
+            )
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result, value) VALUES (?, 'risk_feasibility', 'risk', "
+                "'fail', '0 sh, $0.00 risk')",
+                (cand.lastrowid,),
+            )
+            conn.execute(
+                """INSERT INTO pipeline_runs
+                   (started_ts, finished_ts, trigger, data_asof_date,
+                    action_session_date, state, lease_token,
+                    evaluation_run_id)
+                   VALUES ('2026-04-29T08:00:00', '2026-04-29T09:00:00',
+                           'scheduled', '2026-04-28', '2026-04-29',
+                           'complete', 'tok', ?)""",
+                (eval_id,),
+            )
+    finally:
+        conn.close()
+
+
+def test_the_hyp_rec_card_states_each_regimes_zero(seeded_db, monkeypatch):
+    """R-E3.2 -- RD's floor (1): "infeasible (infeasible)" is a programmatic no
+    in prose. Each regime states its OWN zero off the buy limit: the risk
+    regime at the floored equity ($7,500 -> $37.50 budget), the cash regime at
+    the real balance ($1,200 -> $6.00 budget)."""
+    import html as _html
+
+    cfg, cfg_path = seeded_db
+    _seed_kod_hyp_rec(cfg)
+    _patch_price_cache(monkeypatch)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        resp = client.get("/hyp-recs/KOD/expand",
+                          headers={"HX-Request": "true"})
+    assert resp.status_code == 200, resp.text
+    body = _html.unescape(resp.text)
+    assert ("0 shares at the $37.50 budget; 1 share risks $77.31 (2.1x budget) "
+            "at limit 107.12; above budget if you proceed") in body
+    assert "0 shares at the $6.00 budget; 1 share risks $77.31" in body
+    assert "infeasible (infeasible)" not in " ".join(body.split())
