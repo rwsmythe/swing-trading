@@ -348,32 +348,43 @@ class LatchAlarmVM:
 class LatchCancelControlVM:
     """ONE per-order affordance to RECORD that the operator cancelled an order.
 
-    ITS SUBJECT IS A BROKER ORDER HE HOLDS, NOT A PROBLEM THE FRAMEWORK
-    NOTICED. It is keyed on exactly three conditions and no fourth: the order
-    is in this render's order set (BUY, resting OR indeterminate), and
-    `_match_latch` attributes it to a latch (live OR terminal). NOT on any
-    alarm, NOT on the latch's liveness, NOT on the order's determinacy, and NOT
-    on whether the order covers its mandate -- each of those is the alarm's own
-    predicate wearing a different name, and re-deriving it would fail RD's
-    principle while appearing to satisfy it.
+    ITS SUBJECT IS A BROKER ORDER HE HOLDS OR HELD, NOT A PROBLEM THE FRAMEWORK
+    NOTICED. It is offered from TWO sources, and from no third:
 
-    LOG-ONLY on every branch: nothing is sent to the broker. The operator still
-    cancels at the broker and this records that he decided to. It targets a
-    SPECIFIC broker order id, never a ticker -- hazard (c), which migration
-    0033's CHECK also makes unwritable.
+      * `source="book"` -- every BUY order in this render's RESTING book (resting
+        OR indeterminate) that `_match_latch` attributes to a latch (live OR
+        terminal). Exactly those three conditions: NOT any alarm, NOT the
+        latch's liveness, NOT the order's determinacy, and NOT whether the order
+        covers its mandate -- each of those is the alarm's own predicate
+        wearing a different name, and re-deriving it would fail RD's principle
+        while appearing to satisfy it.
+      * `source="ledger"` -- every ACCEPTED validity row whose order is absent
+        from the resting book and UNEXPLAINED (D94 (b), RD D94 item 3), keyed on
+        the ledger's own `actual_broker_order_id`, never on the live book. The
+        book only DETECTS; recording a cancel must not be gated on the order
+        still being visible there.
+
+    LOG-ONLY on both: nothing is sent to the broker. The operator still cancels
+    at the broker and this records that he decided to. It targets a SPECIFIC
+    broker order id, never a ticker -- hazard (c), which migration 0033's CHECK
+    also makes unwritable.
     """
 
     order_id: str
     ticker: str
     latch_candidate_id: int
-    # Display-ready. EXACTLY `broker status {STATUS}` while the broker status is
-    # INDETERMINATE, and the EMPTY STRING otherwise. It exists so the operator
-    # can see WHY the framework is silent about this order while still offering
-    # to record his decision about it.
+    # Display-ready. For a BOOK control: EXACTLY `broker status {STATUS}` while
+    # the broker status is INDETERMINATE, and the EMPTY STRING otherwise, so the
+    # operator can see WHY the framework is silent about this order while still
+    # offering to record his decision about it. For a LEDGER control: RD's W2,
+    # which says the order is not in the current book and scopes the control to
+    # a cancel he made (never a fill or an expiry).
     status_note: str
     # The RULING-3 context anchor, from the SAME `_prior_intent_id` the alarm
     # path used before the move.
     prior_intent_id: str = ""
+    # `"book"` | `"ledger"`: which of the two sources above offered it.
+    source: str = "book"
 
 
 @dataclass(frozen=True)
@@ -1900,8 +1911,12 @@ class LatchOrdersFragmentVM:
     # replaces the correction control on that row. EMPTY on every early return.
     validity_explained: tuple[str, ...] = ()
     # THE PER-ORDER CANCEL AFFORDANCE, decoupled from the alarm set (wave item
-    # 4, piece 1). One per attributable BUY order in this render -- resting OR
-    # indeterminate, latch live OR terminal, alarmed OR not.
+    # 4, piece 1). From TWO sources (`LatchCancelControlVM.source`): one per
+    # attributable BUY order in this render's resting book -- resting OR
+    # indeterminate, latch live OR terminal, alarmed OR not -- and one per
+    # ACCEPTED validity row whose order is absent from that book and
+    # unexplained, keyed on the ledger's order id (D94 (b)). Book controls
+    # first, then ledger controls by (ticker, order id).
     #
     # BOTH OF THESE DEFAULT TO `()` DELIBERATELY. Every early return in
     # `build_latch_orders_vm` must keep constructing, and a degraded or unknown
@@ -2592,9 +2607,25 @@ def build_latch_orders_vm(
     # branch returned above -- which IS the R8 MAJOR 1 rule: an unknown order
     # book renders no prompt in either direction, because a prompt built on it
     # invites an answer the operator would infer from the panel's own silence.
+    # Built BEFORE the cancel controls, because its accepted-row gates are one of
+    # the controls' two sources (D94 (b)).
     intents_by_latch, intents_read_failed = _intents_by_latch(
         conn, derivation.latches)
-    # THE PER-ORDER CANCEL AFFORDANCE. It reads the attribution tuple; the
+    try:
+        validity = _validity_prompts(
+            derivation.latches, joins=joins, orders=orders,
+            anchor=horizon_session_override, now=_now(),
+            intents_by_latch=intents_by_latch)
+    except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
+        _log.warning("latch validity prompts degraded: %s", exc)
+        validity = _ValidityRender(degraded=(
+            f"THE VALIDITY QUESTION COULD NOT BE BUILT AT ALL "
+            f"({type(exc).__name__}). Until it renders, no execution outcome "
+            "can be recorded and the agreement rate stays unmeasurable. See "
+            "the log."))
+    # THE PER-ORDER CANCEL AFFORDANCE, from TWO sources.
+    #
+    # (1) THE RESTING BOOK. It reads the attribution tuple; the
     # alarms do NOT -- the join deliberately receives no tuple and recomputes
     # `_match_latch` itself (Codex R2 MAJOR removed the injection point, and
     # Codex R7 MINOR caught this comment still describing the old shape). What
@@ -2605,7 +2636,7 @@ def build_latch_orders_vm(
     # operator may decide to cancel at any time and the ledger exists to record
     # that he did, so gating this on "when there is something wrong" would
     # re-derive the alarm's own condition under another name.
-    cancel_controls = tuple(
+    book_controls = tuple(
         LatchCancelControlVM(
             order_id=row.order_id,
             ticker=row.ticker,
@@ -2619,6 +2650,36 @@ def build_latch_orders_vm(
         if row.latch_candidate_id is not None
         and row.latch_candidate_id not in intents_read_failed
     )
+    # (2) THE LEDGER (D94 (b), RD D94 item 3). Every ACCEPTED validity row whose
+    # order is absent from the resting book and UNEXPLAINED by a cancel row or a
+    # fill gets a control keyed on the LEDGER's own order id. Without it, the
+    # operator who cancelled first and reloaded second had no true button for
+    # the cancel -- the book that DETECTS was gating the affordance to RECORD.
+    # ONE per (latch, order id); never for an id the resting book carries (the
+    # gate's own set, CHARC C-2 -- a belt, G4 already excludes it); never for a
+    # latch whose ledger read failed.
+    resting_order_ids = validity.resting_order_ids
+    seen: set[tuple[int, str]] = set()
+    ledger_controls = []
+    for gate in validity.ledger_cancels:
+        cid = gate.place.candidate_id
+        oid = gate.child.actual_broker_order_id
+        if (oid in resting_order_ids or (cid, oid) in seen
+                or cid in intents_read_failed):
+            continue
+        seen.add((cid, oid))
+        ledger_controls.append(LatchCancelControlVM(
+            order_id=oid, ticker=gate.place.ticker, latch_candidate_id=cid,
+            status_note=(
+                f"Order {oid} (accepted {gate.child.action_session_date}) is "
+                "not in the current book. If YOU cancelled it, record the "
+                "cancel here. Do not record a cancel for an order that filled "
+                "or expired; leave it unanswered -- the broker-history tier "
+                "records those."),
+            prior_intent_id=_prior_intent_id(intents_by_latch.get(cid, ())),
+            source="ledger"))
+    cancel_controls = book_controls + tuple(
+        sorted(ledger_controls, key=lambda c: (c.ticker, c.order_id)))
     # A LATCH WHOSE LEDGER COULD NOT BE READ OFFERS NO CONTROL, AND THE GAP IS
     # LABELLED (codex-auto-review MAJOR). The form's `prior_intent_id` is the
     # ruling-3 context anchor: it is what makes a CORRECTION key differently
@@ -2643,18 +2704,6 @@ def build_latch_orders_vm(
         if row.latch_candidate_id is not None
         and row.latch_candidate_id in intents_read_failed
     )
-    try:
-        validity = _validity_prompts(
-            derivation.latches, joins=joins, orders=orders,
-            anchor=horizon_session_override, now=_now(),
-            intents_by_latch=intents_by_latch)
-    except Exception as exc:  # noqa: BLE001 -- A6: the fragment never 500s
-        _log.warning("latch validity prompts degraded: %s", exc)
-        validity = _ValidityRender(degraded=(
-            f"THE VALIDITY QUESTION COULD NOT BE BUILT AT ALL "
-            f"({type(exc).__name__}). Until it renders, no execution outcome "
-            "can be recorded and the agreement rate stays unmeasurable. See "
-            "the log."))
     return LatchOrdersFragmentVM(
         available=True,
         resolution_kind="ok",

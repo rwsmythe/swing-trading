@@ -319,6 +319,10 @@ def test_t3_2_imnm_shape_the_gate_runs_on_displaced_cycles_too(
     p3_section = _section_for_parent(html, p3)
     assert p3_section is not None
     assert "DID THIS ORDER REACH THE BROKER?" in p3_section
+    # (iii) the ONE ledger-keyed cancel control, for P2's gone order only (the
+    # book is empty, so this cannot be a book control). Added in Task 4, where
+    # the control is wired (the orchestrator's T3.2 sequencing ruling).
+    assert [f["actual_broker_order_id"] for f in _cancel_forms(html)] == ["5002"]
 
 
 def test_t3_3_w1_replaces_the_absence_headline_on_an_unexplained_accepted_row(
@@ -389,3 +393,186 @@ def test_t3_5_a_resting_accepted_order_is_not_gated(
     assert section is not None
     assert "YES - the broker accepted order 5001" in section
     assert "latch-validity-explained" not in html
+
+
+# ---------------------------------------------------------------------------
+# Task 4 -- the cancel affordance keyed on the LEDGER's order id (D94 (b))
+# ---------------------------------------------------------------------------
+def _w2(order_id: str, session: str) -> str:
+    """RD D94 item 4, the ledger-keyed cancel control's note, verbatim."""
+    return (f"Order {order_id} (accepted {session}) is not in the current book. "
+            "If YOU cancelled it, record the cancel here. Do not record a cancel "
+            "for an order that filled or expired; leave it unanswered -- the "
+            "broker-history tier records those.")
+
+
+def _status_notes(html: str) -> list[str]:
+    return [" ".join(m.split()) for m in re.findall(
+        r'<p class="latch-cancel-status">(.*?)</p>', html, re.S)]
+
+
+def _accepted_then_gone(cfg, cfg_path, monkeypatch, clocks):
+    """P1 accepted as order 5001 while it rested; then the book is EMPTY (the
+    order is gone, no cancel recorded). Returns (app, book, p1, cid)."""
+    cid = _seed(cfg)
+    book = [_order(order_id="5001")]
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        _accept(client, p1)
+    book.clear()
+    return app, book, p1, cid
+
+
+def test_t4_1_empty_book_the_ledger_keyed_control_does_not_need_the_book(
+        seeded_db, monkeypatch, clocks):
+    """ANTI-VACUITY (CHARC). The shipped control is built `for row in
+    attribution`, the RESTING book -- so the moment the broker no longer shows
+    the order there is NO control to record the cancel with. With the book
+    EMPTY in the fixture the control can only come from the ledger key."""
+    cfg, cfg_path = seeded_db
+    app, _book, _p1, _cid = _accepted_then_gone(cfg, cfg_path, monkeypatch, clocks)
+    with TestClient(app) as client:
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert "No resting BUY orders at the broker." in html, (
+        "the premise: the book is EMPTY, so attribution is empty")
+    forms = _cancel_forms(html)
+    assert len(forms) == 1
+    assert forms[0]["actual_broker_order_id"] == "5001"
+    assert forms[0]["intent_kind"] == "cancel"
+    assert _status_notes(html) == [_w2("5001", PLACE_ANCHOR)]
+
+
+def test_t4_2_an_unknown_book_offers_no_ledger_keyed_control(
+        seeded_db, monkeypatch, clocks):
+    """GUARD (CHARC; RD item 6). An UNKNOWN book cannot say "absent", so it
+    builds no line and no control: the two states are not the same state."""
+    import swing.web.view_models.latches as vm_mod
+    from swing.integrations.schwab.client import SchwabApiError
+
+    cfg, cfg_path = seeded_db
+    app, _book, _p1, _cid = _accepted_then_gone(cfg, cfg_path, monkeypatch, clocks)
+
+    def _raise(*a, **k):
+        raise SchwabApiError(500, "x")
+
+    monkeypatch.setattr(vm_mod, "_fetch_account_orders", _raise)
+    with TestClient(app) as client:
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert "UNKNOWN" in html
+    assert _CANCEL_FORM not in html
+    assert "latch-cancel-log" not in html
+    assert "latch-validity-explained" not in html
+    assert "latch-validity-prompt" not in html
+
+
+def test_t4_3_the_ledger_keyed_control_round_trips_to_the_explained_line(
+        seeded_db, monkeypatch, clocks):
+    """END TO END on the shipped POST contract (no route change): the form is
+    posted exactly as rendered, the response is the in-place markup swap (no
+    HX-Redirect), ONE cancel row is written, and the next render explains the
+    row instead of offering anything."""
+    cfg, cfg_path = seeded_db
+    app, _book, p1, _cid = _accepted_then_gone(cfg, cfg_path, monkeypatch, clocks)
+    before = len(_rows(cfg))
+    with TestClient(app) as client:
+        html = _fragment(client, PROMPT_ANCHOR).text
+        r = client.post("/latches/intent", headers=_HX,
+                        data=_form_fields(_cancel_form_html(html, "5001")))
+        assert r.status_code == 200, r.text
+        assert "HX-Redirect" not in r.headers
+        after = _fragment(client, PROMPT_ANCHOR).text
+    new = _rows(cfg)[before:]
+    assert [(row[1], row[5]) for row in new] == [("cancel", "5001")]
+    assert _explained_lines(after) == [
+        f"FTRE place intent {p1}, order 5001: accepted {PLACE_ANCHOR}; "
+        f"cancelled by you {PROMPT_ANCHOR}, intent {new[0][0]}"]
+    assert _CANCEL_FORM not in after
+    assert _section_for_parent(after, p1) is None
+
+
+def test_t4_4_a_resting_accepted_order_gets_exactly_one_control(
+        seeded_db, monkeypatch, clocks):
+    """GUARD. The accepted order still rests, so the shipped BOOK control
+    covers it; a union without the resting check would render it twice."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    book = [_order(order_id="5001")]
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        _accept(client, p1)
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert [f["actual_broker_order_id"] for f in _cancel_forms(html)] == ["5001"]
+    assert "If YOU cancelled it" not in html
+    assert "latch-cancel-status" not in html
+
+
+def test_t4_5_presence_of_a_different_order_keeps_both_controls(
+        seeded_db, monkeypatch, clocks):
+    """Ledger I-3. The accepted order 5001 is gone and a DIFFERENT attributable
+    order 5002 rests. The presence correction (the only way to record 5002)
+    stays, and the gone order still gets its ledger-keyed control beside the
+    book control for 5002."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    book = [_order(order_id="5001")]
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        _accept(client, p1)
+        book[:] = [_order(order_id="5002")]
+        html = _fragment(client, PROMPT_ANCHOR).text
+    section = _section_for_parent(html, p1)
+    assert section is not None
+    assert "YES - the broker accepted order 5002" in section
+    assert [f["actual_broker_order_id"] for f in _cancel_forms(html)] == [
+        "5002", "5001"]
+    assert _status_notes(html) == [_w2("5001", PLACE_ANCHOR)]
+    assert "latch-cancel-status" not in html[:html.index(
+        _cancel_form_html(html, "5002"))]
+
+
+def test_t4_6_the_ledger_keyed_control_keeps_the_htmx_swap_contract(
+        seeded_db, monkeypatch, clocks):
+    """The shipped in-place swap (CHARC; ledger IC-1): browser-only failure
+    surfaces TestClient cannot see, so the attributes are pinned exactly."""
+    cfg, cfg_path = seeded_db
+    app, _book, _p1, cid = _accepted_then_gone(cfg, cfg_path, monkeypatch, clocks)
+    with TestClient(app) as client:
+        html = _fragment(client, PROMPT_ANCHOR).text
+    form = _cancel_form_html(html, "5001")
+    assert 'hx-post="/latches/intent"' in form
+    assert 'hx-target="this"' in form
+    assert 'hx-swap="outerHTML"' in form
+    assert 'hx-headers=\'{"HX-Request": "true"}\'' in form
+    fields = _form_fields(form)
+    latest = max((r for r in _rows(cfg)), key=lambda r: r[0])[0]
+    assert fields["prior_intent_id"] == str(latest) != ""
+    assert fields["candidate_id"] == str(cid)
+    assert fields["view_session_date"] == PROMPT_ANCHOR
+    assert not html.lstrip().startswith("<tr")
+
+
+def test_t4_7_a_failed_ledger_read_offers_no_control(
+        seeded_db, monkeypatch, clocks):
+    """GUARD. A latch whose ledger could not be read builds no gate, so no
+    ledger-keyed control; the shipped degraded label says why."""
+    import sqlite3
+
+    import swing.data.repos.latch_order_intents as repo
+
+    cfg, cfg_path = seeded_db
+    app, _book, _p1, _cid = _accepted_then_gone(cfg, cfg_path, monkeypatch, clocks)
+
+    def _boom(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(repo, "list_intents_for_latch", _boom)
+    with TestClient(app) as client:
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert _CANCEL_FORM not in html
+    assert "THE VALIDITY QUESTION COULD NOT BE BUILT" in html
