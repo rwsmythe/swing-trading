@@ -146,6 +146,42 @@ Both directors: identical dispositions; RD governs semantics. No clearance re-op
   M4 union without the resting check -> T4.4; M5 the VM re-spells the fill conjunction -> T2.3;
   M6 W1 dropped -> T3.3. Output: `exec\tdd-evidence\mutations.txt`.
 
+## 3A. The round-1 rulings applied, and the gates re-run (cell 2), read off saved output
+
+Evidence: `C:\Users\rwsmy\swing-data\review-transcripts\d94-cancel\exec\cell2\`.
+
+- **Commits** (pathspec-only, `%(trailers)` empty each): `67f793b8` R1-1 (T2.4 + the two-source
+  comment), `5de18347` R1-2 (the comment at the skip + the docstring bullet), `40790a6b` R1-3
+  (`_governing_validity_child`), `36e3d670` R1-4 (the explained-line comments). Ledger:
+  `0c9f743b` landed sections 1.2-1.4 and 1A only -- its message also names "the cell-2 gates",
+  which a failed edit script did not write; this section lands in the commit after it. Recorded,
+  not rewritten (no amend).
+- **T2.4 RED first** (`t2_4-mutant-RED.txt`), against a scratch build whose book-control
+  comprehension also drops every attribution row whose latch has `clear_reason == "fill"`
+  (`mutant-R1-1.diff`; reverted, `git diff --exit-code swing/` = 0):
+  `assert [f["actual_broker_order_id"] for f in forms] == ["5001"]` ->
+  `AssertionError: assert [] == ['5001']`, `1 failed`. GREEN on the shipped code
+  (`t2_4-shipped.txt`): `1 passed`. The fill-line assertion ahead of it passed on the mutant, so
+  the RED is the control count, not the setup.
+- **R1-3** (`r1-3-targeted.txt`): the D94 file, the validity-prompt file and `tests/latches/` at
+  `-n 8`: `602 passed`.
+- **Full fast suite** (`-m "not slow" -q -n 8 -p no:cacheprovider`, head `36e3d670`,
+  `full-suite.txt`): `1 failed, 15557 passed, 13 skipped` in 899.40 s. The one red is the KNOWN
+  out-of-arc wall-clock anchor,
+  `tests/pipeline/test_ohlcv_cache_concurrent_fetch_no_race.py::test_ohlcv_cache_get_or_fetch_invariant`,
+  `ValueError: No data for AAPL` (section 3's mechanism; fixed on main at `00d2d818`, test-only;
+  NOT fixed on this branch; the merged-head run reads it in). 15557 = cell 1's 15556 + T2.4.
+- **Ruff:** `ruff check swing/` clean; zero findings on the two arc test modules.
+- **Envelope:** `git diff --stat 8acea975..HEAD -- swing/data swing/trades swing/web/routes scripts research`
+  EMPTY. The `swing/` files changed are unchanged in set: `swing/latches/classification.py`,
+  `swing/web/view_models/latches.py`, `swing/web/templates/partials/latch_orders.html.j2`.
+- **Noted, not changed (outside the ruling's scope):** a grep of `swing/` for
+  `validated_place_intent_id ==` (a token grep; it bounds the family from below) finds the
+  governing-child selection also spelled in `swing/latches/classification.py:577`,
+  `swing/cli_latches.py:467` and `swing/trades/latched_origin.py:1476,1702`. R1-3 named the two VM
+  sites; the others are the resolver, the CLI report and `swing/trades`, all outside this rider's
+  edit set.
+
 ## 4. Reviewer A round table
 
 | round | tier / model / effort (banner) | footer | verdict token | `^ERROR` | crit | major | minor | new / reopened | reverts | tokens used | context depth (orchestrator fills) |
