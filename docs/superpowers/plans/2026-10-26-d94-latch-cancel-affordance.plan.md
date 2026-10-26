@@ -44,7 +44,7 @@ For ONE place intent `P` on latch `L`, with `C` = P's governing validity child (
 | G3 | `C` is None, or `C.validity_outcome != 'accepted_by_broker'` | `none` | today's path, unchanged |
 | G4 | `C` accepted and `C.actual_broker_order_id in B` | `none` | today's path, unchanged (the order is resting or indeterminate) |
 | G5 | `C` accepted, its id not in `B`, and >=1 `cancel` row in L's intents names that id | `explained_cancel` | the read-only cancel line (EARLIEST cancel by `_order_key`, count disclosed); NO correction, NO cancel control |
-| G6 | `C` accepted, its id not in `B`, no cancel row names it | `unexplained` | the correction control with RD's headline (absence branch) + ONE ledger-keyed cancel control for that id |
+| G6 | `C` accepted, its id not in `B`, no cancel row names it | `unexplained` | G6 = the W1 correction control WHERE THE SHIPPED AMBIGUITY GUARD ADMITS A PROMPT, plus ONE ledger-keyed cancel control ALWAYS; where the guard withholds, the withheld note names the latch and its reason, and the ledger control still renders. |
 
 - `fill_vouches_for` is FALSE for every place that is not the latch's latest place (the forward
   guard), so G1/G2 never fire on a displaced cycle while a later place exists.
