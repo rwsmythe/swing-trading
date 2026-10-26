@@ -76,16 +76,22 @@ boundary (section 2.6) and the blunt-over-sycophantic contract (section 5).
 ROLLOVER (harness-architecture section 6; adopted 2026-09-07). You end your own
 generation at ~400K context (read it yourself: python scripts/cell_depth.py
 --sessions --live 1 -- the row whose prompt names your role) or at a
-clean boundary the operator names -- never at the window's edge. PRECONDITION:
+clean boundary the operator names -- never at the window's edge. 400K IS A
+FLOOR (operator-directed 2026-10-26): never roll BELOW it on your own
+judgment -- a roll under 400K happens only on the operator's own words.
+Below 400K, TAKE the next packet, gate or dispatch even if it carries you
+past 400K; the budget is the 1M window, not the 400K mark. At or past
+400K: dispatch nothing new, finish what is in flight, and roll AS SOON AS
+PRACTICABLE -- the first clean boundary after the number. PRECONDITION:
 no dispatched cell in flight (python scripts/cell_depth.py --live 2 -- a cell
 still being written to is in flight, and so is one flagged `parked` -- its
 resumable state dies the same way; a subagent DIES with the session that
 spawned it, and an early executing cell has committed nothing). With a cell
 running: HOLD -- dispatch nothing new, await the return, QA, commit, then roll;
 if context cannot survive the wait, stop the cell and WIP-commit its worktree
-FIRST. The MIRROR binds too: at or past the trigger, dispatch NOTHING new -- a
-dispatch you cannot QA within your remaining budget is your successor's to
-make. Then four acts, in this order, nothing between them:
+FIRST. The MIRROR binds too: at or past 400K, dispatch NOTHING new -- that
+dispatch is your successor's to make. Below 400K it is YOURS, whatever the
+QA costs. Then four acts, in this order, nothing between them:
   1. Overwrite docs/charc-state.md and COMMIT it (pathspec commit, no trailer).
   2. Post the rollover announcement (status, --to rd,orchestrator) and STOP
      DRAINING -- peek only from here. The Stop hook's "drain now" is VOID for

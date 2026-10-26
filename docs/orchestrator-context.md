@@ -419,6 +419,7 @@ These have caused real problems; resist the impulse:
   3. **QA reads are targeted.** Read the lines a claim cites, not whole files. A broad sweep ("does X exist anywhere") goes to an Explore agent, which returns the conclusion. Judgment calls stay with the orchestrator, and so does the reading they need.
   4. **The rollover trigger is already set by harness-architecture.md §"THE ROLLOVER SEQUENCE" (CHARC-owned). Do not invent a percentage and do not substitute compaction for it.**
      - **The trigger:** ~400K by SELF-READ, using `python scripts/cell_depth.py --sessions --live 1`. Run it at every arc boundary and before every dispatch.
+     - **400K is a FLOOR (operator-directed 2026-10-26): never roll below it on your own judgment.** Below 400K, take the next packet or dispatch even if it carries you past 400K; the budget is the window, not the mark. A roll under 400K happens only on the operator's own words. Once past 400K, roll AS SOON AS PRACTICABLE: the first clean boundary, not the window's edge.
      - **At or past ~400K:**
        - dispatch nothing new;
        - if a cell is in flight (`cell_depth.py --live 2`), HOLD until it returns and is QA'd and committed;
