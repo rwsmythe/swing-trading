@@ -148,7 +148,7 @@
     <h2>A+ Detail</h2>
     {% for x in vm.expansions %}
     <div style="margin-bottom: 1.5em;">
-      <h3>{{ x.ticker }}</h3>
+      <h3>{{ x.ticker }}{% if x.risk_flag %} <span class="risk-flag">{{ x.risk_flag }}</span>{% endif %}</h3>
       <p>{{ x.narrative }}</p>
       <h4>Trend Template</h4>
       <table>
@@ -162,6 +162,14 @@
         <tr><td>{{ c.name }}</td><td class="{{ c.result }}">{{ c.result|upper }}</td><td>{{ c.value or "" }}</td><td><small>{{ c.rule or "" }}</small></td></tr>
         {% endfor %}
       </table>
+      {% if x.risk_grid %}
+      <h4>Risk</h4>
+      <table>
+        {% for c in x.risk_grid %}
+        <tr><td>{{ c.name }}</td><td class="{{ c.result }}">{{ c.result|upper }}</td><td>{{ c.value or "" }}</td><td><small>{{ c.rule or "" }}</small></td></tr>
+        {% endfor %}
+      </table>
+      {% endif %}
       {% if x.chart_b64 %}<img class="chart" src="{{ x.chart_b64 }}" alt="{{ x.ticker }} chart">
       {% elif x.chart_href %}<a class="chart-link" href="{{ x.chart_href }}">{{ x.ticker }} chart (linked)</a>
       {% endif %}

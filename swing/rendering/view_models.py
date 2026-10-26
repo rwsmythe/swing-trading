@@ -103,6 +103,11 @@ class TickerExpansionVM:
     vcp_grid: list[CriterionVM] = field(default_factory=list)
     chart_b64: str | None = None
     chart_href: str | None = None
+    # D84 T9 step 3 (CHARC P1): the RISK layer's criterion rows (the
+    # evaluation record, with the persisted value and rule) and the RISK FLAG
+    # marker for a flagged stored layer; "" for a passing or empty layer.
+    risk_grid: list[CriterionVM] = field(default_factory=list)
+    risk_flag: str = ""
 
 
 @dataclass(frozen=True)
