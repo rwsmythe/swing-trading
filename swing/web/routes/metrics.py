@@ -168,8 +168,9 @@ def metrics_capital_friction(request: Request):
 
     Renders point-in-time gauges (current_capital_utilization_pct +
     current_portfolio_heat_pct + concurrent_open_positions +
-    capital_cycle_time_days + risk_feasibility_blocked_rate +
-    capital_feasibility_pressure_index) with PROVISIONAL/LIVE dynamic
+    capital_cycle_time_days + risk_feasibility_blocked_rate (the FLAGGED
+    rate: risk fails among would-have-qualified names; since D84 a fail
+    flags, never blocks) + capital_feasibility_pressure_index) with PROVISIONAL/LIVE dynamic
     badge per plan §A.6 + spec §4.9 TEXT-only LOCK.
 
     Multi-run trend (30-trading-session window ending at backward-looking

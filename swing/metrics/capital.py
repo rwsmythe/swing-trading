@@ -5,7 +5,9 @@ plan §A.6 + plan §A.19 + plan §A.0.1 + plan §A.15:
 
 - ``risk_feasibility_blocked_rate`` per-run point estimate (spec §3.4 +
   §5.5 per-run special case + §A.19 set-membership guard against
-  missing-or-extra criterion names).
+  missing-or-extra criterion names): the rate of risk FAILS among
+  would-have-qualified names. Since D84 a risk fail FLAGS and never blocks
+  (the field keeps its name; the tile says "flagged").
 - ``current_capital_utilization_pct`` point-in-time (PERCENT; PROVISIONAL
   fallback to ``capital_floor_constant_dollars`` when no snapshot).
 - ``current_portfolio_heat_pct`` point-in-time (PERCENT; PROVISIONAL).
@@ -26,7 +28,8 @@ Session-anchor (plan §A.15 BINDING):
   session-anchor read/write mismatch family per CLAUDE.md gotcha).
 
 Per spec §5.5 per-pipeline-run special case: ``risk_feasibility_blocked_rate``
-is a per-run point estimate even at run #1. Multi-run trend lines apply
+(the FLAGGED rate since D84: risk fails among would-have-qualified names; a
+fail flags, never blocks) is a per-run point estimate even at run #1. Multi-run trend lines apply
 Class A policy on trend-window-n; suppression at <5 runs.
 """
 from __future__ import annotations
@@ -253,8 +256,12 @@ class CapitalFrictionResult:
 def _compute_risk_feasibility_blocked_rate(
     conn: sqlite3.Connection, *, evaluation_run_id: int,
 ) -> tuple[float | None, str | None]:
-    """Plan §A.19 + spec §3.4: rate of risk_feasibility-blocked candidates
-    among would-have-qualified candidates in the run.
+    """Plan §A.19 + spec §3.4: rate of risk_feasibility FAILS among
+    would-have-qualified candidates in the run. Since D84 a risk fail FLAGS
+    the name and never blocks it (it no longer reaches the bucket), so this is
+    the FLAGGED rate; the field name is unchanged (CHARC F4). "Would have
+    qualified" requires all 17 other criteria to pass, so it excludes the
+    allowed TT8 miss that A+ admits: the denominator is stricter than A+.
 
     Returns ``(rate, suppressed_text)`` — ``rate`` is None when suppressed
     (zero qualifying candidates this run); ``suppressed_text`` is the
@@ -584,7 +591,8 @@ def compute_capital_friction(
         blocked_rate = None
         blocked_suppr = None
 
-    # Composite pressure index — None if either input None.
+    # Composite pressure index — the FLAGGED rate (risk fails among
+    # would-have-qualified names) times utilization; None if either is None.
     if blocked_rate is not None and util_pct is not None:
         pressure = blocked_rate * (util_pct / 100.0)
     else:
