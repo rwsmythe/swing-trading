@@ -5054,3 +5054,20 @@ def test_the_entry_form_still_asks_for_valid_prices_when_they_are_invalid(
     assert r.status_code == 200
     assert "Enter a valid entry price and stop to see sizing" in r.text
     assert "0 shares at the $" not in r.text
+
+
+def test_the_sizing_hint_states_the_zero_not_too_tight(seeded_db):
+    """R-E3.4 -- CHARC E-e: the entry form's live hint is on the same H4
+    manual path; "Risk cap too tight for 1 share" is refusal prose."""
+    import html as _html
+
+    cfg, cfg_path = seeded_db
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/sizing-hint",
+                       params={"entry_price": "104.00",
+                               "initial_stop": "29.81"})
+    assert r.status_code == 200
+    body = _html.unescape(r.text)
+    assert _KOD_ENTRY_LINE in body
+    assert "too tight" not in body
