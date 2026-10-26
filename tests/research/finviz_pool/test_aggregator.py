@@ -304,8 +304,9 @@ def test_aggregate_sample_ordering_action_session_desc_then_ticker_asc():
 
 
 def test_aggregate_consistency_warning_on_aplus_bucket_with_blocker():
-    """If a candidate has bucket='aplus' but the production-gated
-    re-aggregation finds a blocker, surface a warning — do not crash."""
+    """If a candidate has bucket='aplus' but the re-aggregation through the
+    pre-D84 mirror finds a blocker, surface a warning — do not crash. (A
+    post-D84 risk-flagged A+ is the expected case of this divergence.)"""
     runs = [
         (
             1,
@@ -314,7 +315,7 @@ def test_aggregate_consistency_warning_on_aplus_bucket_with_blocker():
                 _candidate(
                     ticker="X",
                     bucket="aplus",
-                    overrides={"TT1_above_150_200": "fail"},  # production-gated says skip
+                    overrides={"TT1_above_150_200": "fail"},  # pre-D84 mirror says skip
                 ),
             ],
         )

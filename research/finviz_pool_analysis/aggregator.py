@@ -178,19 +178,26 @@ def aggregate_runs(
                 blocker = "<error>"
             blocker_counts[blocker] += 1
 
-            # Cross-check: the production-gated <aplus> row count should
-            # equal the 'aplus' bucket count. We surface drift as a
-            # consistency warning rather than a crash because the read
-            # of production data must remain robust to legacy anomalies.
+            # Cross-check against the PRE-D84 mirror: for rows evaluated
+            # before D84 its <aplus> row count equals the 'aplus' bucket
+            # count. A post-D84 risk-flagged A+ (bucket 'aplus', mirror
+            # blocker risk_feasibility) is an EXPECTED divergence from the
+            # retired risk pre-skip, not a defect in the read; see the module
+            # docstring's re-use precondition. We surface any divergence as a
+            # consistency warning rather than a crash because the read of
+            # production data must remain robust to legacy anomalies.
             if cand.bucket == "aplus" and blocker != APLUS_KEY:
                 consistency_warnings.append(
                     f"run={run_id} ticker={cand.ticker}: bucket=aplus but "
-                    f"production-gated blocker={blocker} (re-aggregation drift)"
+                    f"pre-D84 mirror blocker={blocker} (re-aggregation drift "
+                    f"vs the pre-D84 mirror; expected for a post-D84 "
+                    f"risk-flagged A+)"
                 )
             if cand.bucket != "aplus" and blocker == APLUS_KEY:
                 consistency_warnings.append(
                     f"run={run_id} ticker={cand.ticker}: bucket={cand.bucket} but "
-                    f"production-gated blocker=<aplus> (re-aggregation drift)"
+                    f"pre-D84 mirror blocker=<aplus> (re-aggregation drift "
+                    f"vs the pre-D84 mirror)"
                 )
 
             # Near-A+ classification on watch bucket only.
