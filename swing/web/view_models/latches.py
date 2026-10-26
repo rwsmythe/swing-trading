@@ -22,6 +22,11 @@ from swing.evaluation.dates import (
     sessions_behind,
     topbar_session_date,
 )
+from swing.evaluation.scoring import (
+    RiskInputs,
+    risk_inputs_from_criteria,
+    risk_layer_flagged,
+)
 from swing.latches.classification import (
     assess_telemetry_health,
     classify_latch,
@@ -55,11 +60,6 @@ from swing.latches.reader import (
     count_session_recorded_closes,
     latest_recorded_close_stamp,
     load_last_closes,
-)
-from swing.evaluation.scoring import (
-    RiskInputs,
-    risk_inputs_from_criteria,
-    risk_layer_flagged,
 )
 from swing.recommendations.sizing import risk_bound_zero, zero_share_line
 from swing.web.view_models.journal import _base_banner_fields

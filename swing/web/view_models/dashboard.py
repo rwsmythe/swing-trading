@@ -24,13 +24,13 @@ from swing.data.repos.trades import list_open_trades
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.data.repos.weather import get_latest
 from swing.evaluation.dates import PageKind, action_session_for_run, topbar_session_date
+from swing.evaluation.scoring import risk_inputs_from_criteria
 from swing.journal.stats import HypothesisProgress
 from swing.latches.constants import mandate_limit_price, zone_cap_for_pivot
 from swing.metrics.equity_resolver import (
     resolve_live_capital_denominator_dollars,
 )
 from swing.metrics.policy import read_live_policy
-from swing.evaluation.scoring import risk_inputs_from_criteria
 from swing.recommendations.sizing import (
     SizingResult,
     compute_shares,
