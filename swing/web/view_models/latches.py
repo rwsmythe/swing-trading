@@ -236,6 +236,12 @@ class PreparedOrderVM:
     # The stated-zero line rendered BESIDE a regime-withheld detail (P3), so
     # the regime fact is never masked; `""` when there is no zero to state.
     stated_zero_line: str = ""
+    # The result's own SizingResult, carried on the WITHHELD branch only
+    # (beside `regime_undeterminable` and `sizing_infeasible`, as the result
+    # admits it), so the D84 declaration keys on the SIZING FACT rather than
+    # on the reason or the heading derived from it (CHARC amendment 1
+    # CORRECTED). Never an order: it renders nothing by itself.
+    sizing: object | None = None
 
 
 @dataclass(frozen=True)
@@ -589,7 +595,7 @@ def _withheld_block(reason: str | None, detail: str, *, latch: Latch | None = No
         rendered_derivation_columns=frozenset(), anchor_fields=(),
         anchor_digest="", withheld_reason=reason, withheld_detail=detail,
         decision_unavailable_note=DECISION_UNAVAILABLE_NOTE,
-        withheld_heading=heading, stated_zero_line=stated_zero)
+        withheld_heading=heading, stated_zero_line=stated_zero, sizing=sizing)
 
 
 def _derivation_block(latch: Latch, order) -> tuple[tuple[str, ...], frozenset[str]]:
@@ -995,15 +1001,22 @@ def _unverifiable_label(latch: Latch) -> str:
 
 def _risk_flag_attest_available(
         latch: Latch, *, risk_inputs, prepared_order, disposition) -> bool:
-    """The D84 declaration affordance's key: a UNION (CHARC amendment 1).
+    """The D84 declaration affordance's key: a UNION (CHARC amendment 1
+    CORRECTED, `20261026T164436Z`).
 
     (a) the FIRE's stored risk layer is FLAGGED (P2 (b)) -- live AND terminal
         cards, so "attest first, then enter" never becomes an order he must
-        obey; OR
-    (b) the card is LIVE and its own result is `sizing_infeasible` with the
-        RISK leg the zero -- the band where the criterion PASSED at the pivot
-        but the limit sizes to zero, which has no framework order, no marker
-        and no later prompt, so without (b) a manual act there is unrecordable.
+        obey -- EXCEPT while the card OFFERS an order: there "the framework
+        has no order here" is false, and the offered form's own place/decline
+        path records the act. The MARKER is not keyed here and stays; OR
+    (b) the card is LIVE and its own SizingResult is a RISK-bound zero -- the
+        SIZING FACT, whichever reason withheld the card (`sizing_infeasible`
+        OR `regime_undeterminable`, the ordinary intraday state of a live
+        card). A heading string is a display, not a key. This is the band
+        where the criterion PASSED at the pivot but the limit sizes to zero:
+        no framework order, no marker and no later prompt, so without (b) a
+        manual act there is unrecordable. A FEASIBLE or CAP-bound sizing is
+        not it.
     Either way only while NO attestation and NO decision governs (CHARC P2:
     "until an attestation or a decision governs").
     """
@@ -1013,11 +1026,11 @@ def _risk_flag_attest_available(
             "accepted", "declined"):
         return False
     fire_flagged = risk_inputs is not None and risk_layer_flagged(risk_inputs)
+    offers_order = prepared_order is not None and prepared_order.offered
+    sizing = None if prepared_order is None else prepared_order.sizing
     live_risk_zero = bool(
-        latch.is_live and prepared_order is not None
-        and prepared_order.withheld_reason == "sizing_infeasible"
-        and prepared_order.withheld_heading == _RISK_FLAG_HEADING)
-    return fire_flagged or live_risk_zero
+        latch.is_live and sizing is not None and risk_bound_zero(sizing))
+    return (fire_flagged and not offers_order) or live_risk_zero
 
 
 def _build_row(latch: Latch, *, quote, views, provenance=None,

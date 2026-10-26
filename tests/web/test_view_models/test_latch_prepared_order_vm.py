@@ -1120,3 +1120,115 @@ def test_the_band_card_offers_the_declaration_without_a_marker(seeded_db):
     assert row.risk_flag_attest_available is True
     assert row.attest_options == (
         ("acted_manually", "I acted on this manually"),)
+
+
+# ===========================================================================
+# D84 T7.4 -- CHARC amendment 1 CORRECTED (20261026T164436Z, item 1).
+# (a) leg (b) keys on the SIZING FACT (a live card whose own SizingResult is a
+#     risk-bound zero), not on the `sizing_infeasible` reason or its heading,
+#     so a regime-withheld card in the band still carries the declaration;
+# (b) leg (a), the fire's flagged layer, is WITHDRAWN while the card OFFERS an
+#     order: "The framework has no order here" is false on an offered card,
+#     and the offered form's own place/decline path records the act. The
+#     MARKER stays (P1: the fire's criterion did fail).
+# ===========================================================================
+
+
+def test_amendment1_corrected_a_the_regime_withheld_BAND_card_offers_the_declaration(  # noqa: N802
+        seeded_db):
+    """RED before the correction. R-T7.8's geometry (pivot 100.00, stop 63.00,
+    risk PASSES at the pivot) with NO derivation-session close, so
+    `regime_order_type` is None: the ORDINARY intraday state of a live card.
+    The result is `regime_undeterminable` and still carries the sizing, a
+    RISK-bound zero at limit 103.00. Keyed on the reason, the affordance was
+    absent here; keyed on the sizing fact, it renders. No marker (P1)."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="pass", ticker="BAND", pivot=100.00,
+                   stop=63.00, close=99.0)
+    row = _vm(cfg).rows[0]
+    assert row.is_live is True
+    po = row.prepared_order
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.withheld_heading == "PREPARED ORDER WITHHELD"
+    assert po.stated_zero_line.startswith("0 shares at the $37.50 budget")
+    assert row.risk_flag_marker == ""
+    assert row.risk_flag_attest_available is True
+    assert row.attest_options == (
+        ("acted_manually", "I acted on this manually"),)
+    assert D84_LEAD in _attest_section(_render_card(row))
+
+
+def test_amendment1_corrected_a_a_regime_withheld_FEASIBLE_card_offers_nothing(  # noqa: N802
+        seeded_db):
+    """GUARD. The same regime-None state with FEASIBLE sizing (pivot 100.00,
+    stop 90.00: one share risks $13.00 at limit 103.00, 2 shares fit): no
+    zero, so no declaration. Unchanged pre-D84 posture: the offered form
+    arrives with the close. Fails if leg (b) keys on `sizing is not None`."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="pass", ticker="FEAS", pivot=100.00,
+                   stop=90.00, close=99.0)
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.stated_zero_line == ""
+    assert row.risk_flag_marker == ""
+    assert row.risk_flag_attest_available is False
+    assert row.attest_options == ()
+
+
+def test_amendment1_corrected_a_a_regime_withheld_CAP_bound_zero_offers_nothing(  # noqa: N802
+        seeded_db):
+    """GUARD. Regime None with a CAP-bound zero (pivot 1200.00, stop 1199.00:
+    one share risks $37.00 at limit 1236.00, inside the $37.50 budget, but one
+    share's notional exceeds the position cap): the zero is the cap's, not the
+    risk leg's, so no declaration. Fails if leg (b) keys on `shares == 0`."""
+    from swing.recommendations.sizing import risk_bound_zero
+
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="pass", ticker="CAPZ", pivot=1200.00,
+                   stop=1199.00, close=1190.0)
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.sizing is not None and po.sizing.shares == 0
+    # The RISK leg allows a share ($37.50 / $37.00 floors to 1), so the zero is
+    # the position cap's.
+    assert po.sizing.max_risk_dollars == 37.5
+    assert po.sizing.risk_per_share == 37.0
+    assert risk_bound_zero(po.sizing) is False
+    assert row.risk_flag_attest_available is False
+    assert row.attest_options == ()
+
+
+def test_amendment1_corrected_b_an_OFFERED_card_withdraws_the_fire_flag_declaration(  # noqa: N802
+        seeded_db):
+    """RED before the correction. The fire's stored risk layer is FLAGGED,
+    but the live card OFFERS an order (a rung-A close; pivot 100.00, stop
+    90.00 sizes to 2 shares at limit 103.00), reachable when real equity rises
+    above the floor or the policy is edited after the fire. "The framework has
+    no order here" would be false and the act is recordable through the
+    offered form, so the declaration is withdrawn. The marker STAYS (P1)."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="fail", ticker="OFR", pivot=100.00,
+                   stop=90.00, close=99.0)
+    _seed_kod_derivation_session_close(cfg, price=99.0, ticker="OFR")
+    row = _vm(cfg).rows[0]
+    assert row.prepared_order.offered is True
+    assert row.risk_flag_marker == "RISK FLAG"
+    assert row.risk_flag_attest_available is False
+    assert row.attest_options == ()
+    assert D84_LEAD not in _render_card(row)
+
+
+def test_amendment1_corrected_b_a_flagged_WITHHELD_live_card_keeps_the_declaration(  # noqa: N802
+        seeded_db):
+    """GUARD. Fire flagged + a live WITHHELD card (KOD, regime None: no order
+    is offered) keeps leg (a). The sizing_infeasible sibling is R-(v)2 and the
+    terminal sibling is R-T7.7, both unchanged."""
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg)                  # risk fail, no derivation-session close
+    row = _vm(cfg).rows[0]
+    assert row.is_live is True
+    assert row.prepared_order.offered is False
+    assert row.risk_flag_marker == "RISK FLAG"
+    assert row.risk_flag_attest_available is True
