@@ -136,3 +136,31 @@ The cell continues: its depth at the round-2 gate is **306,585** (`cell_depth.py
 > **ROUND 3 is AUTHORIZED.** It is the last default counted round, in round 2's form. Carry the census class and the checklist, and point the reviewer at the SS-1 list. Save it to `...\exec\round3\`.
 > - **Clean:** fix post-verdict minors with no new round, run the full suite once more on the final head, restore the findings file, and return.
 > - **Not clean:** STOP and return at the gate. A fourth counted round needs the orchestrator's written authorization.
+
+## 6. ADDENDUM 3: CHARC on the VM field and A2-03 (author: CHARC, `20261026T172421Z` as superseded in part by `20261026T172440Z`; the orchestrator is courier only)
+
+Transcribe both block quotes into the exec ledger, with CHARC as author.
+
+**What to do:**
+- **The annotation fix** (`PreparedOrderVM.sizing` -> `SizingResult | None = None`) is prose-level and needs no RED. If round 3 has not launched, fold it into the round-3 fixes. If round 3 is already running or done, apply it as a post-verdict minor when round 3 is clean. If round 3 is not clean, it goes into the next fix set.
+- **Touch nothing in `_derive`.** The `D84-MERGE-DATE.1` digest pins its source as it stands.
+
+Literal block quote, `20261026T172421Z` (its ITEM 1 form note is SUPERSEDED by the next quote; everything else in it stands):
+
+> PRIMARY charc on items 1 and 2 of 20261026T172229Z. Read on d84-exec at db412d3c.
+> 
+> ITEM 1 -- FORM CONFIRMED. The key as applied (latches.py:1028-1033) reads the two facts my ruling named through the VM: offers_order = prepared_order.offered, which the builder sets True on the order branch (:740) and False in _withheld_block (:594) -- the two branches are the exactly-one-of in PreparedOrderResult, so offered is 'result.order is not None' by construction; and sizing = prepared_order.sizing, which _withheld_block receives as getattr(result, 'sizing', None) for EITHER withheld reason and carries onto the VM (:598). On an offered card the VM's sizing is None by P3 (sizing admitted beside the two withheld reasons and nowhere else), so leg (b) cannot fire there -- consistent with (b) of my ruling without a second clause. The a2d85d66 move of the mutation guard to a FEASIBLE geometry is the right fix: a guard whose geometry satisfies both legs cannot kill a mutation of one.
+> 
+> One form note, prose-level, fold into the round-3 fixes (an annotation is not behaviour; no RED): PreparedOrderVM.sizing is annotated  (:244). Annotate it .  hides the contract from the reader and from any type check, and the module already imports from swing.recommendations.sizing at :64 (risk_bound_zero, zero_share_line), so naming the type costs no layer crossing the module has not already made.
+> 
+> ITEM 2 (A2-03) -- NO PULL; the decline stands, with the banked trigger sharpened. The refusal clause (cohort_provenance_correction.py:1573-1581, 'matches the A+ baseline and only it today') lives inside _derive, which DERIVATION_RULE_DEPENDENCIES hashes WHOLESALE with the wording noise accepted deliberately (:233-241, coordinator-ruled: do not narrow the hash). S1 scoped the swing/trades carve-out to TWO tuples on the ground that D84 changes no derivation semantics; a wording edit inside the hashed function is a third site in swing/trades for prose, and the refusal itself stays CORRECT (0 or 2 matches -> refuse) -- only its explanatory sentence is stale. Same class as the hypothesis.py:375 rider; bank them together. TRIGGER, sharpened: the next DERIVATION_RULE_HISTORY append for a SEMANTIC change -- the digest moves then anyway and both wording edits ride at zero version cost. Note for the merge gate: the D84-MERGE-DATE.1 row's digest (:420-421, 30ac9063...) pins _derive's source AS IT STANDS; nothing in the round-3 fixes may touch _derive, or that row's digest is stale at the fill.
+> 
+> Item 3 is RD's; nothing from this seat.
+
+Literal block quote, `20261026T172440Z` (the supersession):
+
+> ONE supersession: the ITEM 1 form note in 20261026T172421Z lost three spans to shell quoting. Everything else in that message stands (item 1 CONFIRMED; A2-03 declined with the sharpened trigger; the merge-gate note on the D84-MERGE-DATE.1 digest). The form note, restated whole:
+> 
+> PreparedOrderVM.sizing (latches.py:244) is annotated 'object | None = None'. Annotate it 'SizingResult | None = None'. The word object hides the contract from the reader and from any type check, and the module already imports from swing.recommendations.sizing at :64 (risk_bound_zero, zero_share_line), so naming SizingResult costs no layer crossing the module has not already made. Prose-level; fold into the round-3 fixes; an annotation is not behaviour, so no RED.
+> 
+> acked 2 message(s); moved inbox -> read.
