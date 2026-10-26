@@ -55,6 +55,7 @@ from swing.latches.reader import (
     latest_recorded_close_stamp,
     load_last_closes,
 )
+from swing.recommendations.sizing import risk_bound_zero, zero_share_line
 from swing.web.view_models.journal import _base_banner_fields
 
 _log = logging.getLogger(__name__)
@@ -123,6 +124,10 @@ LOG_ONLY_NOTICE = "PREPARED ORDER (LOG ONLY - nothing is sent to the broker)"
 # renders on that prompt may never appear. Advertising a control that is not
 # there is worse than admitting there is none: it sends him looking, and what he
 # learns is that the panel's instructions are approximate.
+# That claim is about the discipline-lapse PROMPT. Since D84 a SEPARATE
+# affordance exists on a risk-flagged card -- `LatchRowVM.risk_flag_attest_
+# available`, the `acted_manually` declaration -- and this note does not name it
+# because it renders in its own section, keyed on its own condition.
 DECISION_UNAVAILABLE_NOTE = (
     "No DECLINE control: a decline is recorded as a decision about the "
     "framework's own order, and the ledger requires that order on the row. "
@@ -181,10 +186,9 @@ class PreparedOrderVM:
 
     THE WITHHELD BRANCH IS THE EXPRESSIVE ONE, not the afterthought. It is the
     CURRENT live state -- the regime is undeterminable whenever no close is
-    dated the derivation session -- so it carries a display-ready reason and,
-    deliberately, NO order numbers at all: rendering a quantity or a limit under
-    a withheld heading would present as a mandate something the framework
-    refused to assert.
+    dated the derivation session -- so it carries a display-ready reason and
+    carries NO order numbers: a stated zero and its equation are not an order
+    (D84).
     """
 
     offered: bool
@@ -219,6 +223,13 @@ class PreparedOrderVM:
     # exists to remove. So the SILENT absence is converted into a LABELLED one,
     # which is the project's standing rule and the honest interim.
     decision_unavailable_note: str = ""
+    # ===== D84 (F1-A, P3, E-i): the stated zero ==========================
+    # The withheld heading: the default, or the RISK FLAG heading when the
+    # result is `sizing_infeasible` with the RISK leg the zero.
+    withheld_heading: str = "PREPARED ORDER WITHHELD"
+    # The stated-zero line rendered BESIDE a regime-withheld detail (P3), so
+    # the regime fact is never masked; `""` when there is no zero to state.
+    stated_zero_line: str = ""
 
 
 @dataclass(frozen=True)
@@ -504,20 +515,65 @@ def _prior_intent_id(intents) -> str:
     return str(latest.intent_id)
 
 
-def _withheld_block(reason: str | None, detail: str) -> PreparedOrderVM:
-    """A withheld block carries the REASON and NOTHING that reads as a mandate.
+_RISK_FLAG_HEADING = "RISK FLAG - 0 SHARES AT THE BUDGET"
 
-    No headline, no derivation lines, no hidden anchor: a quantity or a limit
-    rendered under a withheld heading would present as an order to place
-    something the framework explicitly refused to assert -- and the ledger's
-    whole claim is that a recorded framework order is byte-identically what the
-    operator was looking at.
+
+def _zero_derivation_lines(latch: Latch, sizing, sizing_inputs) -> tuple[str, ...]:
+    """The equation of a RISK-BOUND zero, ASCII, one line per operand step.
+
+    Every operand is read from the SizingResult it was sized on or from the
+    SizingInputs (CHARC F1 (3)); the limit is the SAME `mandate_limit_price`
+    the sizing used, and the stop is the fire-time stop. The derivation travels
+    with the numbers (the D25 rule).
     """
+    limit = mandate_limit_price(latch.zone_cap)
+    risk = sizing.risk_per_share
+    budget = sizing.max_risk_dollars
+    return (
+        f"1-share risk {_fmt_money(risk)} = limit {limit:.2f} - fire-time "
+        f"stop {float(latch.latched_initial_stop):.2f}",
+        f"budget {_fmt_money(budget)} = sizing equity "
+        f"{_fmt_money(sizing_inputs.sizing_equity)} x "
+        f"{sizing_inputs.max_risk_pct * 100:.3f}%",
+        f"sizing equity {_fmt_money(sizing_inputs.sizing_equity)} = max(real "
+        f"equity {_fmt_money(sizing_inputs.real_equity)}, risk_equity_floor "
+        f"{_fmt_money(sizing_inputs.equity_floor)})",
+        f"shares at the budget 0 = floor({_fmt_money(budget)} / "
+        f"{_fmt_money(risk)})",
+    )
+
+
+def _withheld_block(reason: str | None, detail: str, *, latch: Latch | None = None,
+                    sizing=None, sizing_inputs=None) -> PreparedOrderVM:
+    """A withheld block carries NO order: no headline, no hidden anchor,
+    nothing the operator could accept. When the sizing came out at zero (D84
+    F1-A, P3) it states the zero, and on the risk-bound zero its equation,
+    because the derivation travels with the numbers; it is still not an order.
+
+    `sizing` is the result's own SizingResult (present beside
+    `regime_undeterminable` and `sizing_infeasible` only). A FEASIBLE sizing on
+    a regime-withheld card renders NOTHING new: the formatter returns None
+    above zero shares, so no quantity reads as a mandate.
+    """
+    heading = "PREPARED ORDER WITHHELD"
+    stated_zero = ""
+    lines: tuple[str, ...] = ()
+    if sizing is not None and sizing.shares == 0 and latch is not None:
+        limit = mandate_limit_price(latch.zone_cap)
+        risk_zero = risk_bound_zero(sizing)
+        if reason == "sizing_infeasible" and risk_zero:
+            heading = _RISK_FLAG_HEADING
+        elif reason == "regime_undeterminable":
+            stated_zero = zero_share_line(
+                sizing, basis_label="limit", basis_price=limit) or ""
+        if risk_zero and sizing_inputs is not None:
+            lines = _zero_derivation_lines(latch, sizing, sizing_inputs)
     return PreparedOrderVM(
-        offered=False, headline="", derivation_lines=(),
+        offered=False, headline="", derivation_lines=lines,
         rendered_derivation_columns=frozenset(), anchor_fields=(),
         anchor_digest="", withheld_reason=reason, withheld_detail=detail,
-        decision_unavailable_note=DECISION_UNAVAILABLE_NOTE)
+        decision_unavailable_note=DECISION_UNAVAILABLE_NOTE,
+        withheld_heading=heading, stated_zero_line=stated_zero)
 
 
 def _derivation_block(latch: Latch, order) -> tuple[tuple[str, ...], frozenset[str]]:
@@ -623,11 +679,13 @@ def _derivation_block(latch: Latch, order) -> tuple[tuple[str, ...], frozenset[s
 
 
 def _build_prepared_order_vm(
-    latch: Latch, result, *, view_session_date: str,
+    latch: Latch, result, *, view_session_date: str, sizing_inputs=None,
 ) -> PreparedOrderVM:
     """Turn a `PreparedOrderResult` into the card block plus its hidden anchor."""
     if result.order is None:
-        return _withheld_block(result.withheld_reason, result.withheld_detail)
+        return _withheld_block(
+            result.withheld_reason, result.withheld_detail, latch=latch,
+            sizing=getattr(result, "sizing", None), sizing_inputs=sizing_inputs)
     order = result.order
     lines, columns = _derivation_block(latch, order)
     # ONE enumeration, GENERATED from the manifest. No site re-lists the
@@ -1357,7 +1415,8 @@ def _panel_prepared_orders(
                     regime_session_iso if regime_close is not None else None),
                 sizing_inputs=sizing)
             out[cid] = _build_prepared_order_vm(
-                latch, result, view_session_date=view_session_date)
+                latch, result, view_session_date=view_session_date,
+                sizing_inputs=sizing)
         except Exception as exc:  # noqa: BLE001 -- A6: degrade VISIBLY
             _log.warning(
                 "latch prepared order degraded for candidate %s: %s", cid, exc)

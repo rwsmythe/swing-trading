@@ -774,3 +774,138 @@ def test_the_WITHHELD_branch_STILL_offers_no_control(seeded_db):
     assert "<form" not in section
     assert "<button" not in section
     assert 'value="decline"' not in section
+
+
+# ===========================================================================
+# D84 T7.2 -- the card STATES its zero (F1-A, P3, E-i). The KOD geometry
+# (pivot 104.00, stop 29.81, limit 107.12) at the $7,500 floor: one share risks
+# $77.31 against the $37.50 budget, so the risk leg is the zero.
+# ===========================================================================
+KOD_FLAG_LINE = (
+    "0 shares at the $37.50 budget; 1 share risks $77.31 (2.1x budget) at "
+    "limit 107.12; above budget if you proceed")
+KOD_DERIVATION_LINES = (
+    "1-share risk $77.31 = limit 107.12 - fire-time stop 29.81",
+    "budget $37.50 = sizing equity $7,500.00 x 0.500%",
+    "sizing equity $7,500.00 = max(real equity $1,200.00, "
+    "risk_equity_floor $7,500.00)",
+    "shares at the budget 0 = floor($37.50 / $77.31)",
+)
+
+
+def _seed_kod_fire(cfg, *, risk_result="fail", ticker="KOD", pivot=104.00,
+                   stop=29.81, close=98.46):
+    """The KOD-shaped fire on run 121 (the FTRE session frame), carrying its
+    persisted `risk_feasibility` row (the evaluation record)."""
+    rid, asof, action = 121, "2026-07-17", "2026-07-20"
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) "
+            "VALUES (?, ?, ?, ?, 1, 1, 0, 0, 0, 0)",
+            (rid, f"{asof}T17:30:05", asof, action))
+        cur = conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) "
+            "VALUES (?, ?, 'aplus', ?, ?, ?, 'universe')",
+            (rid, ticker, close, pivot, stop))
+        if risk_result is not None:
+            conn.execute(
+                "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+                "layer, result, value, rule) VALUES (?, 'risk_feasibility', "
+                "'risk', ?, ?, ?)",
+                (cur.lastrowid, risk_result,
+                 "0 sh, $0.00 risk" if risk_result == "fail" else "1 sh",
+                 ">= 1 share fits in 0.5% of equity ($37.50)"))
+    conn.close()
+
+
+def _seed_kod_derivation_session_close(cfg, price=98.46, ticker="KOD"):
+    """Rung A for KOD: the recorded close AND an archive bar dated S."""
+    conn = connect(cfg.paths.db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, tickers_evaluated, aplus_count, watch_count, "
+            "skip_count, excluded_count, error_count) VALUES "
+            "(900, ?, ?, '2026-07-27', 1, 0, 1, 0, 0, 0)",
+            (f"{DERIVATION_SESSION}T17:30:05", DERIVATION_SESSION))
+        conn.execute(
+            "INSERT INTO candidates (evaluation_run_id, ticker, bucket, close, "
+            "pivot, initial_stop, rs_method) VALUES "
+            "(900, ?, 'watch', ?, 104.0, 29.81, 'universe')",
+            (ticker, price))
+    conn.close()
+    _write_archive_bars(cfg, [(DERIVATION_SESSION, price)], ticker=ticker)
+
+
+def _render_card(row):
+    from jinja2 import Environment, FileSystemLoader
+    root = (Path(__file__).resolve().parents[3]
+            / "swing" / "web" / "templates")
+    env = Environment(loader=FileSystemLoader(str(root)), autoescape=True)
+    from types import SimpleNamespace
+    return env.get_template("partials/latch_prepared_order.html.j2").render(
+        row=row, vm=SimpleNamespace(horizon_session="2026-07-27"))
+
+
+def _prepared_section(html):
+    start = html.index('<section class="latch-prepared-order')
+    return html[start:html.index("</section>", start)]
+
+
+def test_acceptance_i_b_the_risk_flagged_card_renders_the_computed_shares_and_risk(
+        seeded_db):
+    """R-(i)b. The regime is determinable (a rung-A close), so the card is
+    withheld on `sizing_infeasible` with the RISK leg the zero: the heading is
+    the flag, the detail states the zero and the one-share risk at the limit,
+    and the four derivation lines carry the equation (the D25 rule)."""
+    import html as _html
+
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg)
+    _seed_kod_derivation_session_close(cfg)
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.offered is False
+    assert po.withheld_reason == "sizing_infeasible"
+    assert po.withheld_heading == "RISK FLAG - 0 SHARES AT THE BUDGET"
+    assert po.withheld_detail == KOD_FLAG_LINE
+    assert po.stated_zero_line == ""
+    assert po.derivation_lines == KOD_DERIVATION_LINES
+    assert all(line.isascii() for line in po.derivation_lines)
+    section = _html.unescape(_prepared_section(_render_card(row)))
+    assert "RISK FLAG - 0 SHARES AT THE BUDGET" in section
+    assert KOD_FLAG_LINE in section
+    for line in KOD_DERIVATION_LINES:
+        assert line in section
+    assert "<form" not in section
+    assert "<button" not in section
+
+
+def test_P3_the_regime_withheld_card_states_the_zero_BESIDE_the_regime_reason(
+        seeded_db):
+    """R-T7.6 -- CHARC P3: with the regime undeterminable the heading stays
+    `PREPARED ORDER WITHHELD` and the detail stays the regime text (the regime
+    fact is never masked), while the stated zero and its equation render
+    BESIDE it. Still no form and no button in the prepared-order section."""
+    import html as _html
+
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg)                  # no derivation-session close
+    row = _vm(cfg).rows[0]
+    po = row.prepared_order
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.withheld_heading == "PREPARED ORDER WITHHELD"
+    assert po.withheld_detail.startswith(
+        "No prepared order: the price regime is undeterminable")
+    assert po.stated_zero_line == KOD_FLAG_LINE
+    assert po.derivation_lines == KOD_DERIVATION_LINES
+    section = _html.unescape(_prepared_section(_render_card(row)))
+    assert "PREPARED ORDER WITHHELD" in section
+    assert 'class="latch-stated-zero"' in section
+    assert KOD_FLAG_LINE in section
+    assert "<form" not in section
+    assert "<button" not in section

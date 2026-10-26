@@ -49,8 +49,19 @@
     </label>
   </form>
   {% else %}
-  <h3 class="latch-prepared-order-heading">PREPARED ORDER WITHHELD</h3>
+  <h3 class="latch-prepared-order-heading">{{ po.withheld_heading }}</h3>
   <p class="latch-prepared-order-withheld">{{ po.withheld_detail }}</p>
+  {# D84 (F1-A, P3): the STATED ZERO. Beside a regime-withheld detail it is its
+     own line, so the regime fact is never masked; on a risk-bound zero the
+     equation renders in the derivation block. Neither is an order: there is
+     still no headline, no hidden anchor and no control here. #}
+  {% if po.stated_zero_line %}
+  <p class="latch-stated-zero">{{ po.stated_zero_line }}</p>
+  {% endif %}
+  {% if po.derivation_lines %}
+  <pre class="latch-derivation">{% for line in po.derivation_lines %}{{ line }}
+{% endfor %}</pre>
+  {% endif %}
   {# THE DECLINE CONTROL LIVES INSIDE THE OFFERED FORM, so a withheld card
      takes it with it. That gap is LABELLED rather than left silent -- and it is
      NOT closed by moving the control here: a decline on a withheld card is
