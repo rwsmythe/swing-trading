@@ -168,10 +168,11 @@
      that could not be BUILT renders identically to a latch with nothing to ask,
      and the agreement denominator stays empty for a reason nobody can see --
      which is this arc's own failure mode pointed at its own instrument. #}
-  {# RECORDED ORDER OUTCOMES (D94 (a)): one READ-ONLY line per accepted row
-     whose absence from the resting book a fill or a recorded cancel explains.
-     The line replaces that row's correction control; it offers no control of
-     its own. Display-ready; ASCII only. #}
+  {# RECORDED ORDER OUTCOMES (D94 (a)): one READ-ONLY line per explained
+     validity row -- a fill explains the place whatever its child says; a
+     recorded cancel explains an accepted row whose order is gone. The line
+     replaces that row's correction control; it offers no control of its own.
+     Display-ready; ASCII only. #}
   {% if vm.validity_explained %}
   <div class="latch-validity-explained">
     <h4 class="latch-validity-heading">RECORDED ORDER OUTCOMES (read-only)</h4>

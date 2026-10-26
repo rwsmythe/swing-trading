@@ -1906,9 +1906,10 @@ class LatchOrdersFragmentVM:
     # can see. Degrading silently on THIS surface is the arc's own failure mode.
     # Display-ready, empty when nothing failed.
     validity_prompt_degraded: str = ""
-    # READ-ONLY lines, one per accepted validity row whose absence from the
-    # resting book a FILL or a recorded CANCEL explains (D94 (a)): the line
-    # replaces the correction control on that row. EMPTY on every early return.
+    # READ-ONLY lines, one per EXPLAINED validity row (D94 (a)): a fill explains
+    # the place whatever its child says; a recorded cancel explains an accepted
+    # row whose order is gone. The line replaces the correction control on that
+    # row. EMPTY on every early return.
     validity_explained: tuple[str, ...] = ()
     # THE PER-ORDER CANCEL AFFORDANCE, decoupled from the alarm set (wave item
     # 4, piece 1). From TWO sources (`LatchCancelControlVM.source`): one per
@@ -3256,10 +3257,11 @@ def _intents_by_latch(conn, latches) -> tuple[dict[int, list], frozenset[int]]:
 # ---------------------------------------------------------------------------
 # THE ACCEPTED-ROW GATE (D94 (a); RD D94 items 2-6, CHARC D94 1A + 2A)
 # ---------------------------------------------------------------------------
-# A correction control on an ACCEPTED validity row is offered only while the
-# order's ABSENCE from the resting book is UNEXPLAINED. A `cancel` row naming
-# that order id, or the resolver's fill rung, EXPLAINS it; the control is then
-# replaced by a read-only line. The gate kinds, evaluated G1..G6 in order:
+# A fill explains the place whatever its child says; a recorded cancel explains
+# an accepted row whose order is gone. An explained row's correction control is
+# replaced by a read-only line; an ACCEPTED row whose order is absent from the
+# resting book and unexplained keeps it. The gate kinds, evaluated G1..G6 in
+# order:
 _GATE_NONE = "none"                            # G3/G4: today's path, unchanged
 _GATE_FILL_CHILDLESS = "fill_settled_childless"  # G1: renders nothing
 _GATE_EXPLAINED_FILL = "explained_fill"        # G2: the read-only fill line;
@@ -3341,7 +3343,8 @@ def _unexplained_accepted_headline(gate: _AcceptedRowGate) -> str:
 
 
 def _explained_line(latch, gate: _AcceptedRowGate) -> str:
-    """The READ-ONLY line for an explained accepted row (plan section 2, W3).
+    """The READ-ONLY line for an explained validity row (plan section 2, W3):
+    the fill line (G2, whatever the child says) or the cancel line (G5).
 
     The core is RD's wording; the `<TICKER> place intent <pid>, order <oid>:`
     prefix adds identity, not a claim. Every date is the validity row's
