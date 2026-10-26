@@ -1072,14 +1072,19 @@ def test_out_of_range_substitution_skip_discriminating(tmp_path):
 # (16) Defensive bucket_for signature-lock (Expansion #2 refinement)
 # ---------------------------------------------------------------------------
 
-def test_bucket_for_signature_unchanged_via_inspect_signature():
+def test_bucket_for_signature_is_locked_via_inspect_signature():
     """Per NEW gotcha #17 (Expansion #2 refinement BINDING): lock bucket_for
-    parameter names against production changes."""
+    parameter names against production changes.
+
+    D84 changed the signature on purpose (E1: `risk_results` dropped; a
+    `risk_feasibility` fail is a flag, never a bucket), so this test was renamed
+    from `..._unchanged_...`: its old name asserted "unchanged" for a signature
+    D84 changes. It locks the CURRENT signature."""
     import inspect
 
     from swing.evaluation.scoring import bucket_for
     params = list(inspect.signature(bucket_for).parameters.keys())
-    assert params == ["trend_template_results", "vcp_results", "risk_results", "config"]
+    assert params == ["trend_template_results", "vcp_results", "config"]
 
 
 # ---------------------------------------------------------------------------

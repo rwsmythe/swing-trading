@@ -10,10 +10,12 @@ REDUCTION both can produce (`StructuralInputs`) — one rule, two adapters, neve
 two rules. A second independently-plausible implementation of one rule is the
 drift class that produced `mandate_limit_price`'s round-vs-floor split.
 
-`risk_feasibility` is EXCLUDED from the gate and that exclusion is RD's, not a
-convenience: a `skip` produced by the risk pre-filter alone is STRUCTURALLY A+,
-so reading the bucket label instead would let the operator's own capital
-withdraw his mandate.
+`risk_feasibility` is not an input to the structural gate, and since D84 it is
+not an input to `bucket_for` either: the risk layer is computed, persisted and
+displayed as a flag (`risk_layer_passes` / `risk_layer_flagged`). Rows persisted
+before the D84 boundary can carry `skip` from the retired risk pre-filter while
+being structurally A+, which is why the latch reader recomputes the gate instead
+of reading the bucket label.
 """
 from __future__ import annotations
 
@@ -79,11 +81,11 @@ def structural_inputs_from_results(
 
 
 def structural_gate_passes(inputs: StructuralInputs, config: Config) -> bool:
-    """Does this name pass the A+ STRUCTURAL gate? RISK IS NOT CONSULTED.
+    """Does this name pass the A+ STRUCTURAL gate?
 
-    The gate is `bucket_for` MINUS its risk pre-filter and MINUS the `watch`
-    band: the TT gate, then zero vcp failures. `bucket_for` composes this
-    function, so the two can never disagree about what "structurally A+" means.
+    The gate is `bucket_for` minus the `watch` band: the TT gate, then zero vcp
+    failures. `bucket_for` composes this function, so the two can never
+    disagree about what structurally A+ means; neither reads the risk layer.
     """
     allowed = set(config.trend_template.allowed_miss_names)
     if inputs.tt_pass_count < config.trend_template.min_passes:
@@ -158,13 +160,10 @@ def risk_inputs_from_criteria(criteria) -> RiskInputs:
 def bucket_for(
     trend_template_results: Sequence[Result],
     vcp_results: Sequence[Result],
-    risk_results: Sequence[Result],
     config: Config,
 ) -> str:
-    # Risk is a hard filter
-    if any(r.result != "pass" for r in risk_results):
-        return "skip"
-
+    """Bucket from the TT and VCP layers. The risk layer is not an input (D84):
+    a `risk_feasibility` fail is a displayed flag, never a bucket."""
     # Trend Template gate: (a) enough passes AND (b) every failing TT is in
     # allowed_miss_names. This matches spec §4.1 — the allowed fail is
     # configurable, TT8 is the default. Composed from `structural_gate_passes`

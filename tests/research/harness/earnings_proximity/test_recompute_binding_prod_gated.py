@@ -1,15 +1,20 @@
 """Regression tests for the production-gated binding-constraint script.
 
-The script ``recompute_binding_prod_gated.py`` re-implements the gating
-logic of ``swing.evaluation.scoring.bucket_for`` to attribute the FIRST
-production-gated blocker per (ticker, date) row. These tests compare the
-script's `production_gated_binding` output against the production
-``bucket_for`` semantics on synthetic criterion rows, confirming:
+The script ``recompute_binding_prod_gated.py`` re-implements the PRE-D84
+gating logic of ``swing.evaluation.scoring.bucket_for`` (risk first, as a hard
+filter) to attribute the FIRST production-gated blocker per (ticker, date) row.
+Production removed the risk pre-skip at D84, so the mirror and production agree
+on risk-PASS rows only. These tests compare the script's
+`production_gated_binding` output against production ``bucket_for`` on
+synthetic criterion rows, confirming on the risk-pass rows:
 
 - Rows that the script labels ``<aplus>`` ↔ ``bucket_for`` returns "aplus".
 - Rows the script labels with a non-``<aplus>`` blocker ↔ ``bucket_for``
   returns "watch" or "skip", and the named blocker is consistent with the
   production reason for non-A+.
+
+and asserting the risk-FAIL rows as an era divergence, both sides named
+(`test_era_divergence_D84_the_mirror_retains_the_retired_risk_pre_skip`).
 """
 from __future__ import annotations
 
@@ -169,8 +174,6 @@ def test_vcp_names_in_order_matches_evaluator_emission():
     [
         # All pass → aplus.
         ({}, "aplus", APLUS_KEY),
-        # Risk fail alone → skip; blocker=risk_feasibility.
-        ({"risk_feasibility": "fail"}, "skip", "risk_feasibility"),
         # TT1 fail alone → skip (TT pass-count drops to 7 but TT1 not in allowed_miss).
         ({"TT1_above_150_200": "fail"}, "skip", "TT1_above_150_200"),
         # TT8 fail alone → aplus (allowed miss).
@@ -187,20 +190,22 @@ def test_vcp_names_in_order_matches_evaluator_emission():
             "skip",
             "adr",
         ),
-        # Risk + TT1 + VCP all fail → risk-first under production gating.
-        (
-            {"risk_feasibility": "fail", "TT1_above_150_200": "fail", "adr": "fail"},
-            "skip",
-            "risk_feasibility",
-        ),
     ],
 )
 def test_consistency_with_bucket_for(cfg, row_overrides, expected_bucket, expected_blocker):
+    """The FIVE risk-pass cases, where the mirror and production still agree.
+
+    The two risk-fail cases are NOT here: since D84 production `bucket_for`
+    takes no risk input, so on those rows the mirror (which retains the
+    retired risk pre-skip) and production DIVERGE. They are asserted as an era
+    divergence, both sides named, in
+    `test_era_divergence_D84_the_mirror_retains_the_retired_risk_pre_skip`.
+    """
     row = {n: "pass" for n in (*TT_NAMES_IN_ORDER, *VCP_NAMES_IN_ORDER, "risk_feasibility")}
     row.update(row_overrides)
 
-    tt_r, vcp_r, risk_r = _row_to_results(row)
-    bucket = bucket_for(tt_r, vcp_r, risk_r, cfg)
+    tt_r, vcp_r, _risk_r = _row_to_results(row)
+    bucket = bucket_for(tt_r, vcp_r, cfg)
     assert bucket == expected_bucket
 
     blocker = production_gated_binding(row)
@@ -211,3 +216,37 @@ def test_consistency_with_bucket_for(cfg, row_overrides, expected_bucket, expect
         assert bucket == "aplus"
     else:
         assert bucket in ("watch", "skip")
+
+
+@pytest.mark.parametrize(
+    "row_overrides,expected_production_bucket",
+    [
+        pytest.param(
+            {"risk_feasibility": "fail"}, "aplus",
+            id="era divergence, D84: risk alone"),
+        pytest.param(
+            {"risk_feasibility": "fail", "TT1_above_150_200": "fail", "adr": "fail"},
+            "skip",
+            id="era divergence, D84: risk + TT1 + adr"),
+    ],
+)
+def test_era_divergence_D84_the_mirror_retains_the_retired_risk_pre_skip(
+        cfg, row_overrides, expected_production_bucket):
+    """R-P4.1 -- the era pin BY EXECUTION (RD P4 (a)).
+
+    The mirror (`production_gated_binding`) encodes `bucket_for` AS OF pre-D84,
+    risk hard filter RETAINED; production removed the risk pre-skip at D84. Both
+    sides are asserted, named: production's bucket from the TT and VCP layers
+    alone (`aplus` for risk alone; `skip` for risk + TT1 + adr, because TT1 is
+    not an allowed miss), AND the mirror's blocker `risk_feasibility`. The
+    mutual-consistency tail is deliberately ABSENT here, because "a test
+    asserting only that a research mirror reproduces retired production
+    behaviour pins a divergence as if it were agreement" (RD). This goes RED the
+    day either side moves silently, which is the only thing an era pin is for.
+    """
+    row = {n: "pass" for n in (*TT_NAMES_IN_ORDER, *VCP_NAMES_IN_ORDER, "risk_feasibility")}
+    row.update(row_overrides)
+
+    tt_r, vcp_r, _risk_r = _row_to_results(row)
+    assert bucket_for(tt_r, vcp_r, cfg) == expected_production_bucket
+    assert production_gated_binding(row) == "risk_feasibility"

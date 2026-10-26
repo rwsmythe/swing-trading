@@ -15,8 +15,7 @@ def test_aplus_when_tt_7plus_and_vcp_all_pass(sample_config):
         _make("trend_template", "fail", "TT8_rs_rank")
     ]
     vcp = [_make("vcp", "pass", f"v{i}") for i in range(10)]
-    risk = [_make("risk", "pass", "risk")]
-    assert bucket_for(tt, vcp, risk, sample_config) == "aplus"
+    assert bucket_for(tt, vcp, sample_config) == "aplus"
 
 
 def test_skip_when_failing_tt_is_not_allowed_miss(sample_config):
@@ -25,8 +24,7 @@ def test_skip_when_failing_tt_is_not_allowed_miss(sample_config):
         _make("trend_template", "fail", "TT3_200_rising")
     ]
     vcp = [_make("vcp", "pass", f"v{i}") for i in range(10)]
-    risk = [_make("risk", "pass", "risk")]
-    assert bucket_for(tt, vcp, risk, sample_config) == "skip"
+    assert bucket_for(tt, vcp, sample_config) == "skip"
 
 
 def test_watch_when_vcp_has_1_or_2_fails(sample_config):
@@ -34,8 +32,7 @@ def test_watch_when_vcp_has_1_or_2_fails(sample_config):
     vcp = [_make("vcp", "pass", f"v{i}") for i in range(8)] + [
         _make("vcp", "fail", "v8"), _make("vcp", "fail", "v9")
     ]
-    risk = [_make("risk", "pass", "risk")]
-    assert bucket_for(tt, vcp, risk, sample_config) == "watch"
+    assert bucket_for(tt, vcp, sample_config) == "watch"
 
 
 def test_skip_when_tt_below_min(sample_config):
@@ -43,8 +40,7 @@ def test_skip_when_tt_below_min(sample_config):
         _make("trend_template", "pass", f"TT{i}") for i in range(5, 8)
     ]
     vcp = [_make("vcp", "pass", f"v{i}") for i in range(10)]
-    risk = [_make("risk", "pass", "risk")]
-    assert bucket_for(tt, vcp, risk, sample_config) == "skip"
+    assert bucket_for(tt, vcp, sample_config) == "skip"
 
 
 def test_skip_when_vcp_3plus_fails(sample_config):
@@ -52,15 +48,19 @@ def test_skip_when_vcp_3plus_fails(sample_config):
     vcp = [_make("vcp", "fail", f"v{i}") for i in range(3)] + [
         _make("vcp", "pass", f"v{i}") for i in range(3, 10)
     ]
-    risk = [_make("risk", "pass", "risk")]
-    assert bucket_for(tt, vcp, risk, sample_config) == "skip"
+    assert bucket_for(tt, vcp, sample_config) == "skip"
 
 
-def test_risk_fail_forces_skip(sample_config):
-    tt = [_make("trend_template", "pass", f"TT{i}") for i in range(8)]
-    vcp = [_make("vcp", "pass", f"v{i}") for i in range(10)]
-    risk = [_make("risk", "fail", "risk")]
-    assert bucket_for(tt, vcp, risk, sample_config) == "skip"
+def test_bucket_for_takes_no_risk_input():
+    """R-T3.1 -- D84 E1 (CHARC): "The signature change is the arc's statement
+    in code." Supersedes `test_risk_fail_forces_skip`, which pinned the risk
+    pre-skip D84 retires; a `risk_feasibility` fail is a displayed flag, never
+    a bucket. The end-to-end half is R-(i)a
+    (`tests/evaluation/test_d84_acceptance.py`)."""
+    import inspect
+
+    assert list(inspect.signature(bucket_for).parameters) == [
+        "trend_template_results", "vcp_results", "config"]
 
 
 # ===========================================================================
@@ -72,23 +72,23 @@ def test_risk_fail_forces_skip(sample_config):
 # oracle would be comparing `bucket_for` with itself and could never fail.
 # ===========================================================================
 
-# (tt_pass_count, tt_fail_names, vcp_fail_count, risk_pass) -> bucket
+# (tt_pass_count, tt_fail_names, vcp_fail_count) -> bucket
+#
+# Risk is no longer an input to `bucket_for` at all (D84 E1): a
+# `risk_feasibility` fail is a displayed flag, never a bucket, so the table's
+# former `risk_pass` column and its two risk-fail rows are gone. The rows below
+# are the STRUCTURE rows, unchanged as literals.
 _BUCKET_CHARACTERIZATION = [
-    # risk is a HARD pre-filter and returns before the structure is looked at,
-    # which is the whole reason `risk_feasibility` must be excluded from the
-    # structural gate (L4).
-    (8, (), 0, False, "skip"),
-    (7, ("TT8_rs_rank",), 0, False, "skip"),
     # below min_passes (7 of 8)
-    (6, ("TT7_within_52w_high_25pct", "TT8_rs_rank"), 0, True, "skip"),
+    (6, ("TT7_within_52w_high_25pct", "TT8_rs_rank"), 0, "skip"),
     # at min_passes, but the failing TT is NOT an allowed miss
-    (7, ("TT3_200_rising",), 0, True, "skip"),
+    (7, ("TT3_200_rising",), 0, "skip"),
     # the allowed miss, then the vcp band
-    (7, ("TT8_rs_rank",), 0, True, "aplus"),
-    (8, (), 0, True, "aplus"),
-    (8, (), 1, True, "watch"),
-    (8, (), 2, True, "watch"),
-    (8, (), 3, True, "skip"),
+    (7, ("TT8_rs_rank",), 0, "aplus"),
+    (8, (), 0, "aplus"),
+    (8, (), 1, "watch"),
+    (8, (), 2, "watch"),
+    (8, (), 3, "skip"),
 ]
 
 
@@ -122,26 +122,24 @@ def test_bucket_for_characterization_table(sample_config):
     """T2.1 -- NOT DROPPABLE (L3). The behaviour-preservation oracle for the
     Task-2 refactor, written as literals so it cannot degenerate into
     comparing the function with itself."""
-    for tt_pass, tt_fails, vcp_fails, risk_pass, expected in (
-            _BUCKET_CHARACTERIZATION):
+    for tt_pass, tt_fails, vcp_fails, expected in _BUCKET_CHARACTERIZATION:
         tt = _tt_results(tt_pass, tt_fails)
         vcp = _vcp_results(vcp_fails)
-        risk = [_make("risk", "pass" if risk_pass else "fail",
-                      "risk_feasibility")]
-        assert bucket_for(tt, vcp, risk, sample_config) == expected, (
-            f"tt_pass={tt_pass} fails={tt_fails} vcp_fails={vcp_fails} "
-            f"risk_pass={risk_pass}")
+        assert bucket_for(tt, vcp, sample_config) == expected, (
+            f"tt_pass={tt_pass} fails={tt_fails} vcp_fails={vcp_fails}")
 
 
-def test_the_structural_gate_EXCLUDES_risk_feasibility(sample_config):
-    """T2.2 -- L4's guard, and the test that fails if any implementation reads
-    `candidates.bucket` instead of recomputing the gate.
+def test_bucket_for_and_the_structural_gate_AGREE_on_a_perfect_structure(
+        sample_config):
+    """Supersedes `test_the_structural_gate_EXCLUDES_risk_feasibility` (D84).
 
-    A perfect structure whose ONLY failure is `risk_feasibility` buckets `skip`
-    -- the risk pre-filter returns before the TT/vcp tests are even run -- while
-    the STRUCTURAL gate passes. `risk_feasibility` is a fact about the
-    operator's capital, so letting it into the gate would let his own account
-    size withdraw his mandate. That is RD's exclusion and this is its guard.
+    Before D84 a perfect structure whose only failure was `risk_feasibility`
+    bucketed `skip` while the structural gate passed, and that test pinned the
+    divergence. Since D84 neither reads the risk layer, so on a perfect
+    structure they AGREE: `bucket_for` says `aplus` and the gate passes. The L4
+    guard the old test carried (a risk-fail ROW SET passes the gate) lives on,
+    unchanged, at `tests/latches/test_structural_verdicts.py`, where the
+    reduction drops risk.
     """
     from swing.evaluation.scoring import (
         structural_gate_passes,
@@ -150,8 +148,7 @@ def test_the_structural_gate_EXCLUDES_risk_feasibility(sample_config):
 
     tt = _tt_results(8, ())
     vcp = _vcp_results(0)
-    risk = [_make("risk", "fail", "risk_feasibility")]
-    assert bucket_for(tt, vcp, risk, sample_config) == "skip"
+    assert bucket_for(tt, vcp, sample_config) == "aplus"
     assert structural_gate_passes(
         structural_inputs_from_results(tt, vcp), sample_config) is True
 
