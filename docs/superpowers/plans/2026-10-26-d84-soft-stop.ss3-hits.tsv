@@ -1,0 +1,7 @@
+# D84 SS-3 -- the narrow 'genuinely A+' paraphrase sweep, every hit with a disposition
+# file	line	term	near_aplus	disposition	reason_or_commit	text
+research/finviz_pool_analysis/aggregator.py	50	all criteria pass	1	not-a-claim	an era-pinned sentence ("under the pre-D84 production gating order"; the A1-01 replacement beside it names the post-D84 divergence)	Returns ``"<aplus>"`` if all criteria pass under the pre-D84 production
+research/harness/aplus_v2_ohlcv_evaluator/context_builder.py	148	truly	0	not-a-claim	unrelated sense: a truly empty RS-universe file; not near A+	# (a) Initial empty check (zero-tickers case -- truly empty file)
+tests/research/harness/earnings_proximity/test_recompute_binding_prod_gated.py	176	all pass	1	not-a-claim	an all-pass fixture (risk included) -> aplus: true in both eras	# All pass → aplus.
+tests/research/test_l2_lock_sys_modules_isolation_regression.py	131	genuinely	0	not-a-claim	unrelated sense: a re-import produced a new object; not near A+	Non-vacuous: it first proves the re-import genuinely produced a NEW object and
+research/harness/earnings_proximity/instrumented_replay.py	86	genuinely	1	replaced	832020db (A4-03; the pre-replacement hit, listed by hand: the replaced docstring no longer matches)	exists (i.e., bucket is genuinely A+). (text BEFORE replacement)
