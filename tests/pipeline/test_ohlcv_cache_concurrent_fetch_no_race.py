@@ -200,7 +200,7 @@ def test_ohlcv_cache_concurrent_same_ticker_yields_consistent_frame(
 # -- Cross-bundle pin (per plan H.3 + brief 1.4) -------------------------
 
 
-def test_ohlcv_cache_get_or_fetch_invariant(tmp_path: Path):
+def test_ohlcv_cache_get_or_fetch_invariant(tmp_path: Path, monkeypatch):
     """Phase 13 T1.SB0 cross-bundle pin (per plan H.3 + brief 1.4).
 
     Asserts the ``OhlcvCache.get_or_fetch`` public surface is stable across
@@ -246,6 +246,13 @@ def test_ohlcv_cache_get_or_fetch_invariant(tmp_path: Path):
     # return FULL archive; consumers slice" discipline).
     cfg = load(Path("swing.config.toml"))
     cache = OhlcvCache(cfg)
+    # Pin the session anchor, as the two sibling tests do: get_or_fetch cuts the
+    # frame at last_completed_session(now) - window_days, so with the live clock
+    # these April bars aged out of the 200-day window from the 2026-10-21 session.
+    monkeypatch.setattr(
+        "swing.web.ohlcv_cache.last_completed_session",
+        lambda now_dt: pd.Timestamp("2026-04-30").date(),
+    )
 
     sample_bars = pd.DataFrame(
         [
