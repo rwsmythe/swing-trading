@@ -10,7 +10,7 @@
             hx-headers='{"HX-Request": "true"}'
             aria-label="Close expanded row for {{ expanded.ticker }}"
             title="Close">✕</button>
-    <h3>{{ expanded.ticker }}</h3>
+    <h3>{{ expanded.ticker }}{% if expanded.risk_flag %} <span class="tag tag-risk-flag">{{ expanded.risk_flag }}</span>{% endif %}</h3>
     {% if expanded.last_price %}
       <p>Last: ${{ '%.2f' | format(expanded.last_price.price) }}
          {% if expanded.last_price.is_stale %}<span class="stale">(stale)</span>{% endif %}
@@ -27,6 +27,14 @@
       <ul class="vcp-grid">
         {% for cr in expanded.candidate.criteria if cr.layer == 'vcp' %}
           <li class="{{ cr.result }}">{{ cr.criterion_name }}: {{ cr.result }}</li>
+        {% endfor %}
+      </ul>
+      {# D84 (CHARC P1): the RISK layer as its own grid -- the EVALUATION
+         RECORD with its persisted value and rule, not the flag. #}
+      <h4>Risk</h4>
+      <ul class="risk-grid">
+        {% for cr in expanded.candidate.criteria if cr.layer == 'risk' %}
+          <li class="{{ cr.result }}">{{ cr.criterion_name }}: {{ cr.result }}{% if cr.value %} - {{ cr.value }}{% endif %}{% if cr.rule %} ({{ cr.rule }}){% endif %}</li>
         {% endfor %}
       </ul>
       <h4>Classification</h4>

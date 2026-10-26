@@ -197,3 +197,26 @@ def test_the_dashboard_top5_and_the_row_route_render_the_marker(seeded_db, no_ne
     assert "RISK FLAG" not in _row_html(dash, "EMP")
     assert "RISK FLAG" in row_flg and "tag-risk-flag" in row_flg
     assert "RISK FLAG" not in row_emp
+
+
+def test_the_watchlist_expansion_renders_the_risk_row_and_the_marker(seeded_db, no_network):
+    """R-E3(2)e -- CHARC P1: the expansion renders the RISK layer as its own
+    grid, so the persisted value and rule are visible where the marker is
+    (the evaluation record, not the flag). A name with NO risk row renders no
+    marker and no risk-grid item (E-d, R1-03)."""
+    import html as _html
+
+    cfg, cfg_path = seeded_db
+    _seed(cfg.paths.db_path)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        flg = _html.unescape(client.get("/watchlist/FLG/expand").text)
+        emp = client.get("/watchlist/EMP/expand").text
+    assert 'class="risk-grid"' in flg
+    assert "risk_feasibility: fail" in flg
+    assert "0 sh, $0.00 risk" in flg
+    assert ">= 1 share fits in 0.5% of equity ($37.50)" in flg
+    assert "RISK FLAG" in flg
+    assert "RISK FLAG" not in emp
+    grid = re.search(r'<ul class="risk-grid">(.*?)</ul>', emp, re.S)
+    assert grid is None or "<li" not in grid.group(1)

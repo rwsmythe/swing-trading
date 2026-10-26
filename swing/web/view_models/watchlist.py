@@ -172,6 +172,10 @@ class WatchlistExpandedVM:
     # SAME pipeline_run (Option A one-anchor LOCK; §1.5.3). None when no
     # completed pipeline_run exists at request time.
     pipeline_run_id: int | None = None
+    # D84 T9 step 2: the RISK FLAG marker for the expanded name's stored risk
+    # layer, rendered beside the heading; "" when it passes, is empty, or
+    # there is no candidate. The risk GRID renders from `candidate.criteria`.
+    risk_flag: str = ""
 
 
 def build_watchlist(*, cfg: Config, cache: PriceCache, executor) -> WatchlistVM:
@@ -437,4 +441,7 @@ def build_watchlist_expanded(
         # JIT helper threads the SAME anchor used for chart URL +
         # candidate criteria + chart-scope reason.
         pipeline_run_id=(binding.run_id if binding is not None else None),
+        risk_flag=(
+            "" if candidate is None
+            else _risk_flags({ticker: candidate}).get(ticker, "")),
     )
