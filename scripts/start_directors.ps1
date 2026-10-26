@@ -327,8 +327,17 @@ function Build-LaunchCommand($role, $argList) {
     # the spawned blob, between the scrub and the role marker, so both
     # vehicles carry it regardless of what the launcher's caller had. CLI
     # updates are then a deliberate act between runs (`claude update`).
+    #
+    # THEN DISABLE THE LOW-MEMORY BACKGROUND-SHELL REAPER (clearwater finding,
+    # 2026-10-26; ported on the operator's word). Claude Code stops a
+    # BACKGROUND shell when host memory runs low while the session is IDLE --
+    # a role seat waiting on its own background test suite is exactly that
+    # shape, and it killed two full suites there in a few hours, each leaving
+    # no figure. Role seats run one heavy job at a time by rule, so the
+    # reaper's protection is given up for a complete run. Applies at the
+    # seat's NEXT launch only; the operator's own terminals are untouched.
     $scrub = ($SessionMarkers | ForEach-Object { "Remove-Item Env:$_ -ErrorAction SilentlyContinue" }) -join '; '
-    return "$scrub; `$env:DISABLE_AUTOUPDATER='1'; `$env:CLAUDE_CODE_GIT_BASH_PATH='$GitBashPath'; `$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
+    return "$scrub; `$env:DISABLE_AUTOUPDATER='1'; `$env:CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP='1'; `$env:CLAUDE_CODE_GIT_BASH_PATH='$GitBashPath'; `$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
 }
 
 function Get-EncodedCommand($inner) {

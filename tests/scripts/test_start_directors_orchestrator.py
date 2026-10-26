@@ -318,6 +318,32 @@ def test_dryrun_launch_line_disables_autoupdate_after_scrub_before_claude():
     assert at < launch.index("; claude ")
 
 
+# --- Low-memory reaper: the launcher disables it in the spawned shell ------
+#
+# clearwater finding 2026-10-26, ported on the operator's word: Claude Code
+# stops a BACKGROUND shell when host memory runs low while the session is
+# IDLE. A role seat waiting on its own background test suite is exactly that
+# shape (two full suites lost there in a few hours, no figure either time).
+# Role seats run one heavy job at a time by rule, so the reaper's protection
+# is given up for a complete run. Next launch only; operator terminals untouched.
+
+_REAP_OFF = "$env:CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP='1'"
+
+
+def test_dryrun_launch_line_disables_bg_shell_reaper_after_scrub_before_claude():
+    r, out = _dryrun("-Role", "charc")
+    assert r.returncode == 0
+    launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
+    assert _REAP_OFF in launch
+    at = launch.index(_REAP_OFF)
+    last_scrub = max(
+        launch.index(f"Remove-Item Env:{name} -ErrorAction SilentlyContinue")
+        for name in _SESSION_MARKERS)
+    assert last_scrub < at, "reaper disabled BEFORE the marker scrub"
+    assert at < launch.index("$env:SWING_ROLE='charc'")
+    assert at < launch.index("; claude ")
+
+
 # --- Git-bash path: the launcher points every role at the fast bash copy ---
 #
 # 2026-09-14, operator-applied workaround (coa-chess CHARC's diagnosis, ours
