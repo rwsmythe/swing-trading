@@ -591,8 +591,9 @@ def test_a_FILL_CLEARED_latch_renders_no_prompt_and_derives_acceptance(
         clocks.set(PROMPT_NOW)
         assert "latch-validity-prompt" in _fragment(client, PROMPT_ANCHOR).text
 
-    # The same latch, cleared by FILL: the resolver stops returning `unknown`,
-    # which is the ONLY gate the prompt consults.
+    # The same latch, cleared by FILL: the resolver stops returning `unknown`.
+    # Since D94 the prompt also consults `_accepted_row_gate` (whose fill rung is
+    # the same predicate); on this childless place the gate's G1 renders nothing.
     from swing.data.repos.latch_order_intents import list_intents_for_latch
     from swing.latches.reader import build_latch_derivation
     conn = connect(cfg.paths.db_path)
