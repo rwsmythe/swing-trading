@@ -142,8 +142,8 @@ def test_dashboard_vm_active_recommendations_empty_when_no_matches(
     from swing.web.view_models.dashboard import build_dashboard
 
     cfg, _ = seeded_db
-    # `skip` bucket without criteria matches NO active hypothesis (capital-
-    # blocked requires the only failing criterion to be risk_feasibility).
+    # `skip` bucket without criteria matches NO active hypothesis (since D84
+    # Capital-blocked requires an `aplus` row with a flagged risk layer).
     _seed_pipeline_with_candidates(cfg, [
         {"ticker": "ZZZ", "bucket": "skip"},
     ])

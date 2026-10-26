@@ -148,13 +148,14 @@ def _sizing_result(pivot: float | None, stop: float | None,
     of a lost batch. The strict form would re-create the abort while reading
     like a tightening.
 
-    OUT OF SCOPE, FLAGGED: `compute_prepared_order` has the SAME hole as
-    check 4. Its breakout branch pairs `stop = latched_pivot` with
-    `limit = mandate_limit_price(zone_cap)`, so on that geometry it offers a
-    stop-limit whose limit sits below its own trigger. NOTHING enforces
-    `pivot < zone_cap` -- not `Latch.__post_init__`, which checks the stop
-    ordering only, and not the quantizer. That is 21-B's emitter, not this
-    arc's scope.
+    OUT OF SCOPE, FLAGGED -- AND SINCE DISCHARGED: `compute_prepared_order`
+    had the SAME hole as check 4. Its breakout branch pairs `stop =
+    latched_pivot` with `limit = mandate_limit_price(zone_cap)`, so on that
+    geometry it offered a stop-limit whose limit sat below its own trigger,
+    and neither `Latch.__post_init__` (stop ordering only) nor the quantizer
+    enforces `pivot < zone_cap`. It now refuses that geometry itself: the
+    `below_pivot` refusal in `swing/latches/order_intent.py`, which names this
+    note as the deferral it discharges.
     """
     infeasible = SizingResult(
         shares=0, risk_dollars=0.0, risk_pct=0.0, notional=0.0,
