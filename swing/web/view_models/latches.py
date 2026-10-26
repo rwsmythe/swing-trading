@@ -2636,6 +2636,17 @@ def build_latch_orders_vm(
     # operator may decide to cancel at any time and the ledger exists to record
     # that he did, so gating this on "when there is something wrong" would
     # re-derive the alarm's own condition under another name.
+    #
+    # THE ACCEPTED-ROW GATE DOES NOT REACH THIS SOURCE (D94 exec R1-1, CHARC +
+    # RD). A fill-settled place (G2) withholds the TESTIMONY controls -- the
+    # correction control and the LEDGER-keyed cancel control in (2) -- and
+    # never a book control: this one's source is the broker saying, this
+    # render, that the order RESTS, and a fill does not retire a resting
+    # remainder or a stale status. So a fill line and a book control for the
+    # same order can render together. Declared limitation (RD): a STALE book
+    # status -- an order the broker reports WORKING after it filled -- renders a
+    # book cancel control beside the "filled" line; nothing in this render can
+    # see the staleness, and the control records testimony, it asserts nothing.
     book_controls = tuple(
         LatchCancelControlVM(
             order_id=row.order_id,
@@ -3256,7 +3267,9 @@ def _intents_by_latch(conn, latches) -> tuple[dict[int, list], frozenset[int]]:
 # replaced by a read-only line. The gate kinds, evaluated G1..G6 in order:
 _GATE_NONE = "none"                            # G3/G4: today's path, unchanged
 _GATE_FILL_CHILDLESS = "fill_settled_childless"  # G1: renders nothing
-_GATE_EXPLAINED_FILL = "explained_fill"        # G2: the read-only fill line
+_GATE_EXPLAINED_FILL = "explained_fill"        # G2: the read-only fill line;
+#   no correction control and no LEDGER-keyed cancel control. A BOOK control
+#   for that order, if it still rests, stands as shipped (D94 exec R1-1).
 _GATE_EXPLAINED_CANCEL = "explained_cancel"    # G5: the read-only cancel line
 _GATE_UNEXPLAINED = "unexplained"              # G6: correction + ledger cancel
 

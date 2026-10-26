@@ -222,6 +222,40 @@ def test_t2_3_the_vm_follows_the_one_predicate_it_does_not_respell_it(
     assert "CORRECT THE RECORDED OUTCOME" in section
 
 
+def test_t2_4_g2_withholds_the_testimony_controls_never_the_book_control(
+        seeded_db, monkeypatch, clocks):
+    """R1-1 = (i) (CHARC + RD, D94 exec round 1). G2 withholds the TESTIMONY
+    controls -- the correction control and the LEDGER-keyed cancel control --
+    and never the shipped BOOK control: its source is the broker saying, this
+    render, that the order RESTS, and a fill does not retire a resting remainder
+    or a stale status.
+
+    The OII shape with the accepted order STILL in the book. Expected: the fill
+    line; exactly ONE cancel form, from the book (no W2 note); no correction
+    control; no ledger control. An implementation that suppresses every cancel
+    control on a fill-settled place renders zero forms and fails."""
+    cfg, cfg_path = seeded_db
+    cid = _seed(cfg)
+    book = [_order(order_id="5001")]
+    app = _app(cfg, cfg_path, monkeypatch, orders=book)
+    with TestClient(app) as client:
+        p1 = _log_place(client, cfg, cid)
+        clocks.set(PROMPT_NOW)
+        _accept(client, p1)
+        _fill_cleared(monkeypatch, cid, date(2026, 7, 28))
+        html = _fragment(client, PROMPT_ANCHOR).text
+    assert _explained_lines(html) == [
+        f"FTRE place intent {p1}, order 5001: accepted {PLACE_ANCHOR}; "
+        "filled 2026-07-28"]
+    forms = _cancel_forms(html)
+    assert [f["actual_broker_order_id"] for f in forms] == ["5001"]
+    assert forms[0]["candidate_id"] == str(cid)
+    assert _status_notes(html) == []
+    assert "If YOU cancelled it" not in html
+    assert "CORRECT THE RECORDED OUTCOME" not in html
+    assert "latch-validity-prompt" not in html
+
+
 # ---------------------------------------------------------------------------
 # Task 3 -- a recorded CANCEL explains an accepted row, on EVERY cycle (G5/G6)
 # ---------------------------------------------------------------------------
