@@ -113,7 +113,10 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
        - W0 met (33 pricehistory calls outside observe; fetch_window 240);
        - all 6,835 rows are yfinance.
      - Across runs 194 -> 197, the observe step went 1,300 s -> 43 s and the night 25 min -> 3 min.
-  5. **HELD BY THE OPERATOR (2026-10-20, his words: "Hold off on arc execution until I direct it."):** the soft-stop arc (D84) with its widening rider. No arc opens until he directs it, D84 or any other. D90's post-merge steps (the suite read, housekeeping, the merge report, the witness night) are not arc execution and proceed.
+  5. **HOLD LIFTED, 2026-10-25.** The operator confirmed it to the orchestrator directly, after CHARC's relay of "Hold is lifted, proceed". The order, in his choices:
+     - (i) **D94 (a)+(b) first:** the web-layer rider (the prompt gate on cancel and fill rows, plus the ledger-keyed cancel affordance). No schema. D94 (c), the broker-history tier, is a schema change and is not in it.
+     - (ii) **Then the soft-stop arc (D84):** brainstorm, writing-plans and the plan-stage director review, on CHARC's dispatch `20261025T164200Z` (F1-F6) and RD's population and cohort items. It **STOPS FOR THE OPERATOR BEFORE ANY EXECUTING DISPATCH**; his choice was "Stop before executing", so it does not run end to end. The widening rider is an operator config edit the night after D84 merges.
+     - (iii) **Registered for after D84:** D91, D92 and D93.
      - Registered for after D84: D91 (stuck detections; RD semantics), D92 (range reads merging two adjustment bases on 55 tickers), D93 (zero-price bars pass the archive barriers).
 - **Plan cells run out of context:** two writing-plans cells (opus-xhigh) passed 400K reading the whole comms record. Brief a plan cell with a NARROW reading list, and expect a continuation cell.
 
