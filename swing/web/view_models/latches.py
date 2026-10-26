@@ -61,7 +61,7 @@ from swing.latches.reader import (
     latest_recorded_close_stamp,
     load_last_closes,
 )
-from swing.recommendations.sizing import risk_bound_zero, zero_share_line
+from swing.recommendations.sizing import SizingResult, risk_bound_zero, zero_share_line
 from swing.web.view_models.journal import _base_banner_fields
 
 _log = logging.getLogger(__name__)
@@ -241,7 +241,7 @@ class PreparedOrderVM:
     # admits it), so the D84 declaration keys on the SIZING FACT rather than
     # on the reason or the heading derived from it (CHARC amendment 1
     # CORRECTED). Never an order: it renders nothing by itself.
-    sizing: object | None = None
+    sizing: SizingResult | None = None
 
 
 @dataclass(frozen=True)
