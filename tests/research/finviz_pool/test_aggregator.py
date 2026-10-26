@@ -236,14 +236,14 @@ def test_aggregate_buckets_blockers_and_near_aplus_one_run():
     assert result.watch_count == 2
     assert result.watch_aplus_ratio == 2 / 1
 
-    # Production-gated blocker counts: one <aplus>, one TT1, one risk_feasibility,
+    # Pre-D84-mirror blocker counts: one <aplus>, one TT1, one risk_feasibility,
     # plus the watch-bucket VCP blockers.
     assert result.blocker_counts["<aplus>"] == 1
     assert result.blocker_counts["risk_feasibility"] == 1
     assert result.blocker_counts["TT1_above_150_200"] == 1
-    # Watch-bucket VCP fails are still blockers under production gating
-    # (1-2 VCP fails → watch, but the production-gated re-aggregation
-    # surfaces the FIRST VCP-layer non-pass criterion).
+    # Watch-bucket VCP fails are still blockers under the pre-D84 mirror's
+    # gating (1-2 VCP fails → watch, but the re-aggregation through the
+    # pre-D84 mirror surfaces the FIRST VCP-layer non-pass criterion).
     assert "proximity_20ma" in result.blocker_counts
     assert "adr" in result.blocker_counts
 
