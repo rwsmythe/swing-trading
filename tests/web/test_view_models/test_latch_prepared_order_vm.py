@@ -611,6 +611,9 @@ def test_the_new_panel_fields_are_declared_panel_specific(seeded_db):
 @pytest.mark.parametrize("target", [
     "compute_prepared_order", "classify_latch", "assess_telemetry_health",
     "list_intents_for_latch", "get_active_policy",
+    # D84 T7.4 (Codex R4 A4-02): the fire's risk-layer read in
+    # `_panel_risk_inputs`.
+    "fetch_candidate_by_id",
 ])
 def test_every_new_read_degrades_and_the_panel_never_500s(
         seeded_db, monkeypatch, target):
@@ -1238,3 +1241,33 @@ def test_amendment1_corrected_b_a_flagged_WITHHELD_live_card_keeps_the_declarati
     assert po.stated_zero_line == ""             # feasible: no zero, no leg (b)
     assert row.risk_flag_marker == "RISK FLAG"
     assert row.risk_flag_attest_available is True
+
+
+def test_a_failed_risk_layer_read_degrades_only_its_row_no_marker_no_affordance(
+        seeded_db, monkeypatch):
+    """Codex R4 A4-02 (A6, D84's own read). A FLAGGED fire on a live withheld
+    card (the WTH geometry: marker and leg-(a) affordance both present when the
+    read succeeds) whose `fetch_candidate_by_id` raises: the panel stays
+    available with its row, and that row renders NO marker and NO declaration
+    affordance -- an unread layer is neither a flag nor a pass. Fails if the
+    per-latch containment in `_panel_risk_inputs` is removed (the panel then
+    degrades through its outer boundary)."""
+    import swing.web.view_models.latches as vm_mod
+    cfg, _ = seeded_db
+    _seed_kod_fire(cfg, risk_result="fail", ticker="WTH", pivot=100.00,
+                   stop=90.00, close=99.0)
+    witness = _vm(cfg).rows[0]
+    assert witness.risk_flag_marker == "RISK FLAG"
+    assert witness.risk_flag_attest_available is True
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("fetch_candidate_by_id exploded")
+
+    monkeypatch.setattr(vm_mod, "fetch_candidate_by_id", _boom)
+    vm = _vm(cfg)
+    assert vm.available is True
+    assert len(vm.rows) == 1
+    row = vm.rows[0]
+    assert row.risk_flag_marker == ""
+    assert row.risk_flag_attest_available is False
+    assert D84_LEAD not in _render_card(row)
