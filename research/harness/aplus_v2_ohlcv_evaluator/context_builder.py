@@ -433,6 +433,12 @@ def classify_candidate_tier(persisted_risk_result: str | None) -> int:
           (risk WAS evaluated and failed => load-bearing).
         - persisted_risk_result == 'na': risk returned insufficient-data => treated as
           fail by bucket_for => risk was load-bearing for skip outcome.
+      Tier rule as written is correct for rows evaluated BEFORE D84 (risk pre-skip
+      live). For rows evaluated after D84 a risk fail/na is NEVER load-bearing for
+      the bucket, so this function over-assigns tier 2 to them (production removed
+      the risk pre-skip at D84, <D84 merge sha>); re-align (tier 1 for
+      post-boundary rows, keyed on the evaluation run's date against the boundary)
+      before any re-use.
 
     Returns: 1 (tier-1 EXACT parity required) or 2 (tier-2 CONDITIONAL via surrogate).
 

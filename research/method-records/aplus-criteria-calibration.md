@@ -8,7 +8,7 @@ key: aplus-criteria-calibration
 name: A+ criteria parameter sensitivity calibration
 layer: ranking
 status: shadow
-baseline_or_predecessor: internal (swing.evaluation.scoring.bucket_for current cfg)
+baseline_or_predecessor: internal (pre-D84 swing.evaluation.scoring.bucket_for, current cfg)
 version: 0.3.0
 last_updated: 2026-05-24
 shadow_promoted: 2026-05-24 PM (per operator decision D1 post full-63-eval-run reproduction; 5 binding variables identified via V2 sensitivity matrix; 3 architectural limitations L4 + L5 + L6 documented; V2 evaluator correctness verified 3x via decisive counter-tests)
@@ -20,7 +20,7 @@ shadow_promoted: 2026-05-24 PM (per operator decision D1 post full-63-eval-run r
 
 1D parameter-sweep against persisted `candidate_criteria` rows. The harness enumerates 17 variables across two semantic classes:
 
-- **Gate variables** (`trend_template.min_passes`, `vcp.watch_max_fails`) -- substituted at each sweep point with full `bucket_for` resimulation per `swing/evaluation/scoring.py` semantics (risk hard filter + tt_passes + allowed_miss_names + vcp fail count).
+- **Gate variables** (`trend_template.min_passes`, `vcp.watch_max_fails`) -- substituted at each sweep point with full resimulation through a `bucket_for` mirror pinned to the pre-D84 gate (see Outputs) (risk hard filter + tt_passes + allowed_miss_names + vcp fail count).
 - **Threshold variables** (3 trend_template numerics + 8 vcp + 1 risk + 3 rs = 15 vars) -- sweep points are enumerated but V1 returns the PERSISTED bucket per row (parity-preserving). True per-criterion bucket resimulation against the substituted threshold requires the V2 OHLCV criterion-evaluator harness (see V2 dependencies below).
 
 The harness operates against the operator's `swing-data/swing.db` `candidate_criteria` table over the last N eval_runs (default N=20; max N=100). Output is a 9-column CSV + analyst-readable markdown analysis report. The markdown surfaces the gate-vs-threshold distinction via a `Kind` column on every row + a standalone V1 LIMITATION paragraph in the Notes section.
@@ -42,12 +42,12 @@ The harness operates against the operator's `swing-data/swing.db` `candidate_cri
   `variable_name, kind, sweep_point, aplus_count, watch_count, skip_count, excluded_count, delta_aplus, delta_watch`.
 - **Markdown**: `exports/diagnostics/aplus-sensitivity-<ISO>.md` -- header (generated time + eval_runs window + total candidates) + `Sensitivity matrix` table (one row per (variable, sweep_point)) + `Notes` section including the binding V1 LIMITATION paragraph.
 
-Gate-variable rows DO produce real `delta_aplus` / `delta_watch` values via faithful `bucket_for` resimulation. Threshold-variable rows have `delta_aplus == delta_watch == 0` by V1 design (parity-preserving).
+Gate-variable rows DO produce real `delta_aplus` / `delta_watch` values via a bucket_for mirror pinned to the pre-D84 gate (risk hard filter retained; production removed the risk pre-skip at D84, <D84 merge sha>); re-align before any re-use. Threshold-variable rows have `delta_aplus == delta_watch == 0` by V1 design (parity-preserving).
 
 ## Operator explainability
 
 - **One-sentence rationale:** Quantifies bucket-distribution sensitivity to per-criterion threshold adjustments so the operator + research branch can decide which dials to recalibrate.
-- **One-paragraph explanation:** The harness runs a 1D parameter sweep over the 17 A+-criteria dials, substituting each one across a small grid while holding the others at production cfg. For the 2 gate variables it walks the production `bucket_for` semantics to emit a real bucket-redistribution count; for the 15 threshold variables it returns the persisted bucket (parity-preserving V1) because per-criterion bucket resimulation requires re-running the criterion evaluator harness against original OHLCV bars (V2). Output is a sensitivity matrix CSV + markdown report under `exports/diagnostics/`.
+- **One-paragraph explanation:** The harness runs a 1D parameter sweep over the 17 A+-criteria dials, substituting each one across a small grid while holding the others at production cfg. For the 2 gate variables it walks a `bucket_for` mirror pinned to the pre-D84 gate to emit a real bucket-redistribution count; for the 15 threshold variables it returns the persisted bucket (parity-preserving V1) because per-criterion bucket resimulation requires re-running the criterion evaluator harness against original OHLCV bars (V2). Output is a sensitivity matrix CSV + markdown report under `exports/diagnostics/`.
 - **FAQ:** *Why are the threshold-variable deltas always zero?* Because V1 does not resimulate per-criterion buckets against substituted thresholds -- it returns the persisted bucket. Lifting this is the V2 OHLCV criterion-evaluator harness banked in this record's V2 dependencies. Gate variables (the 2 enum-style dials) are resimulated end-to-end.
 
 ## Validation notes

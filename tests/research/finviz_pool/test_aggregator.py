@@ -2,8 +2,9 @@
 
 Boundary conditions of the near-A+ classification (the analytically-
 sensitive primitive locked at D1) are the focus. Production-gated
-blocker correctness is delegated to the canonical implementation in
-``recompute_binding_prod_gated`` and tested at the wrapper level.
+blocker correctness is delegated to the pre-D84 mirror in
+``recompute_binding_prod_gated`` (see its module docstring) and tested at the
+wrapper level.
 """
 from __future__ import annotations
 

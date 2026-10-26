@@ -3,8 +3,9 @@
 All analytical primitives operate on production ``Candidate`` objects.
 Production-gated blocker classification reuses
 ``research.harness.earnings_proximity.scripts.recompute_binding_prod_gated.production_gated_binding``
-(canonical for "what would production's ``bucket_for`` reject this
-candidate for, in production gating order").
+(Mirrors bucket_for AS OF pre-D84 (risk hard filter RETAINED here);
+production removed the risk pre-skip at D84 (<D84 merge sha>);
+re-align before any re-use.)
 
 Frozen at D1 of the study (``research/studies/finviz-pool-binding-constraints.md``):
 - The doctrine-defensible miss set membership (see ``doctrine.py``).
@@ -45,8 +46,9 @@ def production_gated_blocker(candidate: Candidate) -> str:
     """Return the production-gated blocker for one candidate.
 
     Wraps ``production_gated_binding`` from the candidate-sparsity
-    diagnostic's R1 fix (canonical implementation). Returns ``"<aplus>"``
-    if all criteria pass under production gating order.
+    diagnostic's R1 fix (the pre-D84 mirror; see the module docstring).
+    Returns ``"<aplus>"`` if all criteria pass under the pre-D84 production
+    gating order.
 
     Note: this is computed from ``candidate.criteria`` alone; it does NOT
     consult ``candidate.bucket``. The two should agree on the A+ row by
