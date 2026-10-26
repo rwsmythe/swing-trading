@@ -3304,7 +3304,9 @@ def _accepted_row_gate(latch, *, place, intents,
     The fill explanation is `fill_vouches_for`, the resolver's own rung, CALLED
     and never re-spelled (CHARC 1A, RD item 2). By its forward guard it is
     False for every place that is not the latch's latest place, so a displaced
-    cycle is explained by a cancel row or not at all.
+    cycle is explained by a cancel row or not at all, while a later place
+    exists. (After a later DECLINE the displaced place is still the latest
+    place, and a fill can explain it -- the G2 line.)
 
     A cancel row explains whether it was recorded before or after the validity
     row (there is no un-cancel), and only cancel rows on THIS latch's intents
@@ -3347,9 +3349,11 @@ def _explained_line(latch, gate: _AcceptedRowGate) -> str:
     the fill line (G2, whatever the child says) or the cancel line (G5).
 
     The core is RD's wording; the `<TICKER> place intent <pid>, order <oid>:`
-    prefix adds identity, not a claim. Every date is the validity row's
-    `action_session_date`, which the intent route copies from the parent place,
-    so "accepted <date>" names the order's session, not the answer's.
+    prefix adds identity, not a claim. Each date has its own source: "accepted
+    <date>" is the validity row's `action_session_date`, which the intent route
+    copies from the parent place, so it names the order's session, not the
+    answer's; "filled <date>" is `latch.clear_session`; "cancelled by you
+    <date>" is the cancel row's `action_session_date`.
     """
     child = gate.child
     oid = getattr(child, "actual_broker_order_id", None)
