@@ -19,8 +19,9 @@ def _seed_pipeline_with_candidates(cfg, candidates: list[dict[str, Any]]) -> int
     the supplied candidates + their criteria. Returns the pipeline run id.
 
     `candidates` is a list of dicts: {ticker, bucket, criteria=[(name,result), ...]}.
-    Defaults provide A+ candidates with no criteria — sufficient for the
-    `_aplus_baseline_match` rule.
+    An A+ candidate gets a risk `pass` row by default (D84 E-d: H1 needs an
+    evaluated, passing risk layer); `risk=None` seeds an A+ with an EMPTY risk
+    layer instead.
     """
     conn = connect(cfg.paths.db_path)
     try:
@@ -53,14 +54,14 @@ def _seed_pipeline_with_candidates(cfg, candidates: list[dict[str, Any]]) -> int
                            VALUES (?, ?, 'vcp', ?)""",
                         (cid, crit_name, crit_result),
                     )
-                if c["bucket"] == "aplus":
+                if c["bucket"] == "aplus" and c.get("risk", "pass") is not None:
                     # D84 E-d: the risk row production always writes; an A+
                     # with NO risk row is neither H1 nor H4.
                     conn.execute(
                         """INSERT INTO candidate_criteria
                            (candidate_id, criterion_name, layer, result)
-                           VALUES (?, 'risk_feasibility', 'risk', 'pass')""",
-                        (cid,),
+                           VALUES (?, 'risk_feasibility', 'risk', ?)""",
+                        (cid, c.get("risk", "pass")),
                     )
             cur2 = conn.execute(
                 """INSERT INTO pipeline_runs
@@ -151,6 +152,51 @@ def test_dashboard_vm_active_recommendations_empty_when_no_matches(
     cache = PriceCache(cfg)
     vm = build_dashboard(cfg=cfg, cache=cache, executor=None)
     assert vm.active_recommendations == ()
+
+
+def test_d84_empty_risk_layer_aplus_is_not_recommended_by_build_dashboard(
+    seeded_db, monkeypatch,
+):
+    """D84 E-d at a direct matcher consumer (RD: one empty-risk-layer test per
+    consumer; Codex R1 Major 3). An A+ with NO risk row is neither H1 nor H4,
+    so `build_dashboard` recommends nothing for it. WIT (A+, risk pass) is the
+    witness that the builder is live, so the absence is not vacuous. Under a
+    matcher that treats an empty layer as passing, EMP surfaces as A+ baseline
+    and this fails.
+    """
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.dashboard import build_dashboard
+
+    cfg, _ = seeded_db
+    _seed_pipeline_with_candidates(cfg, [
+        {"ticker": "EMP", "bucket": "aplus", "risk": None},
+        {"ticker": "WIT", "bucket": "aplus"},
+    ])
+    _patched_caches(monkeypatch)
+
+    vm = build_dashboard(cfg=cfg, cache=PriceCache(cfg), executor=None)
+    assert [r.ticker for r in vm.active_recommendations] == ["WIT"]
+
+
+def test_d84_empty_risk_layer_aplus_is_not_recommended_by_build_hyp_recs_section(
+    seeded_db, monkeypatch,
+):
+    """The same E-d pin at the refresh-route builder, the dashboard's SECOND
+    direct matcher consumer (Codex R1 Major 3). EMP (A+, no risk row) is not
+    recommended; WIT (A+, risk pass) is the live witness.
+    """
+    from swing.web.price_cache import PriceCache
+    from swing.web.view_models.dashboard import build_hyp_recs_section
+
+    cfg, _ = seeded_db
+    _seed_pipeline_with_candidates(cfg, [
+        {"ticker": "EMP", "bucket": "aplus", "risk": None},
+        {"ticker": "WIT", "bucket": "aplus"},
+    ])
+    _patched_caches(monkeypatch)
+
+    section = build_hyp_recs_section(cfg=cfg, cache=PriceCache(cfg), executor=None)
+    assert [r.ticker for r in section.active_recommendations] == ["WIT"]
 
 
 def test_dashboard_vm_active_recommendations_truncates_to_top_n(

@@ -28,6 +28,19 @@ def test_aplus_maps_to_h1(tmp_path):
     assert "A+ baseline" in names
 
 
+def test_aplus_with_empty_risk_layer_maps_to_nothing(tmp_path):
+    # D84 E-d at a direct matcher consumer (RD: one empty-risk-layer test per
+    # consumer; Codex R1 Major 3). An A+ with NO risk row is neither H1 nor H4,
+    # and the wrapper's opt-in broad-watch fallback is watch-only, so nothing is
+    # attributed even with the baseline ACTIVE (asserted, so the empty result is
+    # not vacuous). Under a matcher that treats an empty layer as passing this
+    # would return ["A+ baseline"].
+    conn = make_db(tmp_path)
+    registry = _active_registry(conn)
+    assert "Broad-watch baseline" in {h.name for h in registry}
+    assert attribute_hypotheses(_cand("aplus", []), registry=registry) == []
+
+
 def test_watch_proximity_only_maps_to_h2(tmp_path):
     conn = make_db(tmp_path)
     cand = _cand("watch", [("proximity_20ma", "trend_template", "fail")])

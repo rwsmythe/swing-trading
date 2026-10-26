@@ -78,6 +78,23 @@ def test_cohort_hint_for_narrow_candidate_is_truthy_not_broad_watch(seeded_db):
     assert hint == "A+"
 
 
+def test_cohort_hint_for_empty_risk_layer_aplus_is_none(seeded_db):
+    """D84 E-d at a direct matcher consumer (RD: one empty-risk-layer test per
+    consumer; Codex R1 Major 3). An A+ with NO risk row matches no narrow
+    hypothesis, and the broad-watch fallback is watch-only, so the hint is
+    None even though this site opts into the baseline. The risk-pass A+ is the
+    live witness ('A+'). Under a matcher that treats an empty layer as
+    passing, the empty-layer hint would read 'A+' and this fails.
+    """
+    import dataclasses
+
+    cfg, _ = seeded_db
+    registry = _registry(cfg.paths.db_path)
+    empty_layer = dataclasses.replace(_aplus_candidate(), criteria=())
+    assert cohort_hint_for(_aplus_candidate(), registry) == "A+"
+    assert cohort_hint_for(empty_layer, registry) is None
+
+
 def test_cohort_hint_for_none_candidate_is_none(seeded_db):
     cfg, _ = seeded_db
     registry = _registry(cfg.paths.db_path)
