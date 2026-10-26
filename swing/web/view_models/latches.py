@@ -338,10 +338,14 @@ class LatchRowVM:
     # FIRE's STORED risk layer: `RISK FLAG` on a flagged layer, `""` on a
     # passing layer, an EMPTY layer or a failed read. No sizing numbers.
     risk_flag_marker: str = ""
-    # The `acted_manually` declaration affordance on a risk-flagged card. The
-    # key is a UNION: the fire's flagged risk layer, OR a LIVE card whose own
-    # result is `sizing_infeasible` with the RISK leg the zero -- in either
-    # case only while no attestation and no decision governs.
+    # The `acted_manually` declaration affordance (CHARC amendment 1
+    # CORRECTED). The key is a UNION of two legs, either one only while no
+    # attestation and no decision governs: (a) the fire's stored risk layer is
+    # flagged AND the card does not offer an order (a terminal card, or a live
+    # card withheld); (b) a LIVE card whose prepared sizing is a risk-bound
+    # zero, for EITHER withheld reason (`sizing_infeasible` or
+    # `regime_undeterminable`). Leg (b) can hold on a band card whose risk
+    # criterion PASSED -- that card shows the affordance and no marker.
     risk_flag_attest_available: bool = False
 
 
