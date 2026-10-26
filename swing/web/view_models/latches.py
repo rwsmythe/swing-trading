@@ -1142,6 +1142,13 @@ def _nightly_shares(conn, latch: Latch) -> int | None:
     ).fetchone()
     if row is None or row[0] is None:
         return None
+    # 0033's CHECK `derivation_nightly_recommendation_shares IS NULL OR > 0`
+    # (`:390-391`) cannot store a zero, and since D84 a zero nightly row is
+    # ROUTINE (every risk-flagged A+ sizes to zero). The `daily_recommendations`
+    # row itself is the record of the zero; the ledger column records only a
+    # positive count.
+    if int(row[0]) == 0:
+        return None
     return int(row[0])
 
 

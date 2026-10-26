@@ -909,3 +909,41 @@ def test_P3_the_regime_withheld_card_states_the_zero_BESIDE_the_regime_reason(
     assert KOD_FLAG_LINE in section
     assert "<form" not in section
     assert "<button" not in section
+
+
+def test_a_zero_nightly_count_maps_to_None_and_the_place_row_writes(
+        seeded_db, monkeypatch):
+    """R-T7.3 -- CHARC F1-A (4). Since D84 a zero nightly row is ROUTINE (every
+    risk-flagged A+ sizes to zero), and 0033's CHECK
+    `derivation_nightly_recommendation_shares IS NULL OR > 0` cannot store it.
+    Seed `daily_recommendations.shares = 0` for the fire's run and session on
+    an OFFERED geometry and POST `place`: the row writes with the column NULL.
+    Before D84 the anchor carried "0" and the insert hit the CHECK."""
+    from fastapi.testclient import TestClient
+
+    import swing.web.routes.latches as route_mod
+    import swing.web.view_models.latches as vm_mod
+    from swing.web.app import create_app
+
+    monkeypatch.setattr(vm_mod, "_now", lambda: NOW)
+    monkeypatch.setattr(route_mod, "_now", lambda: NOW)
+    cfg, cfg_path = seeded_db
+    _seed_fire(cfg)
+    _seed_derivation_session_close(cfg, 19.20)
+    _seed_nightly_recommendation(cfg, 0)
+    row = _vm(cfg).rows[0]
+    assert row.prepared_order.offered is True
+    form = dict(row.prepared_order.anchor_fields) | {"intent_kind": "place"}
+    app = create_app(cfg, cfg_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.post("/latches/intent", headers={"HX-Request": "true"},
+                        data=form)
+    assert r.status_code == 200
+    conn = connect(cfg.paths.db_path)
+    try:
+        rows = conn.execute(
+            "SELECT intent_kind, derivation_nightly_recommendation_shares "
+            "FROM latch_order_intents").fetchall()
+    finally:
+        conn.close()
+    assert rows == [("place", None)]
