@@ -350,3 +350,50 @@ A read of the whole plan for residuals, and for claims a fast-tier round could p
 | SS-3 | Re-derived every other row's pre/post column against the task order: T3.2-T3.4 RED on the Task-2 tree (displaced path ungated; old headline; no cancel line); T4.1/T4.3/T4.5/T4.6 RED on the Task-3 tree (gates collected, no ledger control rendered); T2.2, T3.5, T4.2, T4.4, T4.7 are guards. | No residual. |
 
 Both fixes move a test's placement or assertion, not the design, the envelope or the gate; they were found by search, not by a round (plan-stage rule 4: residuals a search can find are found by search).
+
+
+## 7. Plan-stage director reads
+
+RD (author), `20261026T031934Z`, SEMANTICS CLEARED:
+
+> RD (swing-rd-20261021-2329) PLAN-STAGE SEMANTICS READ, D94 (a)+(b): CLEARED. Plan + ledger read at d94-cancel 42d0506b (git show, no cd); my two Round-0 posts re-read beside the ledger's block quotes; the CHECK behind IC-2 read at 0033:464-469.
+>
+> 1. ITEMS 1-6 TRANSCRIBED FAITHFULLY. The section-1 table is my semantics in order: G1/G2 = the fill rung as the ONE spelling (fill_vouches_for, Task 1), G2 fixing the shipped short-circuit on the OII shape; G3/G4 today's path; G5 the cancel explanation on EVERY cycle (2A); G6 the W1 headline + ONE ledger-keyed control. The forward guard making G1/G2 false on a displaced cycle is stated and is my item 2 as ruled.
+> 2. THE OII-SHAPE RED TEST: T2.1 is the discriminator I asked for (an accepted validity child on the LATEST place + a fill clearing the latch on/after that session + an empty book; the shipped tree renders the correction control, the fixed tree the explained line). T2.3 pins that the VM FOLLOWS the predicate rather than re-spelling it -- the one-spelling requirement made a test. T2.2 keeps the childless case (CADL). Accepted.
+> 3. W1 AND W2 ARE VERBATIM (compared byte-wise against my 030426Z post, which the ledger quotes in full at :145-147). W3's identity prefix (I-5) adds identity, not a claim: accepted.
+> 4. THE EARLIEST CANCEL DATE: G5 + T3.4 (a latest-wins build shows 2026-07-30 and fails). Accepted. CHARC withdrew his note (030642Z); one record.
+> 5. IC-2 ACCEPTED: my "four options" was an incidental count; an accepted answer needs the complete observed side the absence form cannot carry, so THREE on that branch, unchanged from today (T3.3 asserts the set). The reasoning (no new value; the existing enum) is what the ruling carried, and it is encoded. A cell's correction of my example is the ruling working.
+> 6. I-3 ACCEPTED: my item 4 forbade asserting rejection FROM ABSENCE; the presence branch asserts from presence and is the only way to record the other order; the ledger control for the gone order rides beside it (T4.5). I-1, I-2, I-4, I-6 consistent with items 2-6; AL-1 is my declaration with my reason. Reviewer B is invited to challenge all of them.
+> 7. WITNESS (plan section 5): step 3's conditional is exactly item 1 -- the IMNM ...712 click on the live ledger ONLY on his word that he cancelled it, otherwise on a scratch copy; step 4 leaves IMNM place 12 and RHI unanswered (item 7). Step by step, one per reply.
+>
+> Nothing of mine is outstanding before executing. My merge gate reads the merged tree once after Reviewer B: the final-head suite tail, the live census probe (Task 6 step 3, row by row), and T2.1/T3.4 present and green.
+
+CHARC (author), `20261026T032305Z`, FORM CLEARED, with two plan-text corrections:
+
+> CHARC PLAN-STAGE FORM READ, D94 (a)+(b): CLEARED at d94-cancel 42d0506b, with two plan-text corrections the orchestrator applies before the executing dispatch (no mechanic moves; no re-review owed). PRIMARY: CHARC on form. RD cleared semantics at 20261026T031934Z; nothing of mine contradicts it.
+>
+> RUN AGAINST DISK, not the report: branch 42d0506b, one commit, base 8acea975 (an ancestor of main), trailers empty, no swing/ or tests/ change, worktree at .worktrees/d94-cancel. Codex round 1: exit 0; model gpt-5.6-luna in the banner; NO_NEW_CRITICAL_MAJOR at :7219 BEFORE the tokens-used footer at :7220 (114,378); anchored ^ERROR count 0; the prompt carries no line-initial verdict token; 15 of 15 checklist items HOLD, each with a file:line I spot-checked (the proxy at :3275-3280, the unknown-book return at :2160-2164, the template's hx-target/hx-swap at :39-63, the three absence options). The ledger block-quotes my 2026-10-22 form (with its "(or fill)" parenthetical marked withdrawn), my Round-0 rulings and RD's two packets, each with its author named.
+>
+> THE FORM, item by item:
+> - G1-G6, in that order, is my 1A + 2A as ruled and RD's items 1-6 as he cleared. HOLDS. The G1/G2 forward-guard statement is the resolver's own K3 semantics, not a new rule.
+> - ONE gate function, `_accepted_row_gate`, called from the current-cycle path and from `_displaced_cycle_prompts`; the displaced childless branch never reaches it. HOLDS. The A6 wrap on the displaced call (Task 3 step 4) is a correct consequence: today that call sits OUTSIDE the per-latch try, so a gate raise there would have taken the fragment, not one latch.
+> - Task 1 factoring and IC-4: CORRECT against the code. The date test lives in resolve_execution_outcome (:517-520) and the latest-place guard in _for (:555-559); the predicate carries all three; _for calls it; resolve_execution_outcome delegates to _for over the one-place view [governing_place, *validity_rows]. I checked governing_intent (:334-339): it is a pure max by _order_key over kind, so on that view the only place IS the latest and the delegation is byte-identical. T1.7's four-case grid pins it; tests/latches/test_classification.py unchanged is the proof. Its own commit first, as ruled.
+> - T2.3 is the one-spelling test and it works mechanically: the gate imports fill_vouches_for at call time and _for reads it as a module global, so the monkeypatch reaches both; a VM that re-spelled the conjunction would keep the explained line and fail. Good test.
+> - G4's comparison has type parity: to_resting_orders stringifies order_id (orders.py:104, :138, :739), the ledger column is TEXT, the fixture ids are strings. No live/fixture shape drift there.
+> - The envelope is the rider's: classification.py (the predicate only), the latch VM, the template partial, two new test modules; routes read-only; no swing/data, no schema. HOLDS.
+> - Section 5 witness: step by step, the live click conditional on his word, the scratch copy otherwise. HOLDS. One operator-facing note: the scratch copy runs `swing web` pointed at the COPY by config, at the same schema version, never a pre-image.
+>
+> TWO CORRECTIONS TO THE PLAN TEXT (apply, commit on the branch, no round):
+> C-1. "CANONICAL book" is the wrong word in section 1 and in the Task-2 comment. `orders` reaching _validity_prompts is to_resting_orders(raw) (latches.py:2094), the RESTING set; terminal statuses are dropped before the domain sees them (orders.py:74-75), which is the whole reason (c) exists. So G4 reads "its id is in the RESTING set", and absence means "not resting", exactly RD's item 6. A comment that says canonical claims information the code does not have (#31). Rename the set `resting_order_ids` and say resting wherever the plan says canonical for this set.
+> C-2. Task 4 step 3 builds a SECOND set, `book_ids = {row.order_id for row in attribution}` (resting AND attributed), beside the gate's set of ALL resting ids. They can differ (a resting order the attribution withheld as contested), and the Task-4 line is reachable only for gates the first set already passed as absent, so the second set is a belt that can never fire on a different answer -- fine as a belt, but it is a second spelling of "in the book". Use ONE set: pass the gate's resting_order_ids into the Task-4 loop (or expose it on _ValidityRender) and keep the check as the belt T4.4 names. No test changes.
+>
+> NOTED, NOT RULED: one counted round at the fast tier cleared a 443-line plan with 15/15 HOLD and no further findings. Convergence is structurally proven above and I do not reopen it; the executing loop runs the strong tier with repo access (Task 6.5) and Reviewer B on the merged tree, which is where a plan-stage miss of this size gets caught.
+>
+> EXECUTING: implementer-opus-high as you raised it -- Task 1 moves the resolver's fill rung, an input of compute_execution_parity; your reason is the named one the 09-07 rule asks for. The dispatch may go on this clearance plus RD's.
+>
+> RD: CC; your clearance read and acked; nothing routes to you.
+
+**Orchestrator: C-1 and C-2 are applied to the plan text** (the commit after `42d0506b`).
+- C-1: `B` is `resting_order_ids`; the plan says "resting book" wherever it said canonical for this set.
+- C-2: Task 4 uses the gate's ONE set, `validity.resting_order_ids`, exposed on `_ValidityRender`, and no second `book_ids`.
+- No mechanic moved. Per CHARC, no re-review is owed.

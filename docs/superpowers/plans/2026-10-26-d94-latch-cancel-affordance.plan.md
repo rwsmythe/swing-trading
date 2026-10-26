@@ -33,7 +33,9 @@ OUT (a finding that needs any of these is a FORK: stop and return):
 ## 1. The rule, in one table (RD items 1-6, CHARC 1A/2A; ledger section 1)
 
 For ONE place intent `P` on latch `L`, with `C` = P's governing validity child (latest by
-`_order_key`, or none), `B` = the set of order ids in this render's CANONICAL book:
+`_order_key`, or none), `B` = `resting_order_ids`, the set of order ids in this render's RESTING book
+(`to_resting_orders(raw)`, `latches.py:2094`; terminal statuses are dropped before the domain sees them,
+`orders.py:74-75`, so "absent" means "not resting" -- CHARC C-1):
 
 | # | condition (evaluated in this order) | gate kind | renders |
 |---|---|---|---|
@@ -283,7 +285,7 @@ FIRST commit, alone (CHARC 1A form). Behaviour of the rung is byte-identical;
    Task-3 tree (no ledger-keyed control exists); T4.2, T4.4, T4.7 are guards (green on both).
 2. `LatchCancelControlVM`: add `source: str = "book"` (`"book" | "ledger"`). Rewrite its
    docstring (#31): the subject is still a broker order he holds or held; it is offered for
-   every BUY order in the canonical book attributed to a latch (`source="book"`, the shipped
+   every BUY order in the resting book attributed to a latch (`source="book"`, the shipped
    three conditions) AND for every accepted validity row whose order is absent from the book and
    unexplained (`source="ledger"`, keyed on the ledger's `actual_broker_order_id`, never on the
    live book). LOG-ONLY on both.
@@ -292,13 +294,13 @@ FIRST commit, alone (CHARC 1A form). Behaviour of the rung is byte-identical;
    `orders`, the anchor and `intents_by_latch`, all available there. Then:
 
    ```python
-   book_ids = {row.order_id for row in attribution}
+   resting_order_ids = validity.resting_order_ids  # the gate's ONE set, exposed on _ValidityRender (CHARC C-2)
    seen: set[tuple[int, str]] = set()
    ledger_controls = []
    for gate in validity.ledger_cancels:
        cid = gate.place.candidate_id
        oid = gate.child.actual_broker_order_id
-       if oid in book_ids or (cid, oid) in seen or cid in intents_read_failed:
+       if oid in resting_order_ids or (cid, oid) in seen or cid in intents_read_failed:
            continue
        seen.add((cid, oid))
        ledger_controls.append(LatchCancelControlVM(
