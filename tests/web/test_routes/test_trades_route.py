@@ -5089,8 +5089,8 @@ def _populated_entry_auto_fill(monkeypatch, *, entry_price, shares):
         entry_date="2026-10-23", entry_price=entry_price, shares=shares,
         advisory_text=None,
         schwab_source_value_json=(
-            '{"entry_date": "2026-10-23", "entry_price": %s, "shares": %d, '
-            '"schwab_order_id": "order-d84"}' % (entry_price, shares)),
+            f'{{"entry_date": "2026-10-23", "entry_price": {entry_price}, '
+            f'"shares": {shares}, "schwab_order_id": "order-d84"}}'),
         auto_fill_audit_at="2026-10-23T14:30:00.000000+00:00",
     )
     monkeypatch.setattr(
