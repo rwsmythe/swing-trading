@@ -104,3 +104,35 @@ The ruling, literal block quote:
 > ITEM 3 -- FORM PASSES. The default risk_result='pass' mirrors production: evaluator.py:51 evaluates risk_feasibility on EVERY candidate, LAYER='risk' (criteria/risk_feasibility.py:8), and the fixture's default bucket is aplus, so an aplus candidate with no risk row is a shape production never writes post-boundary; None names the exceptional shape explicitly -- the right polarity (production shape by default, the exception by name). Count correction, with method: 18 test files call seed_fire( (grep -rl 'seed_fire(' tests), not 10; all green per your report. Noted, no finding: the fixture INSERT omits value and rule, which production writes (repos/candidates.py:79-84); the counting adapter reads layer and result only, so nothing D84 reads is affected -- a future reader of those two columns through this fixture would be.
 > 
 > Evidence read at this seat: latches.py:130-146,190-240,333-345,995-1065,1176-1210; order_intent.py:281-321; sizing.py:82-160; scoring.py:99-157; evaluator.py:51; candidates.py:72-84; the plan T7.4 at 508-560; the roster test 1-40 and 315-329; the seed_fire diff.
+
+## 5. ADDENDUM 2: the orchestrator's round-2 rulings (author: the orchestrator, 2026-10-26)
+
+The cell continues: its depth at the round-2 gate is **306,585** (`cell_depth.py --agent`, read by the orchestrator), so it is under the cap. Transcribe this section into the exec ledger as a block quote with the orchestrator as author, and fill the round-2 depth column with that figure.
+
+> **Correction first (the orchestrator's error, recorded).** My A1-01 ruling cited `_verify_aplus_consistency`'s "runtime behaviour". That method does not exist: `git grep` of the tree finds it only in the ledger. I took the name from cell 1's report without checking it on disk. Cell 2's handling is ACCEPTED: the replacement sentence drops the dangling pointer. The A1-01 ruling stands otherwise. The orchestrator corrects the fyi it sent RD.
+>
+> **A2-01 (major), the aggregator's drift comment and warning text: ACCEPTED, prose only, under 0.3b and CHARC C1 (emitted text is prose).**
+> - Era-phrase the comment at `aggregator.py:181-193`, the two warning strings, and the docstring at `test_aggregator.py:306-308`.
+> - The new text MUST keep the substring `re-aggregation drift` (`test_aggregator.py:323`).
+> - The warning keeps firing. No computation moves.
+>
+> **A2-02 (major), the "parity invariant at current_value" claim: ACCEPTED, prose only.**
+> - Scope the three sentences to pre-D84 rows and name the expected divergence: `output.py:79-81`, `aplus-criteria-calibration.md:55`, and `test_aplus_sensitivity_sweep.py:249`.
+> - Keep the test name. Add no placeholder, and do not touch `sweep.py`.
+>
+> **A2-03 (minor), the refusal text at `cohort_provenance_correction.py:1578`: DECLINED in D84.**
+> - It sits outside the S1 envelope, inside source the S1 digest hashes. The orchestrator banks it with the `hypothesis.py:375` rider, triggered by the next derivation-rule version bump.
+> - CHARC is CC'd and may pull it into scope. Do not touch it unless that ruling reaches you.
+>
+> **Deviation 2 (the defaulted `sizing` field on `PreparedOrderVM`):** routed to CHARC to confirm the form. Do not change it unless his ruling reaches you.
+>
+> **SELF-SWEEP SS-1 (uncounted), BEFORE round 3.** A1-01, A2-01 and A2-02 are ONE class (T11: a sentence that still states the pre-D84 rule as current) and were found one round at a time. Residuals findable by search are found by search. So:
+> - Grep `research/`, `tests/research/` and the docstrings and comments of every `swing/` file the arc touched for the class. At minimum: `should equal`, `should agree`, `by construction`, `parity`, `invariant`, `current_value`, `risk_feasibility`, `aplus` near `skip`/`watch`/`gate`/`pre-filter`.
+> - List EVERY hit in the ledger under `SS-1`, with a disposition: replaced (era-phrase, prose only), not-a-claim, or out of envelope (named, banked, not touched).
+> - Do not move a research computation, and add no placeholder.
+>
+> **Then:** re-run the T12 gates in full on the final head (full suite at `-n 8`, ruff, placeholders exactly 1 and exactly 9, envelope).
+>
+> **ROUND 3 is AUTHORIZED.** It is the last default counted round, in round 2's form. Carry the census class and the checklist, and point the reviewer at the SS-1 list. Save it to `...\exec\round3\`.
+> - **Clean:** fix post-verdict minors with no new round, run the full suite once more on the final head, restore the findings file, and return.
+> - **Not clean:** STOP and return at the gate. A fourth counted round needs the orchestrator's written authorization.
