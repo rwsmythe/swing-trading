@@ -51,8 +51,10 @@ def production_gated_blocker(candidate: Candidate) -> str:
     gating order.
 
     Note: this is computed from ``candidate.criteria`` alone; it does NOT
-    consult ``candidate.bucket``. The two should agree on the A+ row by
-    construction (see ``Aggregator._verify_aplus_consistency``).
+    consult ``candidate.bucket``. For rows evaluated BEFORE D84 the two agree
+    on the A+ row by construction; for a post-D84 risk-flagged A+ row they
+    disagree (production buckets it ``aplus``, this pre-D84 mirror names
+    ``risk_feasibility``), the re-use precondition in the module docstring.
     """
     return production_gated_binding(_criteria_to_row(candidate))
 

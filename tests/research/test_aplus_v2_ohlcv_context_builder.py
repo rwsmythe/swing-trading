@@ -425,7 +425,8 @@ def test_classify_candidate_tier_returns_1_for_None_risk_result():  # noqa: N802
 
 
 def test_classify_candidate_tier_returns_2_for_risk_fail_and_na():  # noqa: N802
-    """fail + na: risk WAS evaluated and was load-bearing for skip => tier-2."""
+    """fail + na: risk WAS evaluated and, under the pre-D84 gate, was
+    load-bearing for skip => tier-2 (the tier rule is the pre-D84 one)."""
     from research.harness.aplus_v2_ohlcv_evaluator.context_builder import classify_candidate_tier
     assert classify_candidate_tier("fail") == 2
     assert classify_candidate_tier("na") == 2
@@ -435,8 +436,8 @@ def test_classify_candidate_tier_all_four_discriminating_cases():
     """Codex R1.C1 four-case fixture (spec §E.4 discriminating test pattern):
       1. None  -> 1 (TT-gate skip; pre-risk historical)
       2. pass  -> 1 (risk passed; bucket determined by TT/VCP)
-      3. fail  -> 2 (risk blocked candidate)
-      4. na    -> 2 (insufficient data; treated as fail by bucket_for)
+      3. fail  -> 2 (the pre-D84 gate: risk blocked candidate)
+      4. na    -> 2 (the pre-D84 gate: insufficient data treated as fail by bucket_for)
     """
     from research.harness.aplus_v2_ohlcv_evaluator.context_builder import classify_candidate_tier
     assert classify_candidate_tier(None) == 1,  "None (TT-gate skip) must be tier-1"

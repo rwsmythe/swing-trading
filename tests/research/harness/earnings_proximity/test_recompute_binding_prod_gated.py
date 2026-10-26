@@ -73,7 +73,8 @@ def test_all_pass_returns_aplus():
 
 
 def test_risk_fail_returns_risk_first_even_when_tt1_also_fails():
-    """Production gating: risk_feasibility is the hard filter, checked first."""
+    """Pre-D84 production gating (this mirror's era): risk_feasibility is the
+    hard filter, checked first. Production removed the risk pre-skip at D84."""
     row = {n: "pass" for n in (*TT_NAMES_IN_ORDER, *VCP_NAMES_IN_ORDER)}
     row["TT1_above_150_200"] = "fail"
     row["risk_feasibility"] = "fail"

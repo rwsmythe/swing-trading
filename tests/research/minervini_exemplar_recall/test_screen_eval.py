@@ -49,7 +49,8 @@ def test_attribute_risk_wins_even_when_tt_also_fails():
     cfg = Config.from_defaults()
     criteria = _tt({"TT1_above_150_200": "fail", "TT2_150_above_200": "fail"}) + _vcp(0) + _risk("fail")
     attrib = attribute_first_rejecting_gate(criteria, cfg)
-    # risk is the hard filter checked FIRST. WRONG-PATH (TT-first): trend_template.
+    # In this pre-D84 mirror risk is the hard filter checked FIRST (production
+    # removed the risk pre-skip at D84). WRONG-PATH (TT-first): trend_template.
     # RIGHT-PATH (risk-first): risk_feasibility.
     assert attrib.first_rejecting_gate == "risk_feasibility"
 

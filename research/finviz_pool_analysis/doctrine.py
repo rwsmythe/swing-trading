@@ -18,7 +18,7 @@ from __future__ import annotations
 DEFENSIBLE_MISS_SET: frozenset[str] = frozenset(
     {
         "TT8_rs_rank",        # production allowed_miss; listed for completeness
-        "risk_feasibility",   # capital-blocked; not bindable on watch bucket
+        "risk_feasibility",   # pre-D84: capital-blocked, never on watch (D84: a flag)
         "proximity_20ma",     # timing/extension miss; stage-for-re-entry
     }
 )

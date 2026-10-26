@@ -125,7 +125,8 @@ def test_blocker_risk_first_even_when_tt_also_fails():
         bucket="skip",
         overrides={"TT1_above_150_200": "fail", "risk_feasibility": "fail"},
     )
-    # Production gating: risk hard-filter checked FIRST.
+    # Pre-D84 production gating (the mirror's era): risk hard-filter checked
+    # FIRST. Production removed the risk pre-skip at D84.
     assert production_gated_blocker(cand) == "risk_feasibility"
 
 
