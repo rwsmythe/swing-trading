@@ -242,6 +242,11 @@ def test_binding_constraint_picks_non_allowed_tt_fail(monkeypatch):
 
 
 def test_binding_constraint_picks_risk_feasibility_when_all_others_pass(monkeypatch):
+    """A PRE-BOUNDARY-SHAPED fixture: a ``skip`` row whose only non-pass is
+    ``risk_feasibility`` is the shape the pre-D84 risk pre-skip wrote; current
+    production buckets it ``aplus`` (pinned by the risk-flagged A+ test below).
+    The walk itself is unchanged across D84, so the fixture still pins it: on a
+    non-A+ row, the first non-pass binds."""
     crits = (
         *(_crit(n, "trend_template") for n in TT_NAMES),
         *(_crit(n, "vcp") for n in VCP_NAMES),
@@ -263,6 +268,34 @@ def test_binding_constraint_picks_risk_feasibility_when_all_others_pass(monkeypa
     )
     assert records[0].bucket == "skip"
     assert records[0].binding_constraint == "risk_feasibility"
+
+
+def test_binding_constraint_is_none_for_a_risk_flagged_aplus(monkeypatch):
+    """D84 (Codex R4 A4-03, census item 3): a risk-FLAGGED A+ -- every
+    structural criterion passes, ``risk_feasibility`` fails, and current
+    production buckets it ``aplus`` -- has NO binding constraint. Fails if the
+    derivation walks an ``aplus`` row's criteria instead of returning None."""
+    crits = (
+        *(_crit(n, "trend_template") for n in TT_NAMES),
+        *(_crit(n, "vcp") for n in VCP_NAMES),
+        _crit("risk_feasibility", "risk", "fail"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "evaluate_one",
+        lambda ctx: _candidate(ctx.ticker, bucket="aplus", criteria=crits),
+    )
+    records = list(
+        mod.instrumented_replay(
+            universe_tickers=("AAPL",),
+            trading_days=[date(2025, 2, 24)],
+            ohlcv={"AAPL": _build_ohlcv("2024-01-02", 300)},
+            earnings={"AAPL": []},
+            cfg=build_harness_config(),
+        )
+    )
+    assert records[0].bucket == "aplus"
+    assert records[0].binding_constraint is None
 
 
 def test_binding_constraint_treats_na_as_fail(monkeypatch):
