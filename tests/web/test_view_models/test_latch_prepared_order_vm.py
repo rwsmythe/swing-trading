@@ -1222,13 +1222,19 @@ def test_amendment1_corrected_b_an_OFFERED_card_withdraws_the_fire_flag_declarat
 
 def test_amendment1_corrected_b_a_flagged_WITHHELD_live_card_keeps_the_declaration(  # noqa: N802
         seeded_db):
-    """GUARD. Fire flagged + a live WITHHELD card (KOD, regime None: no order
-    is offered) keeps leg (a). The sizing_infeasible sibling is R-(v)2 and the
-    terminal sibling is R-T7.7, both unchanged."""
+    """GUARD. Fire flagged + a live WITHHELD card keeps leg (a). The geometry
+    sizes FEASIBLY (pivot 100.00, stop 90.00) and the regime is None, so no
+    order is offered and leg (b) cannot carry it: the declaration here is leg
+    (a)'s alone. Fails if leg (a) is withdrawn on every LIVE card rather than
+    on an OFFERED one. The terminal sibling is R-T7.7, unchanged."""
     cfg, _ = seeded_db
-    _seed_kod_fire(cfg)                  # risk fail, no derivation-session close
+    _seed_kod_fire(cfg, risk_result="fail", ticker="WTH", pivot=100.00,
+                   stop=90.00, close=99.0)       # no derivation-session close
     row = _vm(cfg).rows[0]
     assert row.is_live is True
-    assert row.prepared_order.offered is False
+    po = row.prepared_order
+    assert po.offered is False
+    assert po.withheld_reason == "regime_undeterminable"
+    assert po.stated_zero_line == ""             # feasible: no zero, no leg (b)
     assert row.risk_flag_marker == "RISK FLAG"
     assert row.risk_flag_attest_available is True
