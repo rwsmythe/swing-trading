@@ -3132,12 +3132,7 @@ def _displaced_cycle_prompts(latch, *, intents, current, digest,
             (i for i in intents if i.intent_kind == "place"), key=_order_key):
         if current is not None and place.intent_id == current.intent_id:
             continue
-        children = [
-            i for i in intents
-            if i.intent_kind == "validity"
-            and i.validated_place_intent_id == place.intent_id
-        ]
-        answered = max(children, key=_order_key) if children else None
+        answered = _governing_validity_child(place, intents)
         if answered is None and current is None:
             # THE FIRST-ANSWER FORM IS SCOPED TO THE SUBSTITUTION CASE, and the
             # boundary is a RULING boundary, not a convenience. RD's item-2 harm
@@ -3283,6 +3278,18 @@ class _AcceptedRowGate:
     cancel_count: int = 0
 
 
+def _governing_validity_child(place, intents):
+    """The GOVERNING validity row for `place`: of the `validity` intents whose
+    `validated_place_intent_id` is that place, the LATEST by `_order_key` (RD
+    ruling 3: his last answer governs), or None when there is none. ONE
+    spelling, called by `_displaced_cycle_prompts` and `_accepted_row_gate`
+    (D94 exec R1-3)."""
+    from swing.latches.classification import _order_key
+    children = [i for i in intents if i.intent_kind == "validity"
+                and i.validated_place_intent_id == place.intent_id]
+    return max(children, key=_order_key) if children else None
+
+
 def _accepted_row_gate(latch, *, place, intents,
                        resting_order_ids) -> _AcceptedRowGate:
     """THE ONE GATE (CHARC D94 2A), called from BOTH the current-cycle path and
@@ -3303,9 +3310,7 @@ def _accepted_row_gate(latch, *, place, intents,
     record and the count is carried for disclosure (RD item 5).
     """
     from swing.latches.classification import _order_key, fill_vouches_for
-    children = [i for i in intents if i.intent_kind == "validity"
-                and i.validated_place_intent_id == place.intent_id]
-    child = max(children, key=_order_key) if children else None
+    child = _governing_validity_child(place, intents)
     if fill_vouches_for(latch, place, intents):
         return _AcceptedRowGate(
             _GATE_EXPLAINED_FILL if child is not None else _GATE_FILL_CHILDLESS,
