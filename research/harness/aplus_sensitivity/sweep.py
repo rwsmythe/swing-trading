@@ -210,7 +210,7 @@ def _bucket_for_substituted(
     limitation per ``_recompute_counts_at`` docstring).
 
     Mirrors bucket_for AS OF pre-D84 (risk hard filter RETAINED here);
-    production removed the risk pre-skip at D84 (<D84 merge sha>);
+    production removed the risk pre-skip at D84 (42d0365c);
     re-align before any re-use. Its steps:
 
       1. Risk hard filter -- any non-pass = skip.

@@ -37,7 +37,7 @@ python -m research.harness.aplus_sensitivity.run \
 ## Variable inventory (17 dials)
 
 - 2 **gate** variables -- `trend_template.min_passes`, `vcp.watch_max_fails`.
-  Bucket-level resimulation via a `bucket_for` mirror AS OF pre-D84 (risk hard filter RETAINED here); production removed the risk pre-skip at D84 (<D84 merge sha>); re-align before any re-use.
+  Bucket-level resimulation via a `bucket_for` mirror AS OF pre-D84 (risk hard filter RETAINED here); production removed the risk pre-skip at D84 (42d0365c); re-align before any re-use.
 - 3 trend_template **threshold** variables -- `rising_ma_period_days`,
   `high_52w_margin_pct`, `low_52w_min_pct`.
 - 8 vcp **threshold** variables -- `prior_trend_min_pct`, `adr_min_pct`,

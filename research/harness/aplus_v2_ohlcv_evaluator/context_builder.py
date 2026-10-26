@@ -437,7 +437,7 @@ def classify_candidate_tier(persisted_risk_result: str | None) -> int:
       Tier rule as written is correct for rows evaluated BEFORE D84 (risk pre-skip
       live). For rows evaluated after D84 a risk fail/na is NEVER load-bearing for
       the bucket, so this function over-assigns tier 2 to them (production removed
-      the risk pre-skip at D84, <D84 merge sha>); re-align (tier 1 for
+      the risk pre-skip at D84, 42d0365c); re-align (tier 1 for
       post-boundary rows, keyed on the evaluation run's date against the boundary)
       before any re-use. The reverse direction holds too: a row evaluated BEFORE
       D84 whose risk failed was persisted `skip` by the pre-skip, and current

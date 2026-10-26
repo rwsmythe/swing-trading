@@ -42,7 +42,7 @@ The harness operates against the operator's `swing-data/swing.db` `candidate_cri
   `variable_name, kind, sweep_point, aplus_count, watch_count, skip_count, excluded_count, delta_aplus, delta_watch`.
 - **Markdown**: `exports/diagnostics/aplus-sensitivity-<ISO>.md` -- header (generated time + eval_runs window + total candidates) + `Sensitivity matrix` table (one row per (variable, sweep_point)) + `Notes` section including the binding V1 LIMITATION paragraph.
 
-Gate-variable rows DO produce real `delta_aplus` / `delta_watch` values via a bucket_for mirror pinned to the pre-D84 gate (risk hard filter retained; production removed the risk pre-skip at D84, <D84 merge sha>); re-align before any re-use. Threshold-variable rows have `delta_aplus == delta_watch == 0` by V1 design (parity-preserving).
+Gate-variable rows DO produce real `delta_aplus` / `delta_watch` values via a bucket_for mirror pinned to the pre-D84 gate (risk hard filter retained; production removed the risk pre-skip at D84, 42d0365c); re-align before any re-use. Threshold-variable rows have `delta_aplus == delta_watch == 0` by V1 design (parity-preserving).
 
 ## Operator explainability
 

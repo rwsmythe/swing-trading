@@ -69,7 +69,7 @@ def compute_gate_passes(
 ) -> dict[str, bool]:
     """Per-gate pass status (spec section 9 per-gate pass rate). Mirrors bucket_for AS OF
     pre-D84 (risk hard filter RETAINED here); production removed the risk pre-skip at D84
-    (<D84 merge sha>); re-align before any re-use.
+    (42d0365c); re-align before any re-use.
     risk: all risk pass. trend_template: tt_passes >= min_passes AND every TT fail in allowed.
     vcp: vcp_fails (fail|na) <= 2 (i.e. watch-or-better)."""
     tt = [c for c in criteria if c.layer == "trend_template"]

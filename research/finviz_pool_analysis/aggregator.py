@@ -4,7 +4,7 @@ All analytical primitives operate on production ``Candidate`` objects.
 Production-gated blocker classification reuses
 ``research.harness.earnings_proximity.scripts.recompute_binding_prod_gated.production_gated_binding``
 (Mirrors bucket_for AS OF pre-D84 (risk hard filter RETAINED here);
-production removed the risk pre-skip at D84 (<D84 merge sha>);
+production removed the risk pre-skip at D84 (42d0365c);
 re-align before any re-use.)
 
 Frozen at D1 of the study (``research/studies/finviz-pool-binding-constraints.md``):

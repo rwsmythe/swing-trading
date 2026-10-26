@@ -6,7 +6,7 @@ VCP → risk_feasibility), while the gating order this script encodes
 checks ``risk_feasibility`` FIRST as a hard filter, then trend-template
 gating, then VCP fail-count thresholds. Mirrors bucket_for AS OF pre-D84
 (risk hard filter RETAINED here); production removed the risk pre-skip at
-D84 (<D84 merge sha>); re-align before any re-use.
+D84 (42d0365c); re-align before any re-use.
 
 This script reads each run's evaluations.csv (gitignored, on disk), and
 writes ``binding_constraints_prod_gated.csv`` alongside the existing

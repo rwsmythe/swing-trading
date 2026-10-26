@@ -39,7 +39,7 @@ entry-crossing session. A miss localizes the silently-rejecting gate. internal.
   around the locked entry-crossing session (no lookahead: every session slices Tiingo bars <= that
   date). H1 asks whether bucket_for would have surfaced the name (aplus/watch) or skipped it, and
   when it skips a screenable name it attributes the single load-bearing gate (risk / trend-template
-  min-passes / trend-template unallowed-miss / vcp) by replaying a bucket_for mirror pinned to the pre-D84 gate (risk hard filter retained; production removed the risk pre-skip at D84, <D84 merge sha>); re-align before any re-use. H2 asks
+  min-passes / trend-template unallowed-miss / vcp) by replaying a bucket_for mirror pinned to the pre-D84 gate (risk hard filter retained; production removed the risk pre-skip at D84, 42d0365c); re-align before any re-use. H2 asks
   whether the documented detector class fired (geometric_score > 0) under two synthetic Stage-2
   variants - production-faithful (8/8 TT required) and stage-isolated (forced Stage-2) - so the
   isolated-minus-faithful delta attributes a detector miss to the Stage-2 gate versus the detector's

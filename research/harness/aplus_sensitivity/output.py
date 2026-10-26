@@ -95,7 +95,7 @@ def write_sensitivity_markdown(result: SweepResult, path: Path) -> None:
             " bucket-redistribution counts via a `bucket_for` resimulation"
             " that mirrors bucket_for AS OF pre-D84 (risk hard filter"
             " RETAINED here); production removed the risk pre-skip at D84"
-            " (<D84 merge sha>);"
+            " (42d0365c);"
             " re-align before any re-use.**"
         ),
         (
