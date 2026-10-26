@@ -38,7 +38,7 @@ def _seed_baseline_watch_priced(conn, ticker="WBL"):
     # then stops out -> baseline priced, closed terminal (a priced LOSER, not a
     # winner -- the name reflects "reaches a priced row", not the sign of R).
     # {adr} has no VCP trigger
-    # and is not proximity/risk-only, so it routes to the baseline even with H3 active.
+    # and is not a proximity-only miss, so it routes to the baseline even with H3 active.
     eval_id = insert_candidate(conn, ticker=ticker, bucket="watch", pivot=10.0,
                                initial_stop=9.0, close=10.0,
                                criteria=[("adr", "vcp", "fail")])
