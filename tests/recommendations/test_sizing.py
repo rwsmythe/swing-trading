@@ -96,7 +96,7 @@ def test_compute_shares_carries_risk_per_share_and_max_risk_dollars_on_every_ret
     assert constraints == ["risk", "infeasible", "no_equity"]
 
 
-def test_zero_share_line_KOD_states_the_ruled_flag():
+def test_zero_share_line_KOD_states_the_ruled_flag():  # noqa: N802
     """R-T1.2 -- CHARC F1-A (1), the verbatim shape, on the real KOD geometry."""
     from swing.recommendations.sizing import zero_share_line
 
@@ -104,7 +104,7 @@ def test_zero_share_line_KOD_states_the_ruled_flag():
                            basis_price=107.12) == _KOD_LINE
 
 
-def test_zero_share_line_is_None_when_shares_are_positive():
+def test_zero_share_line_is_None_when_shares_are_positive():  # noqa: N802
     """R-T1.3."""
     from swing.recommendations.sizing import zero_share_line
 
@@ -114,7 +114,7 @@ def test_zero_share_line_is_None_when_shares_are_positive():
     assert zero_share_line(r, basis_label="limit", basis_price=100.0) is None
 
 
-def test_a_cap_bound_zero_is_NOT_stated_as_above_budget():
+def test_a_cap_bound_zero_is_NOT_stated_as_above_budget():  # noqa: N802
     """R-T1.4 -- kills an implementation that keys the flag on `shares == 0`."""
     from swing.recommendations.sizing import zero_share_line
 
@@ -125,7 +125,7 @@ def test_a_cap_bound_zero_is_NOT_stated_as_above_budget():
     assert "above budget" not in line
 
 
-def test_zero_share_line_is_ASCII():
+def test_zero_share_line_is_ASCII():  # noqa: N802
     """R-T1.5 -- every stated-zero variant AND the marker (cp1252)."""
     from swing.evaluation.scoring import RiskInputs
     from swing.recommendations.sizing import zero_share_line
@@ -166,7 +166,7 @@ def test_the_build_sentinel_without_geometry_states_no_risk():
         zero_share_line(_kod(), basis_label="limit", basis_price=None)
 
 
-def test_the_MARKER_form_renders_only_on_a_flagged_layer():
+def test_the_MARKER_form_renders_only_on_a_flagged_layer():  # noqa: N802
     """R-T1.7 -- P1 (no sizing numbers) and E-d (the formatter consumer)."""
     import pytest
 

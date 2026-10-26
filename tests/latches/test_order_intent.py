@@ -814,7 +814,7 @@ def _kod_prepared(regime="LIMIT"):
         sizing_inputs=_sizing())
 
 
-def test_acceptance_v_a_zero_share_mandate_STATES_its_zero():
+def test_acceptance_v_a_zero_share_mandate_STATES_its_zero():  # noqa: N802
     """R-(v)1 -- the KOD geometry at the floored equity: withheld as
     `sizing_infeasible` (no vocabulary change), the detail is the ruled flag
     line, and the result CARRIES the zero-share SizingResult. Never ceiled:
@@ -828,7 +828,7 @@ def test_acceptance_v_a_zero_share_mandate_STATES_its_zero():
     assert "BUY 1" not in res.withheld_detail
 
 
-def test_the_offered_derivation_reads_risk_per_share_from_the_SizingResult(
+def test_the_offered_derivation_reads_risk_per_share_from_the_SizingResult(  # noqa: N802
         monkeypatch):
     """R-T7.1 -- E-f: ONE source. The offered branch reads `risk_per_share` and
     `max_risk_dollars` from the SizingResult it sized on, never a local
@@ -849,7 +849,7 @@ def test_the_offered_derivation_reads_risk_per_share_from_the_SizingResult(
     assert res.order.derivation.max_risk_dollars == 654.321
 
 
-def test_a_cap_bound_infeasible_is_NOT_a_risk_flag():
+def test_a_cap_bound_infeasible_is_NOT_a_risk_flag():  # noqa: N802
     """R-T7.2 -- pivot 1100, stop 1099: the limit 1133.00 risks $34.00 for one
     share (the risk leg allows 1), but the position cap ($1,125) allows 0. The
     detail is the formatter's CAP line, never "above budget"."""
@@ -867,7 +867,7 @@ def test_a_cap_bound_infeasible_is_NOT_a_risk_flag():
     assert res.sizing is not None and res.sizing.shares == 0
 
 
-def test_P3_a_regime_undeterminable_result_CARRIES_the_zero_and_keeps_the_precedence():
+def test_P3_a_regime_undeterminable_result_CARRIES_the_zero_and_keeps_the_precedence():  # noqa: N802
     """R-T7.4 -- CHARC P3 (b): the sizing runs up front (its basis is
     regime-independent) and rides on the regime-withheld result; 21-B's
     withheld-reason precedence is unchanged, so the regime fact is never
@@ -889,7 +889,7 @@ def test_P3_a_regime_undeterminable_result_CARRIES_the_zero_and_keeps_the_preced
     assert below.sizing is None
 
 
-def test_P3_sizing_is_admitted_beside_two_reasons_ONLY():
+def test_P3_sizing_is_admitted_beside_two_reasons_ONLY():  # noqa: N802
     """R-T7.5 -- CHARC P3: `PreparedOrderResult.sizing` is admitted beside
     `regime_undeterminable` AND `sizing_infeasible`, and nowhere else.
     `withheld_reason=None` implies an order (the exactly-one-of check), so the

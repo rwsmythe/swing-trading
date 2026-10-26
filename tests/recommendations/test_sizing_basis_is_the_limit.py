@@ -531,7 +531,7 @@ def test_the_unorderable_refusal_does_NOT_swallow_a_stop_ABOVE_the_pivot():
         _recs(today_aplus=[_candidate("DEGEN", pivot=100.0, stop=101.5)])
 
 
-def test_the_RISK_BOUND_zero_action_text_states_the_zero_not_a_refusal():
+def test_the_RISK_BOUND_zero_action_text_states_the_zero_not_a_refusal():  # noqa: N802
     """Supersedes `test_the_INFEASIBLE_action_text_states_no_price_at_all`
     (D84 T8 step 1; Reviewer B B2-02). WIDE (pivot 100.0, stop 50.0) is a
     RISK-BOUND zero, not a degenerate geometry: its contract was the refusal

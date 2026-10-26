@@ -4996,6 +4996,7 @@ _KOD_ENTRY_LINE = (
 
 def _seed_kod_watchlist(cfg, monkeypatch, *, live_price):
     from datetime import datetime
+
     from swing.data.db import connect
     from swing.data.models import WatchlistEntry
     from swing.data.repos.watchlist import upsert_watchlist_entry

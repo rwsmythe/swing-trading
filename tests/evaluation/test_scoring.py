@@ -129,7 +129,7 @@ def test_bucket_for_characterization_table(sample_config):
             f"tt_pass={tt_pass} fails={tt_fails} vcp_fails={vcp_fails}")
 
 
-def test_bucket_for_and_the_structural_gate_AGREE_on_a_perfect_structure(
+def test_bucket_for_and_the_structural_gate_AGREE_on_a_perfect_structure(  # noqa: N802
         sample_config):
     """Supersedes `test_the_structural_gate_EXCLUDES_risk_feasibility` (D84).
 
@@ -264,7 +264,7 @@ def test_risk_layer_passes_only_on_an_evaluated_layer_with_no_non_pass():
     assert risk_layer_flagged(flagged) is True
 
 
-def test_an_na_risk_result_is_a_NON_PASS():
+def test_an_na_risk_result_is_a_NON_PASS():  # noqa: N802
     """R-T2.2 -- RD (vi). An adapter that counts only `fail` lets `na` pass."""
     from swing.evaluation.scoring import (
         RiskInputs,
@@ -281,7 +281,7 @@ def test_an_na_risk_result_is_a_NON_PASS():
     assert risk_layer_passes(inputs) is False
 
 
-def test_an_EMPTY_risk_layer_is_NEITHER_pass_NOR_flag():
+def test_an_EMPTY_risk_layer_is_NEITHER_pass_NOR_flag():  # noqa: N802
     """R-T2.3 -- E-d REVERSED (RD, cell 2): the predicate's empty-layer pin.
 
     "Every result passes" is vacuously true of no results, and vacuous truth is
@@ -302,7 +302,7 @@ def test_an_EMPTY_risk_layer_is_NEITHER_pass_NOR_flag():
     assert risk_inputs_from_criteria(rows) == empty
 
 
-def test_RiskInputs_rejects_an_incoherent_count():
+def test_RiskInputs_rejects_an_incoherent_count():  # noqa: N802
     """R-T2.4 -- "flagged" implies "evaluated" by construction."""
     import pytest
 
@@ -316,7 +316,7 @@ def test_RiskInputs_rejects_an_incoherent_count():
         RiskInputs(risk_result_count=1, risk_non_pass_count=-1)
 
 
-def test_risk_inputs_from_criteria_reads_persisted_CriterionResult_rows():
+def test_risk_inputs_from_criteria_reads_persisted_CriterionResult_rows():  # noqa: N802
     """The ONE counting adapter serves the persisted read too (CriterionResult
     carries `.layer` / `.result`), and it is LAYER-keyed, never name-keyed: a
     second risk-layer criterion counts."""

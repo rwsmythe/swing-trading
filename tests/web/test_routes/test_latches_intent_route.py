@@ -1964,7 +1964,7 @@ def _rendered_attest_fields(client, cid):
     raise AssertionError("the card renders no attest affordance")
 
 
-def test_acceptance_v_an_acted_manually_attest_WRITES_on_a_latch_with_no_place_row(
+def test_acceptance_v_an_acted_manually_attest_WRITES_on_a_latch_with_no_place_row(  # noqa: N802
         seeded_db, frozen_clocks):
     """R-(v)3. POST the affordance's EXACT rendered form fields: 200, ONE
     `attest` row with `acted_manually` and the broker order id stored, and
@@ -1990,7 +1990,7 @@ def test_acceptance_v_an_acted_manually_attest_WRITES_on_a_latch_with_no_place_r
     assert rows == [("attest", "acted_manually", "1004455667")]
 
 
-def test_acceptance_v_the_declaration_scores_DEVIATING_BY_DECLARATION_not_a_deviation_from_zero(
+def test_acceptance_v_the_declaration_scores_DEVIATING_BY_DECLARATION_not_a_deviation_from_zero(  # noqa: N802
         seeded_db, frozen_clocks, monkeypatch):
     """R-(v)4. The RED half is the end-to-end path through R-(v)3's row; the
     GUARD half shows the classifier was not edited: the row classifies
@@ -2044,16 +2044,15 @@ def test_acceptance_v_the_declaration_scores_DEVIATING_BY_DECLARATION_not_a_devi
     assert report.agreement_denominator == 0
 
 
-def test_a_place_row_at_quantity_zero_is_UNWRITABLE_is_pinned_elsewhere():
+def test_a_place_row_at_quantity_zero_is_UNWRITABLE_is_pinned_elsewhere():  # noqa: N802
     """R-(v)5 -- "deviation from a framework order of zero" is UNWRITABLE: the
     0033 CHECK `framework_quantity > 0`. Already pinned by
     `tests/data/test_migration_0033.py::test_non_positive_is_rejected_by_column_name[framework_quantity]`
     (it rejects 0 and -1 on a `place` row), so the plan's rule applies: cite it
     by name in place of a new test. This test asserts the citation resolves."""
     import ast
-    from pathlib import Path as _P
 
-    src = (_P(__file__).resolve().parents[2] / "data"
+    src = (Path(__file__).resolve().parents[2] / "data"
            / "test_migration_0033.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}

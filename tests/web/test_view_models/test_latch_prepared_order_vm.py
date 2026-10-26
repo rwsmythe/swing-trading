@@ -885,7 +885,7 @@ def test_acceptance_i_b_the_risk_flagged_card_renders_the_computed_shares_and_ri
     assert "<button" not in section
 
 
-def test_P3_the_regime_withheld_card_states_the_zero_BESIDE_the_regime_reason(
+def test_P3_the_regime_withheld_card_states_the_zero_BESIDE_the_regime_reason(  # noqa: N802
         seeded_db):
     """R-T7.6 -- CHARC P3: with the regime undeterminable the heading stays
     `PREPARED ORDER WITHHELD` and the detail stays the regime text (the regime
@@ -911,7 +911,7 @@ def test_P3_the_regime_withheld_card_states_the_zero_BESIDE_the_regime_reason(
     assert "<button" not in section
 
 
-def test_a_zero_nightly_count_maps_to_None_and_the_place_row_writes(
+def test_a_zero_nightly_count_maps_to_None_and_the_place_row_writes(  # noqa: N802
         seeded_db, monkeypatch):
     """R-T7.3 -- CHARC F1-A (4). Since D84 a zero nightly row is ROUTINE (every
     risk-flagged A+ sizes to zero), and 0033's CHECK
@@ -1037,7 +1037,7 @@ def _terminal_row(cfg, monkeypatch, *, risk_result="fail", disposition=None):
     return term
 
 
-def test_P2_the_flag_and_affordance_ride_the_FIRES_criteria_on_a_TERMINAL_card(
+def test_P2_the_flag_and_affordance_ride_the_FIRES_criteria_on_a_TERMINAL_card(  # noqa: N802
         seeded_db, monkeypatch):
     """R-T7.7 -- P2 (b): keyed on the FIRE's stored criteria, so the flag and
     the affordance survive the latch going terminal ("attest first, then enter"
@@ -1058,7 +1058,7 @@ def test_P2_the_flag_and_affordance_ride_the_FIRES_criteria_on_a_TERMINAL_card(
 
 
 @pytest.mark.parametrize("risk_result", ["pass", None])
-def test_P2_counterfactual_a_passing_or_EMPTY_risk_layer_renders_nothing(
+def test_P2_counterfactual_a_passing_or_EMPTY_risk_layer_renders_nothing(  # noqa: N802
         seeded_db, monkeypatch, risk_result):
     """R-T7.7 counterfactuals 1-2 -- a risk `pass` row, and NO risk row (E-d,
     the latch-VM consumer): no marker and no affordance."""
@@ -1069,7 +1069,7 @@ def test_P2_counterfactual_a_passing_or_EMPTY_risk_layer_renders_nothing(
     assert term.attest_options == ()
 
 
-def test_P2_counterfactual_an_attestation_WITHDRAWS_the_affordance(
+def test_P2_counterfactual_an_attestation_WITHDRAWS_the_affordance(  # noqa: N802
         seeded_db, monkeypatch):
     """R-T7.7 counterfactual 3 -- "until an attestation or a decision governs"
     (CHARC P2). After an `attest` the D84 affordance is gone and the correction
@@ -1084,7 +1084,7 @@ def test_P2_counterfactual_an_attestation_WITHDRAWS_the_affordance(
     assert len(attested.attest_options) == 3
 
 
-def test_P2_counterfactual_a_governing_PLACE_withdraws_the_affordance(
+def test_P2_counterfactual_a_governing_PLACE_withdraws_the_affordance(  # noqa: N802
         seeded_db, monkeypatch):
     """R-T7.7 counterfactual 4 -- a governing `place` (disposition
     `accepted`) withdraws it."""

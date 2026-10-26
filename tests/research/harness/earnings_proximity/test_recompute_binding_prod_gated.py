@@ -230,7 +230,7 @@ def test_consistency_with_bucket_for(cfg, row_overrides, expected_bucket, expect
             id="era divergence, D84: risk + TT1 + adr"),
     ],
 )
-def test_era_divergence_D84_the_mirror_retains_the_retired_risk_pre_skip(
+def test_era_divergence_D84_the_mirror_retains_the_retired_risk_pre_skip(  # noqa: N802
         cfg, row_overrides, expected_production_bucket):
     """R-P4.1 -- the era pin BY EXECUTION (RD P4 (a)).
 

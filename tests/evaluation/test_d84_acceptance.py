@@ -65,7 +65,7 @@ def _patch_structure_to_pass(monkeypatch):
         monkeypatch.setattr(mod, "evaluate", lambda ctx, _n=name: _pass(_n, "vcp"))
 
 
-def test_acceptance_i_a_risk_fail_A_plus_buckets_aplus_AND_latches(
+def test_acceptance_i_a_risk_fail_A_plus_buckets_aplus_AND_latches(  # noqa: N802
         monkeypatch, sample_config, tmp_path):
     """R-(i)a. Pre-D84 the risk pre-skip buckets this name `skip` and there is
     no latch; post-D84 it is `aplus`, it persists `aplus`, and it latches."""

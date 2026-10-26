@@ -241,7 +241,7 @@ def test_lookup_returns_narrow_label_for_aplus_candidate(tmp_path: Path):
     )
 
 
-def test_an_aplus_candidate_with_NO_risk_row_prefills_NOTHING(tmp_path: Path):
+def test_an_aplus_candidate_with_NO_risk_row_prefills_NOTHING(tmp_path: Path):  # noqa: N802
     """R-T4.5 -- E-d REVERSED, the prefill consumer (R3-02). An `aplus`
     candidate with no risk row is neither H1 nor H4 (an unmeasured layer is
     not a pass and not a flag), and the baseline fallback is watch-only, so the

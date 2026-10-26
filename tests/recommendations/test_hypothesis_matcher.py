@@ -232,7 +232,7 @@ def _names(cand, **kw):
             for m in match_candidate_to_hypotheses(cand, registry=_registry(), **kw)]
 
 
-def test_acceptance_ii_the_H1_matcher_returns_False_on_a_risk_fail_aplus():
+def test_acceptance_ii_the_H1_matcher_returns_False_on_a_risk_fail_aplus():  # noqa: N802
     """R-(ii) -- THE ANTI-VACUITY CHECK. On a risk-fail `aplus` candidate H1 is
     False and the match set is exactly {H4}. It kills a bucket-only amendment:
     before D84, H1 was True and H4 False on this candidate."""
@@ -243,7 +243,7 @@ def test_acceptance_ii_the_H1_matcher_returns_False_on_a_risk_fail_aplus():
     assert _names(cand) == [_H4]
 
 
-def test_acceptance_iii_a_risk_pass_aplus_is_H1_and_not_H4():
+def test_acceptance_iii_a_risk_pass_aplus_is_H1_and_not_H4():  # noqa: N802
     """R-(iii) -- a GUARD (E-h, ACCEPTED by RD): true before and after D84, so
     it cannot be RED-first. Its discriminating mutation was RUN once at the
     plan stage, in a scratch `git archive` of `b1415630`: with the mutant
@@ -256,7 +256,7 @@ def test_acceptance_iii_a_risk_pass_aplus_is_H1_and_not_H4():
     assert _names(_kod_candidate(risk="pass")) == [_H1]
 
 
-def test_acceptance_iv_REPLACED_a_pre_boundary_shaped_skip_row_matches_NO_hypothesis():
+def test_acceptance_iv_REPLACED_a_pre_boundary_shaped_skip_row_matches_NO_hypothesis():  # noqa: N802
     """R-(iv)' -- the closed-population pin (RD round-0 ruling): "0 exact-{risk}
     rows and 0 exact-{risk, TT8_rs_rank} rows in all 312 risk non-pass rows
     since 2026-04-16 (runs 1-180), 0 Capital-blocked trades". A `skip`
@@ -267,14 +267,14 @@ def test_acceptance_iv_REPLACED_a_pre_boundary_shaped_skip_row_matches_NO_hypoth
         cand, registry=_registry_with_baseline(), include_baseline=True) == []
 
 
-def test_the_H4_positive_pin_on_the_real_KOD_geometry():
+def test_the_H4_positive_pin_on_the_real_KOD_geometry():  # noqa: N802
     """R-H4-KOD. Supersedes
     `test_capital_blocked_test_matches_only_risk_feasibility_failure`: H4 no
     longer admits `watch` (RD: the old form is dropped)."""
     assert _names(_kod_candidate()) == [_H4]
 
 
-def test_the_H4_label_is_aplus_with_the_flag_in_the_failed_list():
+def test_the_H4_label_is_aplus_with_the_flag_in_the_failed_list():  # noqa: N802
     """R-E4. Supersedes `test_capital_blocked_skip_bucket_label_annotated_for_
     clarity`: the `(skip; capital-blocked)` annotation branch is deleted."""
     from swing.metrics.label_match import label_matches_hypothesis
@@ -285,13 +285,13 @@ def test_the_H4_label_is_aplus_with_the_flag_in_the_failed_list():
     assert label_matches_hypothesis(m.suggested_label_descriptive, _H4)
 
 
-def test_H4_admits_the_allowed_TT8_miss():
+def test_H4_admits_the_allowed_TT8_miss():  # noqa: N802
     """R-T4.1 -- RD (iii): A+ allows the allowed miss, so does H4."""
     cand = _kod_candidate(overrides={"TT8_rs_rank": "fail"})
     assert _names(cand) == [_H4]
 
 
-def test_the_matcher_adapter_is_LAYER_keyed():
+def test_the_matcher_adapter_is_LAYER_keyed():  # noqa: N802
     """R-T4.2 -- CHARC E2's "second spelling the day the risk layer has two
     criteria". `risk_feasibility` passes but a SECOND risk-layer criterion
     fails: H1 False, H4 True. A name-keyed implementation would pass H1. The
@@ -310,7 +310,7 @@ def test_the_matcher_adapter_is_LAYER_keyed():
     assert _names(na) == [_H4]
 
 
-def test_an_aplus_candidate_with_NO_risk_row_matches_NOTHING():
+def test_an_aplus_candidate_with_NO_risk_row_matches_NOTHING():  # noqa: N802
     """R-T4.4 -- E-d REVERSED, the matcher consumer: an `aplus` candidate with
     TT and VCP rows only is neither H1 nor H4, so `_descriptive_label` is never
     reached. The `[]` holds with `include_baseline=True` too: the baseline

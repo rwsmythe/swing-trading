@@ -232,7 +232,7 @@ def test_duplicate_data_asof_qualify_is_idempotent():
     assert delta.removes == []
 
 
-def test_a_risk_fail_watch_name_with_the_stable_roster_passing_QUALIFIES():
+def test_a_risk_fail_watch_name_with_the_stable_roster_passing_QUALIFIES():  # noqa: N802
     """R-F3.1 -- D84 F3 (CHARC (b)): `risk_feasibility` left the stable roster.
     Risk is capital, not structure, and the evaluator no longer gates on it, so
     the watchlist must not either. Six stable criteria pass, risk FAILS, bucket

@@ -12,7 +12,6 @@ from tests.research.shadow_expectancy.testkit import (
     make_db,
 )
 
-
 # Every evaluated row production writes carries the risk layer; since D84 an
 # `aplus` candidate with NO risk row is neither H1 nor H4 (E-d), so the A+
 # fixtures carry the production `risk_feasibility` pass row.

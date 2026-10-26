@@ -121,7 +121,7 @@ def _candidate(ticker: str, risk: str | None, bucket: str = "watch") -> Candidat
     )
 
 
-def test_risk_flags_maps_ONLY_a_flagged_layer():
+def test_risk_flags_maps_ONLY_a_flagged_layer():  # noqa: N802
     """R-E3(2)f (R1-03). The passing and the EMPTY-layer tickers are ABSENT
     from the mapping, not present with "". It kills a `not risk_layer_passes`
     spelling, which would flag the empty layer."""
@@ -135,7 +135,7 @@ def test_risk_flags_maps_ONLY_a_flagged_layer():
     assert dict(out) == {"FLG": "RISK FLAG"}
 
 
-def test_the_marker_is_SORT_NEUTRAL():
+def test_the_marker_is_SORT_NEUTRAL():  # noqa: N802
     """R-E3(2)c. `_flag_tags` is the sort key; the marker never enters it, so
     a risk-fail candidate and the same candidate with risk `pass` carry the
     same tags and sort identically -- while the marker DOES exist, beside the
@@ -166,7 +166,7 @@ def test_the_marker_is_SORT_NEUTRAL():
             == [w.ticker for w in _sort_watchlist(rows, _flag_tags(passing))])
 
 
-def test_the_watchlist_tag_row_renders_the_marker_for_a_risk_fail_WATCH_name(
+def test_the_watchlist_tag_row_renders_the_marker_for_a_risk_fail_WATCH_name(  # noqa: N802
         seeded_db, no_network):
     """R-E3(2)b -- RD (iv): a risk-fail WATCH name is not silent. The passing
     sibling and the NO-risk-row sibling (E-d, R1-03) render no marker."""

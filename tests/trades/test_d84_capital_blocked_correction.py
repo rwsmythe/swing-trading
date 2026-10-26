@@ -37,7 +37,7 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
         c.close()
 
 
-def test_a_risk_flagged_aplus_citation_is_ADMITTED_with_the_H4_label(conn) -> None:
+def test_a_risk_flagged_aplus_citation_is_ADMITTED_with_the_H4_label(conn) -> None:  # noqa: N802
     """R-T4.6. The correction is ADMITTED, the derived label is exactly the H4
     label, and the written origin is `APLUS_TRADE_ORIGIN`. Before D84 the
     matcher labelled this candidate H1 (`A+ baseline (aplus); failed:
