@@ -5072,3 +5072,140 @@ def test_the_sizing_hint_states_the_zero_not_too_tight(seeded_db):
     body = _html.unescape(r.text)
     assert _KOD_ENTRY_LINE in body
     assert "too tight" not in body
+
+
+# ---------------------------------------------------------------------------
+# D84 T8.3 completion (CHARC amendment 3, Codex R4 A4-01). Under F1-A every H4
+# fill takes the manual path, and the entry form on that path is AUTO-FILLED
+# from the Schwab fill. The prefilled QUANTITY belongs to the shares input
+# (`prefill_shares`); the hint keys on the sizing (`suggested_shares` stays
+# sizing-derived), so the stated zero survives a populated auto-fill.
+# ---------------------------------------------------------------------------
+def _populated_entry_auto_fill(monkeypatch, *, entry_price, shares):
+    from swing.trades.entry_auto_fill import EntryAutoFillResult
+
+    result = EntryAutoFillResult(
+        kind="populated", fill_origin="schwab_auto",
+        entry_date="2026-10-23", entry_price=entry_price, shares=shares,
+        advisory_text=None,
+        schwab_source_value_json=(
+            '{"entry_date": "2026-10-23", "entry_price": %s, "shares": %d, '
+            '"schwab_order_id": "order-d84"}' % (entry_price, shares)),
+        auto_fill_audit_at="2026-10-23T14:30:00.000000+00:00",
+    )
+    monkeypatch.setattr(
+        "swing.trades.entry_auto_fill.resolve_entry_auto_fill",
+        lambda **_kw: result)
+
+
+def _shares_input_value(body):
+    import re
+
+    m = re.search(r'name="shares"\s+value="(\d+)"', body)
+    assert m is not None, "the shares input is missing"
+    return int(m.group(1))
+
+
+def test_an_auto_filled_risk_bound_zero_states_the_zero_with_the_fill_in_the_input(
+        seeded_db, monkeypatch):
+    """Discriminator (1). Populated auto-fill + a risk-bound-zero sizing (the KOD
+    geometry at the raw $1,200 equity): the hint states the zero AND the shares
+    input carries the broker quantity. Pre-fix the fill's count overwrote
+    `suggested_shares`, so the hint rendered "Suggested max: 7 sh (~$0.00
+    risk = 0.00%)" and the stated zero never showed."""
+    import html as _html
+
+    cfg, cfg_path = seeded_db
+    _seed_kod_watchlist(cfg, monkeypatch, live_price=104.0)
+    _populated_entry_auto_fill(monkeypatch, entry_price=104.0, shares=7)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=KOD")
+    assert r.status_code == 200
+    body = _html.unescape(r.text)
+    assert _KOD_ENTRY_LINE in body
+    assert "Suggested max" not in body
+    assert "~$0.00 risk" not in body
+    assert _shares_input_value(r.text) == 7
+
+
+def test_an_auto_filled_feasible_sizing_hints_the_sizing_not_the_fill(
+        seeded_db, monkeypatch):
+    """Discriminator (2). Populated auto-fill + FEASIBLE sizing: the hint states
+    the sizing-derived maximum (entry 20.00 / stop 19.50 at $1,200: budget $6
+    -> 12 by risk, 15% position cap -> 9 shares, $4.50 risk = 0.38%), not the
+    fill's 50; the shares input is prefilled with the fill's 50."""
+    from datetime import datetime
+
+    from swing.data.db import connect
+    from swing.data.models import WatchlistEntry
+    from swing.data.repos.watchlist import upsert_watchlist_entry
+    from swing.web.price_cache import PriceCache, PriceSnapshot
+
+    cfg, cfg_path = seeded_db
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            upsert_watchlist_entry(conn, WatchlistEntry(
+                ticker="FEZ", added_date="2026-10-20",
+                last_qualified_date="2026-10-22", status="watch",
+                qualification_count=1, not_qualified_streak=0,
+                last_data_asof_date="2026-10-22",
+                entry_target=20.0, initial_stop_target=19.5,
+                last_close=19.9, last_pivot=20.0, last_stop=19.5,
+                last_adr_pct=3.0, missing_criteria=None, notes=None,
+            ))
+    finally:
+        conn.close()
+    monkeypatch.setattr(PriceCache, "get_many",
+        lambda self, tickers, deadline_seconds, *, executor=None: {
+            "FEZ": PriceSnapshot(ticker="FEZ", price=20.0, asof=datetime.now(),
+                                 is_stale=False, source="live"),
+        })
+    _populated_entry_auto_fill(monkeypatch, entry_price=20.0, shares=50)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.get("/trades/entry/form?ticker=FEZ")
+    assert r.status_code == 200
+    assert "Suggested max: <strong>9 sh</strong>" in r.text
+    assert "~$4.50 risk" in r.text
+    assert "Suggested max: <strong>50 sh</strong>" not in r.text
+    assert _shares_input_value(r.text) == 50
+
+
+def test_an_auto_filled_drift_retry_keeps_the_submitted_shares(
+        seeded_db, monkeypatch):
+    """Discriminator (3). A drift-retry (duplicate open position) on an
+    auto-filled form: the shares input shows the operator's SUBMITTED value
+    (`input_shares`, the resubmit semantics), not the fill's prefill."""
+    from swing.data.db import connect
+    from swing.data.models import Trade
+    from swing.data.repos.trades import insert_trade_with_event
+
+    cfg, cfg_path = seeded_db
+    _seed_kod_watchlist(cfg, monkeypatch, live_price=104.0)
+    conn = connect(cfg.paths.db_path)
+    try:
+        with conn:
+            insert_trade_with_event(conn, Trade(
+                id=None, ticker="KOD", entry_date="2026-10-21",
+                entry_price=100.0, initial_shares=1, initial_stop=90.0,
+                current_stop=90.0, state="entered",
+                watchlist_entry_target=None, watchlist_initial_stop=None,
+                notes=None,
+            ), event_ts="2026-10-21T09:30:00")
+    finally:
+        conn.close()
+    _populated_entry_auto_fill(monkeypatch, entry_price=104.0, shares=7)
+    app = create_app(cfg, cfg_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/trades/entry", headers={"HX-Request": "true"},
+            data=full_phase7_entry_payload(
+                ticker="KOD", entry_date="2026-10-23",
+                entry_price="104.00", shares="3",
+                initial_stop="29.81", rationale="aplus-setup",
+            ),
+        )
+    assert r.status_code == 400
+    assert _shares_input_value(r.text) == 3
