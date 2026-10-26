@@ -439,9 +439,17 @@ def classify_candidate_tier(persisted_risk_result: str | None) -> int:
       the bucket, so this function over-assigns tier 2 to them (production removed
       the risk pre-skip at D84, <D84 merge sha>); re-align (tier 1 for
       post-boundary rows, keyed on the evaluation run's date against the boundary)
-      before any re-use.
+      before any re-use. The reverse direction holds too: a row evaluated BEFORE
+      D84 whose risk failed was persisted `skip` by the pre-skip, and current
+      production recomputes it to its structural bucket, so for pre-boundary rows
+      tier 2 against CURRENT evaluate_one is an era divergence by construction, not
+      a surrogate condition; the same re-alignment compares pre-boundary tier-2 rows
+      against the pre-D84 mirror (aplus_sensitivity/sweep.py,
+      _bucket_for_substituted) or counts them as era-divergent, never as parity
+      failures.
 
-    Returns: 1 (tier-1 EXACT parity required) or 2 (tier-2 CONDITIONAL via surrogate).
+    Returns: 1 (tier-1 EXACT parity required) or 2 (tier-2 CONDITIONAL via surrogate;
+      pre-boundary rows under the pre-D84 gate).
 
     Discriminating cases (Codex R1.C1 fix; the tier-2 reasons are the pre-D84 gate's):
       pass  -> 1  (risk passed; non-load-bearing)
