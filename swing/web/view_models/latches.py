@@ -3393,9 +3393,10 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
         its correction under RD's W1 headline and its gate is returned in
         `ledger_cancels`, where the caller builds the ledger-keyed cancel
         control. The same gate runs on displaced cycles, and
-      * the ticker's broker status is not INDETERMINATE (the broker's own answer
-        is unknown, so the fragment renders its indeterminate note and no
-        prompt), and
+      * no BUY order on the ticker is in an INDETERMINATE status (that order's
+        status is unresolved, so the fragment renders its indeterminate note
+        and this latch gets no prompt, no explained line and no ledger-keyed
+        control; the declared limitation and its ground are at the skip), and
       * for the ABSENCE branch, the place intent is from an EARLIER session --
         prompting the same evening he logged the order would be asking him about
         something he has not had a session to do yet.
@@ -3451,6 +3452,27 @@ def _validity_prompts(latches, *, joins, orders, anchor: date, now,
     for latch in latches:
         cid = latch.identity.candidate_id
         join = joins.get(cid)
+        # THE TICKER-WIDE INDETERMINATE SKIP, a DECLARED LIMITATION (D94 exec
+        # R1-2 = A; RD's ground, CHARC concurring). It runs ahead of BOTH cycle
+        # paths, so while any BUY order on this ticker is in an
+        # INDETERMINATE_ORDER_STATUSES status, this latch gets no prompt, no
+        # explained line and no LEDGER-keyed cancel control. The book is NOT
+        # unknown here: the fetch succeeded and the in-flight order is listed
+        # with its id; only that order's STATUS is unresolved. The skip is kept
+        # because (1) those statuses are between-states (PENDING_*, manual
+        # review, UNKNOWN) -- every WAIT_TRG / AWAITING_* condition status is
+        # RESTING, so a conditional chain order does not trigger it -- and the
+        # next render after the status resolves shows every line and control;
+        # (2) an order he has just cancelled is PENDING_CANCEL, so
+        # `to_resting_orders` keeps it, it is in the resting set, and it gets
+        # the shipped BOOK control with its status note; (3) the fragment's
+        # indeterminate note is built by `indeterminate_order_tickers`, the
+        # same predicate over the same orders as `join.indeterminate`, so the
+        # skipped ticker is named on screen; (4) the skip predates D94, which
+        # added outputs behind it and did not move it. Recorded re-open
+        # trigger (the exec ledger): an indeterminate status that persists
+        # across a session boundary on a ticker carrying an accepted, absent,
+        # unexplained row.
         if join is None or join.indeterminate:
             continue
         intents = intents_by_latch.get(cid)
