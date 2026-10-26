@@ -44,6 +44,9 @@
      the framework had already complained about -- and an order in PENDING_CANCEL
      (the state produced by him doing what the framework asked) suppresses both
      alarms, so the framework offered no way to record the very act it requested.
+     A control comes from the resting book OR from the ledger: an accepted order
+     that has left the book unexplained is offered by its LEDGER order id, with
+     its status note above the form (D94 (b)).
 
      LOG-ONLY on every branch: nothing is sent to the broker. He still cancels at
      the broker and this records that he decided to. Each control targets a
@@ -165,6 +168,19 @@
      that could not be BUILT renders identically to a latch with nothing to ask,
      and the agreement denominator stays empty for a reason nobody can see --
      which is this arc's own failure mode pointed at its own instrument. #}
+  {# RECORDED ORDER OUTCOMES (D94 (a)): one READ-ONLY line per explained
+     validity row -- a fill explains the place whatever its child says; a
+     recorded cancel explains an accepted row whose order is gone. The line
+     replaces that row's correction control; it offers no control of its own.
+     Display-ready; ASCII only. #}
+  {% if vm.validity_explained %}
+  <div class="latch-validity-explained">
+    <h4 class="latch-validity-heading">RECORDED ORDER OUTCOMES (read-only)</h4>
+    {% for line in vm.validity_explained %}
+    <p class="latch-validity-explained-line">{{ line }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% if vm.validity_prompt_degraded %}
   <p class="latch-alarm latch-alarm-warning latch-validity-degraded">
     {{ vm.validity_prompt_degraded }}

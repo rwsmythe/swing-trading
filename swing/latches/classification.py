@@ -511,23 +511,39 @@ def resolve_execution_outcome(latch, governing_place, validity_rows) -> str:
 
     `latch.clear_reason` is an input the classifier ALREADY receives -- a named
     field on a value object, not a hidden `trades` read.
+
+    The fill rung is `fill_vouches_for`; this entry point delegates to
+    `resolve_execution_outcome_for` so the rung has exactly ONE spelling.
     """
     if governing_place is None:
         return "not_applicable"
-    if (latch.clear_reason == "fill" and latch.clear_session is not None
+    # Its contract is that `governing_place` IS the latest place, so the one-place
+    # view states that contract rather than re-checking it.
+    return resolve_execution_outcome_for(
+        latch, governing_place, [governing_place, *validity_rows])
+
+
+def fill_vouches_for(latch, place_intent, intents, *, place_view=None) -> bool:
+    """THE ONE SPELLING of "the framework's order filled" for a place intent.
+
+    True iff ALL THREE hold: the latch cleared by FILL; the fill session is on or
+    after this place's session (the BACKWARD guard -- an older fill from a prior
+    cycle cannot vouch for a newer intent); and this place IS the latch's latest
+    place in `place_view` (default: `intents`) -- the FORWARD guard, an earlier
+    cycle cannot borrow a later fill.
+
+    The resolver's fill rung and the latch panel's explanation gate both CALL
+    this; neither re-spells it (CHARC D94 1A, RD D94 item 2).
+    """
+    if place_intent is None:
+        return False
+    latest = governing_intent(
+        intents if place_view is None else place_view, "place")
+    if latest is None or latest.intent_id != place_intent.intent_id:
+        return False
+    return (latch.clear_reason == "fill" and latch.clear_session is not None
             and latch.clear_session
-            >= date.fromisoformat(governing_place.action_session_date)):
-        return "accepted_by_broker"
-    children = [
-        r for r in validity_rows
-        if r.validated_place_intent_id == governing_place.intent_id
-    ]
-    if children:
-        # THE LATEST WITHIN THAT PARENT -- never "the latest validity row for this
-        # latch", which would let a second place/validity cycle retroactively
-        # rewrite the first one's reported outcome.
-        return max(children, key=_order_key).validity_outcome
-    return "unknown"
+            >= date.fromisoformat(place_intent.action_session_date))
 
 
 def resolve_execution_outcome_for(
@@ -549,19 +565,20 @@ def resolve_execution_outcome_for(
     `validity_rows` always come from the FULL `intents`: `place_view` carries the
     decision family only, and reading the children out of it would delete every
     validity answer on the latch.
+
+    The fill rung (both guards) is `fill_vouches_for`, the ONE spelling.
     """
     if place_intent is None:
         return "not_applicable"
-    latest_place = governing_intent(
-        intents if place_view is None else place_view, "place")
+    if fill_vouches_for(latch, place_intent, intents, place_view=place_view):
+        return "accepted_by_broker"
     validity_rows = [i for i in intents if i.intent_kind == "validity"]
-    if latest_place is not None and place_intent.intent_id == latest_place.intent_id:
-        return resolve_execution_outcome(latch, place_intent, validity_rows)
-    children = [
-        r for r in validity_rows
-        if r.validated_place_intent_id == place_intent.intent_id
-    ]
+    children = [r for r in validity_rows
+                if r.validated_place_intent_id == place_intent.intent_id]
     if children:
+        # THE LATEST WITHIN THAT PARENT -- never "the latest validity row for this
+        # latch", which would let a second place/validity cycle retroactively
+        # rewrite the first one's reported outcome.
         return max(children, key=_order_key).validity_outcome
     return "unknown"
 
