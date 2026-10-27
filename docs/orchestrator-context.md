@@ -79,7 +79,21 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 > **Archive companion (2026-05-18 Phase 12.5 #3 T-3.3 split — zero-yield):** This section inspected for pre-2026-05-13 entries during the Phase 12.5 #3 archive-split pass; ZERO entries qualified (all "Prior state" snapshots are dated 2026-05-17 or later). No content moved from this section; pointer retained for symmetry with the "Lessons captured" pointer below + audit-trail integrity. See [`docs/orchestrator-context-archive.md`](docs/orchestrator-context-archive.md) for archive companion structure.
 
-### Currently in-flight (2026-10-19): **D79 MERGED at `38c1d97d`** (no migration). Next, in order: a tests-only load-flake rider, then the maintenance rider, then the soft-stop arc.
+### Currently in-flight (2026-10-26): **D84 MERGED at `42d0365c` and CLOSED** (no migration). Next: the operator's push, then his Finviz widening config edit (RD writes watch-standard v2.5 that day), then the registered queue.
+
+- **D84, the capital soft-stop arc (risk is a flag, not a gate).**
+  - Merged `--no-ff` at `42d0365c`. The merged head is green (15624 / 13 / 0, after one reaper-killed attempt). The nine research pins were filled at `54c5a299`, and CHARC called MAIN GREEN.
+  - Review: **STOPPED-AND-ROUTED at round 5** (A5-01 was declined and registered as D98), and Reviewer B was clean.
+  - The plan 6.3 operator witness PASSED on scratch copies, recorded at `6994d32c` and `cea1b8f7`. CHARC DISCHARGED amendment 3 (a stubbed auto-fill). RD's VII.F boundary note is at `d0d9aaa8`: the first post-boundary run, 200 / 186, is quiet.
+  - Record: `docs/superpowers/plans/2026-10-26-d84-soft-stop.exec-ledger.md`. Evidence: `~/swing-data/review-transcripts/d84-soft-stop/`.
+  - The worktrees are removed; the branches `d84-exec` and `d84-plan` are KEPT. Main is NOT pushed: it is 168 past origin, and the push is the operator's.
+  - **Standing watches:**
+    - the first real auto-filled entry on a flagged ticker (the live-emitter watch; record it in the exec ledger);
+    - the first live risk-flagged A+ (RD).
+  - **Registered from D84:** D96 (H4 operator-asserted), D97 (the entry form sizes on unfloored equity), D98 (A5-01 re-render staleness), D99 (on a LIVE card the correction affordance offers only `acted_manually`; a swing/web rider, triggered by the next latch-surface touch or D94 (c)). D91, D92 and D93 remain queued.
+- **The background-shell reaper** (CHARC `586ccd6a`): Claude Code stops an IDLE session's background shell under host memory pressure. It is off from the next launch. Until then, keep the session busy with a foreground until-loop wait while a background suite runs.
+
+### Prior state (2026-10-19): **D79 MERGED at `38c1d97d`** (no migration). Next, in order: a tests-only load-flake rider, then the maintenance rider, then the soft-stop arc.
 
 - **D79, the exit identity arc.**
   - Merged `--no-ff` at `38c1d97d` (tree `500f69c9`), cleared by both CHARC and RD at `b6d4b82b`.
