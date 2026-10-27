@@ -86,7 +86,7 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
   - Review: **STOPPED-AND-ROUTED at round 5** (A5-01 was declined and registered as D98), and Reviewer B was clean.
   - The plan 6.3 operator witness PASSED on scratch copies, recorded at `6994d32c` and `cea1b8f7`. CHARC DISCHARGED amendment 3 (a stubbed auto-fill). RD's VII.F boundary note is at `d0d9aaa8`: the first post-boundary run, 200 / 186, is quiet.
   - Record: `docs/superpowers/plans/2026-10-26-d84-soft-stop.exec-ledger.md`. Evidence: `~/swing-data/review-transcripts/d84-soft-stop/`.
-  - The worktrees are removed; the branches `d84-exec` and `d84-plan` are KEPT. Main is NOT pushed: it is 168 past origin, and the push is the operator's.
+  - The worktrees are removed; the branches `d84-exec` and `d84-plan` are KEPT. Main is NOT pushed: it is 173 commits past origin/main as of this commit, and the push is the operator's.
   - **Standing watches:**
     - the first real auto-filled entry on a flagged ticker (the live-emitter watch; record it in the exec ledger);
     - the first live risk-flagged A+ (RD).
