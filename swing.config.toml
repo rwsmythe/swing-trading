@@ -97,6 +97,9 @@ block_if_running_within_seconds = 120     # concurrent-run rejection window
 staging_orphan_age_seconds = 3600          # delete .staging/ without manifest after 1h
 prev_dir_retention_days = 7                # delete .prev/ after N days
 chart_top_n_watch = 10                      # render charts for top-N tag-aware watchlist (chart-scope policy v2; was 5 pre-2026-04-28)
+# Finviz screen widening, stage 1 (2026-10-26; RD's ruling, the lever-1 cap): cap the
+# watch-origin detect pool at 15 (aplus is never capped; each drop writes a #27 audit row).
+detect_watch_pool_cap = 15
 
 [export]
 # Briefing export (spec §6.4)
