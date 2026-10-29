@@ -103,6 +103,18 @@ def test_lever1_cap_none_excess_sorts_last(lever1_db):
     assert audit["dropped_count"] == 1
 
 
+def test_lever1_cap_zero_excess_is_a_value_not_none(lever1_db):
+    # (e) An excess of exactly 0.0 is a VALUE, not a missing one: it ranks
+    # above a negative excess and above None. A truthiness key such as
+    # (not x, -(x or 0.0), ticker) would put 0.0 in the None group and keep W2.
+    rs = {"AAA": (None, 0.20, _LIVE), "W1": (None, 0.0, _LIVE),
+          "W2": (None, -0.10, _LIVE), "W3": (None, None, _LIVE)}
+    conn, audit = _run_capped(lever1_db, watch=("W1", "W2", "W3"),
+                              rs=rs, cap=1)
+    assert _detected(conn) == {"AAA", "W1"}
+    assert audit["dropped_tickers"] == ["W2", "W3"]
+
+
 def test_lever1_cap_equal_excess_tiebreak_ticker_asc(lever1_db, monkeypatch):
     # (c) Equal excess -> ticker ASC decides. The production reader returns
     # rows ORDER BY ticker, which would hide a missing tiebreak behind a
