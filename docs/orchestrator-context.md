@@ -86,7 +86,8 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
   - Review: **STOPPED-AND-ROUTED at round 5** (A5-01 was declined and registered as D98), and Reviewer B was clean.
   - The plan 6.3 operator witness PASSED on scratch copies, recorded at `6994d32c` and `cea1b8f7`. CHARC DISCHARGED amendment 3 (a stubbed auto-fill). RD's VII.F boundary note is at `d0d9aaa8`: the first post-boundary run, 200 / 186, is quiet.
   - Record: `docs/superpowers/plans/2026-10-26-d84-soft-stop.exec-ledger.md`. Evidence: `~/swing-data/review-transcripts/d84-soft-stop/`.
-  - The worktrees are removed; the branches `d84-exec` and `d84-plan` are KEPT. Main is NOT pushed: it is 173 commits past origin/main as of this commit, and the push is the operator's.
+  - The worktrees are removed; the branches `d84-exec` and `d84-plan` are KEPT. Main is pushed.
+- **Widening stage 1 and the cap (2026-10-28):** the cap of 15 (`9a8eeb09`) sorted watch by `rs_rank`, which is NULL on every live row, so `pattern_detect` raised on runs 201 and 202 (a two-night detection hole; RD's v2.5 at `a6134339`). Safe floor `fbcd4dcf` unset the cap. The ranked fix (by `rs_return_12w_vs_spy` desc, `dropped_tickers` in the #27 row) merged at `c84f21cd`, merged head 15631 / 13 / 0, pushed. **Open:** the operator restores the cap to 15 (and drops the safe-floor comment in `swing.config.toml`); CHARC registers D100 (a raise inside `step_guard` leaves no warnings entry) and D101 (no per-run detection-count health check).
   - **Standing watches:**
     - the first real auto-filled entry on a flagged ticker (the live-emitter watch; record it in the exec ledger);
     - the first live risk-flagged A+ (RD).
