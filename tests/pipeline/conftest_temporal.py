@@ -219,9 +219,15 @@ def _seed_run_with_zero_aplus(db):
 
 def _seed_aplus_watch_skip_candidates_and_run(
     db, *, aplus=("AAA",), watch=("WAT1", "WAT2"), skip=("SKP",),
-    data_asof_date="2026-05-19", action_session_date="2026-05-20"):
+    data_asof_date="2026-05-19", action_session_date="2026-05-20",
+    rs_overrides: dict[str, tuple[int | None, float | None, str]] | None = None):
     """Seed a run + EvaluationRun + candidates across buckets; return
-    (conn, cfg, lease, eval_run_id, all_tickers)."""
+    (conn, cfg, lease, eval_run_id, all_tickers).
+
+    ``rs_overrides`` maps ticker -> (rs_rank, rs_return_12w_vs_spy, rs_method)
+    for that row only; tickers absent from it keep the default
+    (85, 12.0, "universe"). The live shape under TT8's SPY fallback is
+    (None, <fraction>, "fallback_spy")."""
     conn, db_path = db
     from swing.data.repos.candidates import insert_candidates, insert_evaluation_run
     from swing.data.models import Candidate, EvaluationRun
@@ -236,12 +242,15 @@ def _seed_aplus_watch_skip_candidates_and_run(
         tickers_evaluated=len(aplus) + len(watch) + len(skip),
         aplus_count=len(aplus), watch_count=len(watch), skip_count=len(skip),
         excluded_count=0, error_count=0))
+    _rs = rs_overrides or {}
+
     def _mk(ticker, bucket):
+        rs_rank, rs_excess, rs_method = _rs.get(ticker, (85, 12.0, "universe"))
         return Candidate(
             ticker=ticker, bucket=bucket, close=15.0, pivot=15.1,
             initial_stop=13.5, adr_pct=2.5, tight_streak=3, pullback_pct=5.0,
-            prior_trend_pct=40.0, rs_rank=85, rs_return_12w_vs_spy=12.0,
-            rs_method="universe", pattern_tag=None, notes=None,
+            prior_trend_pct=40.0, rs_rank=rs_rank, rs_return_12w_vs_spy=rs_excess,
+            rs_method=rs_method, pattern_tag=None, notes=None,
             criteria=tuple(), sector="", industry="")
     rows = ([_mk(t, "aplus") for t in aplus] + [_mk(t, "watch") for t in watch]
             + [_mk(t, "skip") for t in skip])

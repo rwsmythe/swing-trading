@@ -2043,18 +2043,26 @@ def _step_pattern_detect(
             })
         return
 
-    # Dormant Lever 1 (pool-widening 2026-06-04): cap the watch detect pool.
+    # Lever 1 (pool-widening 2026-06-04): cap the watch detect pool when
+    # cfg.pipeline.detect_watch_pool_cap is set (None = uncapped).
     # Fires AFTER the raw-empty guard (the raw pool is non-empty here), so the
     # empty-pool path always emits the empty-pool audit, never the cap audit.
-    # aplus is NEVER capped; watch is ranked by rs_rank ASC (deterministic,
-    # reproducible) + truncated to the cap. Because aplus is uncapped and
-    # cap >= 1, a non-empty raw pool stays non-empty post-cap (no double-emit).
+    # aplus is NEVER capped. watch is ranked by rs_return_12w_vs_spy DESC
+    # (strongest 12-week excess return over SPY first), rows with a None
+    # excess LAST, ticker ASC as the deterministic tiebreak, then truncated
+    # to the cap. The dropped watch tickers are named in the cap audit row.
+    # Because aplus is uncapped and cap >= 1, a non-empty raw pool stays
+    # non-empty post-cap (no double-emit).
     _cap = getattr(cfg.pipeline, "detect_watch_pool_cap", None) if cfg else None
     if _cap is not None:
         _aplus = [c for c in candidates if c.bucket == "aplus"]
-        _watch = sorted((c for c in candidates if c.bucket == "watch"),
-                        key=lambda c: c.rs_rank)  # lowest rs_rank first
+        _watch = sorted(
+            (c for c in candidates if c.bucket == "watch"),
+            key=lambda c: (c.rs_return_12w_vs_spy is None,
+                           -(c.rs_return_12w_vs_spy or 0.0),
+                           c.ticker))
         _kept_watch = _watch[:_cap]
+        _dropped_watch = sorted(c.ticker for c in _watch[_cap:])
         _capped = [c.ticker for c in _aplus] + [c.ticker for c in _kept_watch]
         if len(_capped) < len(detect_pool_tickers) and run_warnings is not None:
             run_warnings.append({
@@ -2068,6 +2076,8 @@ def _step_pattern_detect(
                     "aplus": len(_aplus), "watch": len(_kept_watch)},
                 "dropped_count": len(detect_pool_tickers) - len(_capped),
                 "dropped_bucket": "watch",
+                "dropped_tickers": _dropped_watch,
+                "rank_key": "rs_return_12w_vs_spy desc",
                 "reason": (f"watch detect pool capped at {_cap} "
                            "(cfg.pipeline.detect_watch_pool_cap)"),
             })

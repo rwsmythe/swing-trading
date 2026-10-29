@@ -35,6 +35,117 @@ def test_lever1_active_cap_audit_accuracy(tmp_db_at_head):
     assert audit["dropped_bucket"] == "watch"
     assert audit["expected_pool_by_bucket"] == {"aplus": 1, "watch": 3}
     assert audit["actual_pool_by_bucket"] == {"aplus": 1, "watch": 1}
+    # WHICH watch name survived: the helper default plants an equal excess
+    # (12.0) on every row, so the ticker-ASC tiebreak decides -> W1 kept.
+    assert _detected(conn) == {"AAA", "W1"}
+    assert audit["rank_key"] == "rs_return_12w_vs_spy desc"
+    assert audit["dropped_tickers"] == ["W2", "W3"]
+
+
+# --- Lever 1 rank key: the LIVE shape --------------------------------------
+# TT8 runs on the SPY fallback, so every live watch row carries
+# rs_rank=None, rs_method='fallback_spy' and a fractional excess return in
+# rs_return_12w_vs_spy. The cap ranks watch by that excess DESC, None LAST,
+# ticker ASC -- never by rs_rank.
+_LIVE = "fallback_spy"
+
+
+def _detected(conn) -> set[str]:
+    return {r[0] for r in conn.execute(
+        "SELECT DISTINCT ticker FROM pattern_evaluations").fetchall()}
+
+
+@pytest.fixture
+def lever1_db(request):
+    # tmp_db_at_head under another name: a test parameter named after the
+    # imported fixture is an F811 redefinition in this module.
+    return request.getfixturevalue("tmp_db_at_head")
+
+
+def _run_capped(db, *, watch, rs, cap, aplus=("AAA",)):
+    conn, cfg, lease, eval_run_id, tickers = \
+        _seed_aplus_watch_skip_candidates_and_run(
+            db, aplus=aplus, watch=watch, skip=(), rs_overrides=rs)
+    cfg.pipeline.detect_watch_pool_cap = cap
+    cache = _StubOhlcvCache({t: _build_bars() for t in tickers})
+    warnings: list[dict] = []
+    _drive_detect(conn, cfg, lease, eval_run_id, cache, warnings)
+    audit = next(w for w in warnings
+                 if w["step"] == "pattern_detect" and "dropped_count" in w)
+    return conn, audit
+
+
+def test_lever1_cap_live_shape_null_rs_rank_ranks_by_excess_desc(lever1_db):
+    # (a) Every row rs_rank=None (the live shape). The old rs_rank key raised
+    # TypeError here. W2 carries the highest excess and is not first by
+    # ticker, so neither ticker order nor an ascending sort keeps it.
+    rs = {"AAA": (None, 0.20, _LIVE), "W1": (None, 0.083, _LIVE),
+          "W2": (None, 1.145, _LIVE), "W3": (None, 0.40, _LIVE)}
+    conn, audit = _run_capped(lever1_db, watch=("W1", "W2", "W3"),
+                              rs=rs, cap=1)
+    assert _detected(conn) == {"AAA", "W2"}
+    assert audit["rank_key"] == "rs_return_12w_vs_spy desc"
+    assert audit["dropped_tickers"] == ["W1", "W3"]
+    assert audit["dropped_count"] == 2
+    assert audit["actual_pool_by_bucket"] == {"aplus": 1, "watch": 1}
+
+
+def test_lever1_cap_none_excess_sorts_last(lever1_db):
+    # (b) A None excess sorts LAST: it is dropped before any numeric row,
+    # including a NEGATIVE one (so a None-as-0.0 key would wrongly keep W1
+    # over W3's -0.20).
+    rs = {"AAA": (None, 0.20, _LIVE), "W1": (None, None, _LIVE),
+          "W2": (None, 0.50, _LIVE), "W3": (None, -0.20, _LIVE)}
+    conn, audit = _run_capped(lever1_db, watch=("W1", "W2", "W3"),
+                              rs=rs, cap=2)
+    assert _detected(conn) == {"AAA", "W2", "W3"}
+    assert audit["dropped_tickers"] == ["W1"]
+    assert audit["dropped_count"] == 1
+
+
+def test_lever1_cap_zero_excess_is_a_value_not_none(lever1_db):
+    # (e) An excess of exactly 0.0 is a VALUE, not a missing one: it ranks
+    # above a negative excess and above None. A truthiness key such as
+    # (not x, -(x or 0.0), ticker) would put 0.0 in the None group and keep W2.
+    rs = {"AAA": (None, 0.20, _LIVE), "W1": (None, 0.0, _LIVE),
+          "W2": (None, -0.10, _LIVE), "W3": (None, None, _LIVE)}
+    conn, audit = _run_capped(lever1_db, watch=("W1", "W2", "W3"),
+                              rs=rs, cap=1)
+    assert _detected(conn) == {"AAA", "W1"}
+    assert audit["dropped_tickers"] == ["W2", "W3"]
+
+
+def test_lever1_cap_equal_excess_tiebreak_ticker_asc(lever1_db, monkeypatch):
+    # (c) Equal excess -> ticker ASC decides. The production reader returns
+    # rows ORDER BY ticker, which would hide a missing tiebreak behind a
+    # stable sort, so the reader is wrapped to hand rows back REVERSED.
+    import swing.data.repos.candidates as cand_repo
+    real = cand_repo.fetch_candidates_for_run
+    monkeypatch.setattr(cand_repo, "fetch_candidates_for_run",
+                        lambda conn, run_id: list(reversed(real(conn, run_id))))
+    rs = {"AAA": (None, 0.20, _LIVE), "W1": (None, 0.30, _LIVE),
+          "W2": (None, 0.30, _LIVE), "W3": (None, 0.30, _LIVE)}
+    conn, audit = _run_capped(lever1_db, watch=("W1", "W2", "W3"),
+                              rs=rs, cap=2)
+    assert _detected(conn) == {"AAA", "W1", "W2"}
+    assert audit["dropped_tickers"] == ["W3"]
+
+
+@pytest.mark.parametrize("rs_ranks", [
+    # rs_rank DESC would keep W1 (95); the excess winner is W2.
+    {"W1": 95, "W2": 10},
+    # rs_rank ASC (the pre-fix key) would keep W1 (10); the winner is W2.
+    {"W1": 10, "W2": 95},
+], ids=["rs_rank_desc_disagrees", "rs_rank_asc_disagrees"])
+def test_lever1_cap_rs_rank_populated_is_not_the_key(lever1_db, rs_ranks):
+    # (d) rs_rank POPULATED and disagreeing with the excess in BOTH directions:
+    # the excess decides either way, so rs_rank is not the key.
+    rs = {"AAA": (50, 0.20, "universe"),
+          "W1": (rs_ranks["W1"], 0.05, "universe"),
+          "W2": (rs_ranks["W2"], 0.90, "universe")}
+    conn, audit = _run_capped(lever1_db, watch=("W1", "W2"), rs=rs, cap=1)
+    assert _detected(conn) == {"AAA", "W2"}
+    assert audit["dropped_tickers"] == ["W1"]
 
 
 def test_lever1_cap_must_be_positive():
