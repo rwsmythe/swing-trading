@@ -694,3 +694,12 @@ def test_r5_f2_the_transcript_read_is_explicitly_bounded(tmp_path, monkeypatch):
     usage = hook._last_usage_dict(path)
     assert usage is not None and usage["input_tokens"] == 123_000
     assert sizes and all(0 < n <= hook._CTX_TAIL_BYTES for n in sizes), sizes
+
+
+@pytest.mark.parametrize("bad", ["0", "-5"])
+def test_r5_f5_nonpositive_window_and_cap_overrides_keep_the_defaults(
+        tmp_path, bad):
+    path = _write(tmp_path, "t.jsonl", _usage_line(250_000))
+    notice = hook.context_depth_notice(
+        str(path), {"HARNESS_CTX_WINDOW": bad, "HARNESS_CTX_CAP": bad}, "charc")
+    assert notice == "[ctx] 250K of 1000K (25%)"

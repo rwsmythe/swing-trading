@@ -246,14 +246,20 @@ _ROLLOVER_DOC = {"orchestrator": "docs/orchestrator-handoff-<date>.md"}
 
 
 def _int_env(env, name: str, default: int) -> int:  # noqa: ANN001
-    """default, unless env[name] parses as an int (bad/missing -> default)."""
+    """default, unless env[name] parses as a POSITIVE int.
+
+    Bad, missing, zero and negative values all keep the default: a window of
+    0 would print "of 0K" and a nonpositive cap would trigger the roll-over
+    warning on every prompt (Reviewer A R5 F5).
+    """
     raw = env.get(name)
     if raw is None:
         return default
     try:
-        return int(raw)
+        value = int(raw)
     except (TypeError, ValueError):
         return default
+    return value if value > 0 else default
 
 
 def _fmt_k(n: int) -> str:
