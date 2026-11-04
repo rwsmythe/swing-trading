@@ -453,7 +453,9 @@ def _read_frontmatter(path: Path) -> dict[str, str]:
     fm: dict[str, str] = {}
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Unreadable OR not UTF-8: no frontmatter. A corrupt unrelated file
+        # among the read/ candidates must not abort a verify (Reviewer A R2 F2).
         return fm
     if not text.startswith("---"):
         return fm

@@ -780,3 +780,35 @@ def test_r2_f1_an_ack_during_the_first_read_with_an_archived_twin_verifies(
     landed = _verified_path(out)
     assert landed.name.endswith("-2.md") and landed.parent.name == "read"
     assert landed.is_file()
+
+
+def test_r2_f2_read_frontmatter_treats_invalid_utf8_as_unreadable(tmp_path):
+    bad = tmp_path / "bad.md"
+    bad.write_bytes(b"---\nfrom: \xff\xfe\x80\n---\n\nbody\n")
+    assert rm._read_frontmatter(bad) == {}
+
+
+def test_r2_f2_a_corrupt_unrelated_archive_does_not_abort_verification(
+        root, capsys, monkeypatch):
+    # An unrelated read/<name>.md holding invalid UTF-8 sits where our acked
+    # message's search reads first; the verify must skip it and find ours at
+    # read/<name>-2.md, not die with a UnicodeDecodeError traceback.
+    _freeze_now(monkeypatch)
+    first = rm.post_message(root, "charc", ["operator"], "status", "same", "b")
+    archived = rm.ack_message(root, "operator", first[0].name)
+    archived.write_bytes(b"---\nfrom: \xff\xfe\x80\n---\n\ncorrupt\n")
+    real_post = rm.post_message
+
+    def post_then_ack(root_, sender, recipients, mtype, subject, body,
+                      thread=None, posted_ids=None):
+        finals = real_post(root_, sender, recipients, mtype, subject, body,
+                           thread, posted_ids=posted_ids)
+        for f in finals:
+            rm.ack_message(root_, "operator", f.name)
+        return finals
+
+    monkeypatch.setattr(rm, "post_message", post_then_ack)
+    rc, out, err = _run(capsys, _pv(root, subject="same"))
+    assert rc == 0, err
+    landed = _verified_path(out)
+    assert landed.name.endswith("-2.md") and landed.parent.name == "read"
