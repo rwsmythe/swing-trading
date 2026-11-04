@@ -91,22 +91,20 @@ running: HOLD -- dispatch nothing new, await the return, QA, commit, then roll;
 if context cannot survive the wait, stop the cell and WIP-commit its worktree
 FIRST. The MIRROR binds too: at or past 400K, dispatch NOTHING new -- that
 dispatch is your successor's to make. Below 400K it is YOURS, whatever the
-QA costs. Then four acts, in this order, nothing between them:
+QA costs. The precondition also covers ANY BACKGROUND JOB OF YOUR OWN (2026-11-03,
+from the template; operator-directed 2026-11-02: "the generations should not have
+handed over if the previous generation was still working"): a process spawned
+from your pane dies when the pane closes -- at the cap with a job running, wait
+for its exit line and record it, then roll; near the cap start no long job you
+cannot see finish. Then THREE acts, in this order, nothing between them (the
+former act 3, stop the inbox Monitor, was retired 2026-11-03 as a two-month
+no-op; a seat that armed one under the named exception stops it BEFORE act 2,
+with the process-tree-scoped check in harness-architecture section 6):
   1. Overwrite docs/charc-state.md and COMMIT it (pathspec commit, no trailer).
   2. Post the rollover announcement (status, --to rd,orchestrator) and STOP
      DRAINING -- peek only from here. The Stop hook's "drain now" is VOID for
      you from this act on: obeying it swallows your successor's first mail.
-  3. If a Monitor of yours is still armed (a pre-2026-09-15 generation),
-     TaskStop it and verify as before; a generation on the ping convention
-     has nothing to stop. SCOPED TO YOUR OWN PROCESS TREE: from PowerShell,
-     for each bash.exe whose CommandLine
-     matches charc/inbox, walk its parent chain; a match that reaches YOUR
-     claude.exe (found by walking up from the checking shell's own $PID) is a
-     stop failure to report; a match that does NOT is another session watching
-     this inbox -- report it as such, NEVER kill it. (2026-09-14: TaskStop kills
-     the loop and its children within 3 s; the first, path-scoped form of this
-     check returned another live seat's loop as a "survivor".)
-  4. LAST ACT: run the launcher for your own role in FRESH mode, DryRun first:
+  3. LAST ACT: run the launcher for your own role in FRESH mode, DryRun first:
          powershell -NoProfile -File scripts/start_directors.ps1 -Role charc -DryRun
          powershell -NoProfile -File scripts/start_directors.ps1 -Role charc
      then go idle. The operator closes this pane at leisure. Never -Resume.
