@@ -450,3 +450,30 @@ def test_subprocess_ctx_line_from_a_real_bom_payload(tmp_path):
         capture_output=True, env=env, timeout=30)
     assert proc.returncode == 0
     assert proc.stdout.decode("ascii").strip() == "[ctx] 90K of 1000K (9%)"
+
+
+# --- Reviewer A round 1 fixes ----------------------------------------------------
+
+def test_r1_f9_comms_roles_really_come_from_the_sibling_role_mail(tmp_path):
+    # Non-vacuous single-source pin: a staged sibling role_mail with a
+    # DISTINGUISHABLE VALID_TO must be adopted (the frozen fallback cannot
+    # pass this).
+    (tmp_path / "comms_unread_hook.py").write_bytes(_HOOK_PATH.read_bytes())
+    (tmp_path / "role_mail.py").write_text(
+        'VALID_TO = ("alpha", "beta")\n', encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "_hook_stub_role_mail", tmp_path / "comms_unread_hook.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert tuple(mod.COMMS_ROLES) == ("alpha", "beta")
+
+
+def test_r1_f8_unknown_role_never_reaches_the_cap_line(tmp_path):
+    # An unrecognised (here non-ASCII) role must not be interpolated into the
+    # state-doc path: the line stays ASCII and names the generic doc.
+    path = _write(tmp_path, "cap.jsonl", _usage_line(450_000))
+    notice = hook.context_depth_notice(str(path), {}, "r\u00e9le")
+    notice.encode("ascii")
+    assert "docs/role-state.md" in notice
+    notice = hook.context_depth_notice(str(path), {}, "not-a-role")
+    assert "docs/role-state.md" in notice

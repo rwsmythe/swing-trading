@@ -250,7 +250,10 @@ def context_depth_notice(transcript_path, env, role: str | None) -> str | None: 
     pct = round(depth * 100 / window) if window else 0
     line = f"[ctx] {_fmt_k(depth)} of {_fmt_k(window)} ({pct}%)"
     if depth >= cap:
-        role_label = role or "role"
+        # Only a KNOWN comms role names its own state doc; anything else (unset,
+        # unknown, non-ASCII) gets the generic label, so the line stays ASCII
+        # (Reviewer A R1 F8).
+        role_label = role if role in COMMS_ROLES else "role"
         doc = _ROLLOVER_DOC.get(role_label, f"docs/{role_label}-state.md")
         line += (f" -- DEPTH CAP {_fmt_k(cap)} REACHED: roll over at the next "
                  f"boundary (write {doc}, announce, stop draining)")
