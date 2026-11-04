@@ -688,6 +688,12 @@ def ack_message(root: Path, role: str, filename: str,
     if not src.is_file():
         raise MailError(
             f"no inbox message named {filename!r} for role {role}")
+    if not _within(root, src):
+        # A message FILE that is itself a link out of the tree (Reviewer A R1
+        # F2): refused like an escaping dir. Nothing is moved.
+        raise MailError(
+            f"refusing to ack {src}: it resolves OUTSIDE the mailbox root "
+            f"{root} (symlink/junction escape); nothing was moved.")
     _guarded_mkdir(root, read_dir)  # guard the DEST side
     dest = _unique_dest(read_dir, src.name)
     src.rename(dest)
@@ -761,11 +767,13 @@ def cmd_post(args: argparse.Namespace) -> int:
 
 
 def _print_posted(root: Path, finals: list[Path],
-                  verified: bool = False) -> None:
+                  verified_at: dict[Path, Path] | None = None) -> None:
     """The per-delivery console lines shared by post and post-verified.
 
-    ``posted ->`` then ``ping ->`` per delivery (post-verified adds
-    ``verified -> <absolute path>``). The ping line is READ-ONLY output
+    ``posted ->`` then ``ping ->`` per delivery. post-verified passes
+    ``verified_at`` (final -> where the message ACTUALLY is now -- the inbox,
+    or the read/ file a receiver acked it into) and gets a third line,
+    ``verified -> <absolute path>``. The ping line is READ-ONLY output
     computed AFTER the post already succeeded: a missing/malformed session map
     must never fail the post or change its exit code (D57 C2).
     """
@@ -774,8 +782,9 @@ def _print_posted(root: Path, finals: list[Path],
         role = final.parent.parent.name
         print(f"posted -> {role}/inbox/{_ascii(final.name)}")
         print(_ping_line(role, session_map))
-        if verified:
-            print(_ascii(f"verified -> {final.absolute()}"))
+        if verified_at is not None:
+            where = verified_at.get(final) or final
+            print(_ascii(f"verified -> {where.absolute()}"))
 
 
 # --- post-verified: post + confirm the landing in ONE call ------------------
@@ -787,12 +796,24 @@ def _print_posted(root: Path, finals: list[Path],
 # a post from a worktree cwd landed in the worktree's gitignored comms/.
 
 def _same_dir(a: Path, b: Path) -> bool:
-    """True iff two paths name the same directory (existing or not)."""
+    """True iff two paths name the same directory (existing or not).
+
+    samefile when both exist; otherwise the RESOLVED paths are compared, so a
+    not-yet-created child reached through a symlinked/junctioned parent still
+    matches its real spelling (Reviewer A R1 F5).
+    """
     with contextlib.suppress(OSError, ValueError):
         if a.exists() and b.exists():
             return os.path.samefile(str(a), str(b))
-    return (os.path.normcase(os.path.abspath(str(a)))
-            == os.path.normcase(os.path.abspath(str(b))))
+
+    def _norm(p: Path) -> str:
+        try:
+            resolved = Path(p).resolve()
+        except (OSError, RuntimeError, ValueError):
+            resolved = Path(os.path.abspath(str(p)))
+        return os.path.normcase(str(resolved))
+
+    return _norm(a) == _norm(b)
 
 
 def _linked_checkout_primary(repo_root: Path) -> Path | None:
@@ -813,6 +834,10 @@ def _linked_checkout_primary(repo_root: Path) -> Path | None:
         if not text.lower().startswith(prefix):
             return None
         pointer = Path(text[len(prefix):].strip())
+        if not pointer.is_absolute():
+            # A relative pointer is relative to the CHECKOUT, never the
+            # process cwd (Reviewer A R1 F6).
+            pointer = Path(os.path.normpath(str(repo_root / pointer)))
         for parent in pointer.parents:
             if parent.name == ".git":
                 return parent.parent
@@ -831,18 +856,66 @@ def _read_sibling(inbox_path: Path) -> Path | None:
     return inbox_path.parent.parent / "read" / inbox_path.name
 
 
+def _landing_candidates(inbox_final: Path, by_nonce: bool) -> list[Path]:
+    """Where a delivered message may legitimately be now, in search order.
+
+    The addressed inbox path, then its ``read/`` sibling (a receiver acked it
+    in the verify gap). When searching BY NONCE, also the ``read/<stem>-N.md``
+    names ``_unique_dest`` gives an ack whose plain name was already taken --
+    e.g. a same-second, same-subject twin acked earlier (Reviewer A R1 F1).
+    """
+    out = [inbox_final]
+    sibling = _read_sibling(inbox_final)
+    if sibling is None:
+        return out
+    out.append(sibling)
+    if by_nonce and sibling.parent.is_dir():
+        pat = re.compile(re.escape(sibling.stem) + r"-(\d+)\.md")
+        suffixed = []
+        for cand in sibling.parent.glob(sibling.stem + "-*.md"):
+            m = pat.fullmatch(cand.name)
+            if m:
+                suffixed.append((int(m.group(1)), cand))
+        out.extend(c for _n, c in sorted(suffixed))
+    return out
+
+
+def _locate_landing(inbox_final: Path, want_msg_id: str | None = None
+                    ) -> tuple[Path | None, dict[str, str]]:
+    """(where the message REALLY is now, its frontmatter), or (None, {}).
+
+    With ``want_msg_id`` the message is located by its nonce among the
+    candidates (falling back to the first readable candidate, so a mismatch
+    is REPORTED as a header-twin rather than as "did not land"). A candidate
+    that vanishes between its existence check and its read was acked in that
+    instant: the search moves on to the read/ candidates instead of reporting
+    it unreadable (Reviewer A R1 F3). Two passes cover an ack landing between
+    passes.
+    """
+    for _attempt in range(2):
+        fallback: tuple[Path, dict[str, str]] | None = None
+        for cand in _landing_candidates(inbox_final, want_msg_id is not None):
+            if not cand.is_file():
+                continue
+            fm = _read_frontmatter(cand)
+            if not fm and not cand.is_file():
+                continue  # moved (acked) between the check and the read
+            if want_msg_id is None or fm.get("msg-id") == want_msg_id:
+                return cand, fm
+            if fallback is None:
+                fallback = (cand, fm)
+        if fallback is not None:
+            return fallback
+    return None, {}
+
+
 def _actual_landing(inbox_final: Path) -> Path | None:
     """Where the message REALLY is now, or None if it is nowhere.
 
     The addressed inbox path, or -- if a receiver acked it in the verify gap --
     the ``read/`` sibling (an ack is normal traffic, not a delivery failure).
     """
-    if inbox_final.is_file():
-        return inbox_final
-    sibling = _read_sibling(inbox_final)
-    if sibling is not None and sibling.is_file():
-        return sibling
-    return None
+    return _locate_landing(inbox_final)[0]
 
 
 def _landed_in_expected(landed_dir: Path, expected_inbox: Path) -> bool:
@@ -859,6 +932,19 @@ def _verify_landing(root: Path, final: Path, sender: str, mtype: str,
                     want_msg_id: str | None = None) -> str | None:
     """Why `final` is NOT a valid landing under `root`, or None if it is.
 
+    The problem string of _check_landing (which also returns where the message
+    was found and its frontmatter, for the caller's accounting).
+    """
+    return _check_landing(root, final, sender, mtype, subject, want_posted,
+                          want_msg_id)[0]
+
+
+def _check_landing(root: Path, final: Path, sender: str, mtype: str,
+                   subject: str, want_posted: str | None = None,
+                   want_msg_id: str | None = None
+                   ) -> tuple[str | None, Path | None, dict[str, str]]:
+    """(problem-or-None, where it landed, its frontmatter) for one delivery.
+
     Checks the message is really on disk (in its addressed ``inbox/`` OR the
     ``read/`` sibling a receiver may have acked it into), really CONTAINED in
     the mailbox root once symlinks/junctions are RESOLVED, really in the inbox
@@ -867,28 +953,31 @@ def _verify_landing(root: Path, final: Path, sender: str, mtype: str,
     ``want_msg_id``) -- really is THE specific message just composed rather
     than a header-twin sharing from/to/type/subject.
     """
-    landed = _actual_landing(final)
+    landed, fm = _locate_landing(final, want_msg_id)
     if landed is None:
-        return f"did not land at all: {final} is not there"
+        return f"did not land at all: {final} is not there", None, {}
     if not _within(root, landed):
-        return f"landed OUTSIDE the mailbox root: {landed}"
-    fm = _read_frontmatter(landed)
+        return f"landed OUTSIDE the mailbox root: {landed}", landed, fm
     if not fm:
-        return f"landed unreadable (no frontmatter): {landed}"
+        return f"landed unreadable (no frontmatter): {landed}", landed, fm
     label = fm.get("to", "")
     try:
         role, _sid = _split_target(label)
         expected = _inbox_for_target(root, role)
     except MailError as exc:
-        return f"landed carrying an unusable 'to: {label}' ({exc}): {landed}"
+        return (f"landed carrying an unusable 'to: {label}' ({exc}): {landed}",
+                landed, fm)
     if not _landed_in_expected(landed.parent, expected):
         return (f"landed in the WRONG inbox: {landed} -- addressed to "
-                f"{label!r}, whose inbox is {expected}")
+                f"{label!r}, whose inbox is {expected}"), landed, fm
+    # The frontmatter reader strips each value, so compare against the
+    # stripped request (a subject with surrounding spaces delivers fine and
+    # must verify fine -- Reviewer A R1 F4).
     for field, want in (("from", sender), ("type", mtype),
                         ("subject", subject)):
-        if fm.get(field) != want:
+        if fm.get(field) != str(want).strip():
             return (f"landed with {field}={fm.get(field)!r}, expected "
-                    f"{want!r}: {landed}")
+                    f"{want!r}: {landed}"), landed, fm
     # D1 per-message discriminator: a landing matching the shared headers but
     # carrying a DIFFERENT stamp/nonce is a header-twin, not our message.
     # Skipped when the discriminators are absent (a mocked post / a legacy
@@ -896,12 +985,12 @@ def _verify_landing(root: Path, final: Path, sender: str, mtype: str,
     if want_posted is not None and fm.get("posted") != want_posted:
         return (f"landed with posted={fm.get('posted')!r}, expected "
                 f"{want_posted!r} (header-twin, not the message just posted): "
-                f"{landed}")
+                f"{landed}"), landed, fm
     if want_msg_id is not None and fm.get("msg-id") != want_msg_id:
         return (f"landed with msg-id={fm.get('msg-id')!r}, expected "
                 f"{want_msg_id!r} (header-twin, not the message just posted): "
-                f"{landed}")
-    return None
+                f"{landed}"), landed, fm
+    return None, landed, fm
 
 
 def _landing_matches_request(token: str, landed: list[tuple[str, str]],
@@ -964,23 +1053,25 @@ def cmd_post_verified(args: argparse.Namespace) -> int:
     want_by_final = {f: (posted, mid) for f, _lbl, posted, mid in posted_ids}
     posted_msg_ids = {mid for _f, _lbl, _p, mid in posted_ids}
 
+    # ONE locate+read per delivery: the same (path, frontmatter) feeds the
+    # landing check, the per-recipient accounting and the verified -> line,
+    # so an ack between two separate reads cannot make them disagree
+    # (Reviewer A R1 F3/F7). The read follows the message to the read/ file
+    # a receiver may have acked it into.
     problems: list[str] = []
+    landed: list[tuple[str, str]] = []
+    verified_at: dict[Path, Path] = {}
     for f in finals:
         want_posted, want_msg_id = want_by_final.get(f, (None, None))
-        problem = _verify_landing(root, f, sender, args.type, args.subject,
-                                  want_posted, want_msg_id)
+        problem, where, lfm = _check_landing(
+            root, f, sender, args.type, args.subject, want_posted, want_msg_id)
         if problem is not None:
             problems.append(problem)
-
-    # Read each landed file where it REALLY is now (incl. the read/ sibling a
-    # receiver may have acked it into) and tie each requested recipient to
-    # THIS post's messages, not the shared label alone.
-    landed: list[tuple[str, str]] = []
-    for f in finals:
-        actual = _actual_landing(f)
-        if actual is not None:
-            lfm = _read_frontmatter(actual)
+        if where is not None:
+            verified_at[f] = where
             landed.append((lfm.get("to", ""), lfm.get("msg-id", "")))
+    # Tie each requested recipient to THIS post's messages, not the shared
+    # label alone.
     for token in dict.fromkeys(recipients):
         if not _landing_matches_request(token, landed, posted_msg_ids):
             landed_labels = [lbl for lbl, _ in landed]
@@ -993,20 +1084,37 @@ def cmd_post_verified(args: argparse.Namespace) -> int:
             + "; ".join(problems)
             + ". The write path reported success, so treat the message as "
               "NOT delivered until this is resolved.")
-    _print_posted(root, finals, verified=True)
+    _print_posted(root, finals, verified_at=verified_at)
     return 0
+
+
+def _contained_files(root: Path, d: Path) -> list[Path]:
+    """The *.md files of `d`, REFUSING the lot if any resolves outside `root`.
+
+    The per-FILE half of the enumeration guard (Reviewer A R1 F2): a contained
+    inbox holding a message file that is itself a link out of the tree is
+    refused BEFORE any path is returned, so nothing is listed, read or printed.
+    """
+    paths = sorted(d.glob("*.md")) if d.is_dir() else []
+    for path in paths:
+        if not _within(root, path):
+            raise MailError(
+                f"refusing to enumerate {path}: it resolves OUTSIDE the mailbox "
+                f"root {root} (symlink/junction escape); nothing was read.")
+    return paths
 
 
 def _list_inbox(root: Path, role: str) -> list[Path]:
     # The enumeration choke shared by read/list/peek -- guarded FIRST so a
-    # junctioned inbox is refused BEFORE any glob/read/print (T3).
+    # junctioned inbox (or an escaping message file) is refused BEFORE any
+    # glob result is read or printed (T3).
     inbox = _guarded_enum_dir(root, _role_inbox_dir(root, role))
-    return sorted(inbox.glob("*.md")) if inbox.is_dir() else []
+    return _contained_files(root, inbox)
 
 
 def _list_read(root: Path, role: str) -> list[Path]:
     rd = _guarded_enum_dir(root, _role_read_dir(root, role))
-    return sorted(rd.glob("*.md")) if rd.is_dir() else []
+    return _contained_files(root, rd)
 
 
 def cmd_list(args: argparse.Namespace) -> int:

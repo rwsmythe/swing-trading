@@ -598,3 +598,154 @@ def test_post_verified_output_is_ascii(root, capsys):
     rc, out, err = _run(capsys, _pv(root, subject="rocket \U0001F680"))
     assert rc == 0
     (out + err).encode("ascii")
+
+
+# --- Reviewer A round 1 fixes ----------------------------------------------------
+
+def _freeze_now(monkeypatch):
+    from datetime import UTC, datetime
+    fixed = datetime(2026, 11, 3, 12, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(rm, "_now", lambda: fixed)
+
+
+def _verified_path(out: str) -> Path:
+    line = next(ln for ln in out.splitlines() if ln.startswith("verified -> "))
+    return Path(line[len("verified -> "):])
+
+
+def test_r1_f1_acked_twin_with_a_suffixed_archive_name_still_verifies(
+        root, capsys, monkeypatch):
+    # Same sender + subject twice in one second, each acked: the second reuses
+    # the inbox basename (the first was moved out) and its ack archives it as
+    # <stem>-2.md. The verify must find THAT file by its nonce, not reject the
+    # earlier message sitting at the unsuffixed read/ name.
+    _freeze_now(monkeypatch)
+    first = rm.post_message(root, "charc", ["operator"], "status", "same", "b")
+    rm.ack_message(root, "operator", first[0].name)
+    real_post = rm.post_message
+
+    def post_then_ack(root_, sender, recipients, mtype, subject, body,
+                      thread=None, posted_ids=None):
+        finals = real_post(root_, sender, recipients, mtype, subject, body,
+                           thread, posted_ids=posted_ids)
+        for f in finals:
+            rm.ack_message(root_, "operator", f.name)
+        return finals
+
+    monkeypatch.setattr(rm, "post_message", post_then_ack)
+    rc, out, err = _run(capsys, _pv(root, subject="same"))
+    assert rc == 0, err
+    landed = _verified_path(out)
+    assert landed.name.endswith("-2.md") and landed.parent.name == "read"
+    assert landed.is_file()
+
+
+def test_r1_f7_verified_line_names_the_actual_landing_after_an_ack(
+        root, capsys, monkeypatch):
+    real_post = rm.post_message
+
+    def post_then_ack(root_, sender, recipients, mtype, subject, body,
+                      thread=None, posted_ids=None):
+        finals = real_post(root_, sender, recipients, mtype, subject, body,
+                           thread, posted_ids=posted_ids)
+        for f in finals:
+            rm.ack_message(root_, "operator", f.name)
+        return finals
+
+    monkeypatch.setattr(rm, "post_message", post_then_ack)
+    rc, out, _ = _run(capsys, _pv(root))
+    assert rc == 0
+    landed = _verified_path(out)
+    assert landed.parent.name == "read" and landed.is_file()
+    # the posted -> line is unchanged (it names the addressed inbox)
+    assert out.splitlines()[0].startswith("posted -> operator/inbox/")
+
+
+def test_r1_f3_an_ack_between_exists_and_read_is_not_a_failure(
+        root, capsys, monkeypatch):
+    real_read = rm._read_frontmatter
+    acked: list[str] = []
+
+    def read_after_ack(path):
+        path = Path(path)
+        if path.parent.name == "inbox" and not acked:
+            acked.append(path.name)
+            rm.ack_message(root, path.parent.parent.name, path.name)
+        return real_read(path)
+
+    monkeypatch.setattr(rm, "_read_frontmatter", read_after_ack)
+    rc, out, err = _run(capsys, _pv(root))
+    assert acked, "the race was not exercised"
+    assert rc == 0, err
+    assert _verified_path(out).parent.name == "read"
+
+
+def test_r1_f4_a_subject_with_surrounding_spaces_verifies(root, capsys):
+    rc, _, err = _run(capsys, _pv(root, subject=" padded subject "))
+    assert rc == 0, err
+
+
+def test_r1_f5_same_dir_resolves_a_linked_parent_for_missing_children(
+        tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    _link_or_skip(tmp_path / "alias", real)
+    assert rm._same_dir(tmp_path / "alias" / "new-comms", real / "new-comms")
+    assert not rm._same_dir(tmp_path / "alias" / "new-comms", real / "other")
+
+
+def test_r1_f6_a_relative_gitdir_pointer_resolves_against_the_checkout(
+        tmp_path, monkeypatch):
+    primary = tmp_path / "main"
+    linked = primary / ".worktrees" / "wt"
+    (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    linked.mkdir(parents=True)
+    (linked / ".git").write_text("gitdir: ../../.git/worktrees/wt\n",
+                                 encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    got = rm._linked_checkout_primary(linked)
+    assert got is not None and got.resolve() == primary.resolve()
+
+
+def test_r1_f2_enumeration_refuses_an_escaping_message_file(root, monkeypatch,
+                                                            capsys):
+    # Deterministic: a message FILE (not its dir) that resolves outside.
+    rm.post_message(root, "operator", ["charc"], "fyi", "s", "SECRET-BODY")
+    real_within = rm._within
+
+    def file_escapes(parent, child):
+        if Path(child).suffix == ".md":
+            return False
+        return real_within(parent, child)
+
+    monkeypatch.setattr(rm, "_within", file_escapes)
+    for cmd in ("read", "peek", "list"):
+        argv = ["--comms-root", str(root), cmd, "--role", "charc"]
+        rc, out, err = _run(capsys, argv + (["--all"] if cmd == "read" else []))
+        assert rc == 1, cmd
+        assert "SECRET-BODY" not in out, cmd
+        assert "OUTSIDE the mailbox root" in err, cmd
+    assert len(list((root / "charc" / "inbox").glob("*.md"))) == 1  # not acked
+
+
+def test_r1_f2_a_real_file_symlink_in_a_contained_inbox_is_refused(
+        root, outside, capsys):
+    ext = outside / "message.md"
+    ext.write_text("---\nfrom: operator\nto: charc\ntype: fyi\nsubject: s\n"
+                   "posted: x\n---\n\nEXTERNAL-FILE-BODY\n", encoding="utf-8")
+    inbox = root / "charc" / "inbox"
+    inbox.mkdir(parents=True)
+    try:
+        os.symlink(str(ext), str(inbox / "external.md"))
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink on this box")
+    rc, out, err = _run(capsys, ["--comms-root", str(root), "peek",
+                                 "--role", "charc"])
+    assert rc == 1
+    assert "EXTERNAL-FILE-BODY" not in out
+    assert "OUTSIDE the mailbox root" in err
+    with pytest.raises(rm.MailError, match="OUTSIDE the mailbox root"):
+        rm.ack_message(root, "charc", "external.md")
+    assert (inbox / "external.md").is_symlink()
