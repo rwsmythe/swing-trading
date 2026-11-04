@@ -934,3 +934,15 @@ def test_r3_f3_an_empty_comms_root_counts_as_defaulted(linked_pair, capsys,
     assert "notice:" in err
     assert str((primary / "comms").absolute()) in err
     assert len(list((linked / "comms" / "operator" / "inbox").glob("*.md"))) == 1
+
+
+@pytest.mark.parametrize("cmd", ["post", "post-verified"])
+def test_r3_f4_a_non_utf8_sessions_map_never_fails_a_post(root, capsys, cmd):
+    # A corrupt .sessions.json must read as "no session recorded", never raise
+    # after the delivery already succeeded.
+    (root / ".sessions.json").write_bytes(b'{"rd": {"session_name": "\xff\xfe"}}')
+    rc, out, err = _run(capsys, ["--comms-root", str(root), cmd, "--from",
+                                 "charc", "--to", "rd", "--type", "status",
+                                 "--subject", "s", "--body", "b"])
+    assert rc == 0, err
+    assert "ping -> rd: no session recorded" in out

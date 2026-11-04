@@ -721,7 +721,7 @@ def _read_session_map(root: Path) -> dict[str, str]:
     path = root / ".sessions.json"
     try:
         text = path.read_text(encoding="utf-8-sig")
-    except OSError:
+    except (OSError, UnicodeDecodeError):  # not UTF-8 -> no map (R3 F4)
         return {}
     try:
         obj = json.loads(text)
