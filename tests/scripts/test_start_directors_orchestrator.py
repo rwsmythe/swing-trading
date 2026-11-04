@@ -472,11 +472,18 @@ def test_dryrun_a_directory_is_not_a_bash(tmp_path):
     assert "cmd:" not in out
 
 
-def test_dryrun_launch_line_sets_git_bash_path_after_scrub_before_claude():
-    r, out = _dryrun("-Role", "charc")
+def test_dryrun_launch_line_sets_git_bash_path_after_scrub_before_claude(
+        tmp_path):
+    # Hermetic (Reviewer A R1 F10): the fast copy is staged through the DryRun
+    # seam, so this ordering pin holds on a box WITHOUT bash-cc.exe too (where
+    # the launcher now correctly falls back). The literal default path is
+    # pinned by the static test above.
+    fast = tmp_path / "bash-cc.exe"
+    fast.write_bytes(b"stub")
+    r, out = _dryrun_env({"HARNESS_BASH_CC_PATH": str(fast)}, "-Role", "charc")
     assert r.returncode == 0
     launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
-    stanza = "$env:CLAUDE_CODE_GIT_BASH_PATH='" + _GIT_BASH_COPY + "'"
+    stanza = "$env:CLAUDE_CODE_GIT_BASH_PATH='" + str(fast) + "'"
     assert stanza in launch
     at = launch.index(stanza)
     last_scrub = max(
