@@ -349,8 +349,12 @@ def main() -> int:
 
 if __name__ == "__main__":
     _rc = main()
+    try:
+        sys.stdout.flush()
+    except Exception:  # noqa: BLE001 -- the stdout reader is gone
+        # Finalization would retry the flush and exit 120; skip it.
+        os._exit(_rc)
     if _stdin_abandoned:
         # A reader thread is still blocked on stdin; skip finalization.
-        sys.stdout.flush()
         os._exit(_rc)
     sys.exit(_rc)

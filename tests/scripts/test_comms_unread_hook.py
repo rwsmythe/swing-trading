@@ -590,3 +590,44 @@ def test_r4_f1_the_decision_request_read_is_bounded(comms, monkeypatch):
     with open(path, "ab") as fh:
         fh.write(b"x" * (2 * hook._DR_HEAD_BYTES))
     assert hook._is_decision_request(path) is True
+
+
+@pytest.mark.parametrize("hold_stdin", [True, False])
+def test_r4_f2_a_closed_stdout_still_exits_0(tmp_path, hold_stdin):
+    # The hook has a notice buffered when its stdout reader goes away. The
+    # final flush fails; the hook must still exit 0 (never the 120 of a failed
+    # finalization flush), on both the abandoned-stdin and the normal path.
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "comms_unread_hook.py").write_bytes(_HOOK_PATH.read_bytes())
+    (scripts / "role_mail.py").write_text(
+        'VALID_TO = ("charc", "rd", "operator", "orchestrator")\n',
+        encoding="utf-8")
+    _make_msg(tmp_path / "comms", "charc")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    env["SWING_ROLE"] = "charc"
+    proc = subprocess.Popen(
+        [sys.executable, str(scripts / "comms_unread_hook.py")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=env)
+    import contextlib
+    try:
+        proc.stdout.close()  # the consumer is gone before the hook writes
+        proc.stdin.write(b"{}\n")
+        proc.stdin.flush()
+        if not hold_stdin:
+            proc.stdin.close()
+        try:
+            rc = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the hook blocked")
+        err = proc.stderr.read()
+        assert rc == 0, err
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for stream in (proc.stdin, proc.stderr):
+            with contextlib.suppress(OSError):
+                stream.close()
