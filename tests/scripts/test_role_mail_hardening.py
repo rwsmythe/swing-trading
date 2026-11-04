@@ -946,3 +946,20 @@ def test_r3_f4_a_non_utf8_sessions_map_never_fails_a_post(root, capsys, cmd):
                                  "--subject", "s", "--body", "b"])
     assert rc == 0, err
     assert "ping -> rd: no session recorded" in out
+
+
+# --- Reviewer A round 4 fixes ----------------------------------------------------
+
+@pytest.mark.parametrize("cmd", ["post", "post-verified"])
+def test_r4_f3_a_non_ascii_session_name_keeps_the_output_ascii(root, capsys,
+                                                               cmd):
+    # A valid map naming a non-ASCII session must not put non-ASCII on the
+    # console (cp1252 would raise after the delivery already succeeded).
+    (root / ".sessions.json").write_text(
+        '{"rd": {"session_name": "rd-\u4e2d"}}', encoding="utf-8")
+    rc, out, err = _run(capsys, ["--comms-root", str(root), cmd, "--from",
+                                 "charc", "--to", "rd", "--type", "status",
+                                 "--subject", "s", "--body", "b"])
+    assert rc == 0, err
+    out.encode("ascii")
+    assert 'ping -> SendMessage to="rd-\\u4e2d"' in out

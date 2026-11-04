@@ -783,7 +783,7 @@ def _print_posted(root: Path, finals: list[Path],
     for final in finals:
         role = final.parent.parent.name
         print(f"posted -> {role}/inbox/{_ascii(final.name)}")
-        print(_ping_line(role, session_map))
+        print(_ascii(_ping_line(role, session_map)))  # R4 F3
         if verified_at is not None:
             where = verified_at.get(final) or final
             print(_ascii(f"verified -> {where.absolute()}"))
