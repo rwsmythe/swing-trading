@@ -840,9 +840,13 @@ def _linked_checkout_primary(repo_root: Path) -> Path | None:
             # A relative pointer is relative to the CHECKOUT, never the
             # process cwd (Reviewer A R1 F6).
             pointer = Path(os.path.normpath(str(repo_root / pointer)))
-        for parent in pointer.parents:
-            if parent.name == ".git":
-                return parent.parent
+        # Only the linked-worktree shape <primary>/.git/worktrees/<name>
+        # names a primary checkout. A submodule pointer (.git/modules/<name>,
+        # and any worktree of one) does not, so it gets no notice rather
+        # than a wrong one (Reviewer A R4 F4).
+        admin = pointer.parent
+        if admin.name == "worktrees" and admin.parent.name == ".git":
+            return admin.parent.parent
     except (OSError, ValueError):
         return None
     return None

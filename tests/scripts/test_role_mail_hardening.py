@@ -963,3 +963,27 @@ def test_r4_f3_a_non_ascii_session_name_keeps_the_output_ascii(root, capsys,
     assert rc == 0, err
     out.encode("ascii")
     assert 'ping -> SendMessage to="rd-\\u4e2d"' in out
+
+
+def test_r4_f4_a_submodule_pointer_is_not_a_linked_worktree(tmp_path):
+    # A submodule's .git FILE points into <super>/.git/modules/<name>; that is
+    # not a linked worktree and must not yield a "primary checkout" notice.
+    sup = tmp_path / "super"
+    (sup / ".git" / "modules" / "mailrepo").mkdir(parents=True)
+    sub = sup / "mailrepo"
+    sub.mkdir()
+    (sub / ".git").write_text(
+        f"gitdir: {(sup / '.git' / 'modules' / 'mailrepo').as_posix()}\n",
+        encoding="utf-8")
+    assert rm._linked_checkout_primary(sub) is None
+    # a worktree of that submodule is not resolvable from the path either:
+    # no notice rather than a wrong one
+    (sup / ".git" / "modules" / "mailrepo" / "worktrees" / "wt").mkdir(
+        parents=True)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(
+        "gitdir: "
+        f"{(sup / '.git' / 'modules' / 'mailrepo' / 'worktrees' / 'wt').as_posix()}"
+        "\n", encoding="utf-8")
+    assert rm._linked_checkout_primary(wt) is None
