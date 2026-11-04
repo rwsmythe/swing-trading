@@ -812,3 +812,109 @@ def test_r2_f2_a_corrupt_unrelated_archive_does_not_abort_verification(
     assert rc == 0, err
     landed = _verified_path(out)
     assert landed.name.endswith("-2.md") and landed.parent.name == "read"
+
+
+# --- Reviewer A round 3 fixes ----------------------------------------------------
+
+def _post_then_ack_patch(monkeypatch):
+    real_post = rm.post_message
+
+    def post_then_ack(root_, sender, recipients, mtype, subject, body,
+                      thread=None, posted_ids=None):
+        finals = real_post(root_, sender, recipients, mtype, subject, body,
+                           thread, posted_ids=posted_ids)
+        for f in finals:
+            rm.ack_message(root_, "operator", f.name)
+        return finals
+
+    monkeypatch.setattr(rm, "post_message", post_then_ack)
+
+
+def test_r3_f2_an_escaping_archive_candidate_is_never_read(root, capsys,
+                                                           monkeypatch):
+    # Deterministic: the archived twin at read/<name>.md resolves OUTSIDE the
+    # root. The verify must not read it while searching for our message (which
+    # was acked to read/<name>-2.md), and must still verify ours.
+    _freeze_now(monkeypatch)
+    first = rm.post_message(root, "charc", ["operator"], "status", "same", "b")
+    twin = rm.ack_message(root, "operator", first[0].name)
+    real_within = rm._within
+
+    def twin_escapes(parent, child):
+        if Path(child).name == twin.name and Path(child).parent.name == "read":
+            return False
+        return real_within(parent, child)
+
+    real_read = rm._read_frontmatter
+    reads: list[str] = []
+
+    def spy_read(path):
+        reads.append(Path(path).name)
+        return real_read(path)
+
+    monkeypatch.setattr(rm, "_within", twin_escapes)
+    monkeypatch.setattr(rm, "_read_frontmatter", spy_read)
+    _post_then_ack_patch(monkeypatch)
+    rc, out, err = _run(capsys, _pv(root, subject="same"))
+    assert rc == 0, err
+    assert _verified_path(out).name.endswith("-2.md")
+    assert twin.name not in reads
+
+
+def test_r3_f2_an_escaping_candidate_alone_is_reported_outside(root, capsys,
+                                                               monkeypatch):
+    # The only landing escapes the root: reported as OUTSIDE, never read.
+    real_within = rm._within
+    real_read = rm._read_frontmatter
+    reads: list[str] = []
+
+    def inbox_md_escapes(parent, child):
+        c = Path(child)
+        if c.suffix == ".md" and c.parent.name == "inbox":
+            return False
+        return real_within(parent, child)
+
+    def spy_read(path):
+        reads.append(Path(path).parent.name)
+        return real_read(path)
+
+    real_post = rm.post_message
+
+    def post_then_patch(*a, **k):
+        finals = real_post(*a, **k)
+        monkeypatch.setattr(rm, "_within", inbox_md_escapes)
+        monkeypatch.setattr(rm, "_read_frontmatter", spy_read)
+        return finals
+
+    monkeypatch.setattr(rm, "post_message", post_then_patch)
+    rc, _out, err = _run(capsys, _pv(root))
+    assert rc == 1
+    assert "landed OUTSIDE the mailbox root" in err
+    assert "inbox" not in reads
+
+
+def test_r3_f2_a_real_external_symlink_twin_is_never_read(root, outside, capsys,
+                                                          monkeypatch):
+    _freeze_now(monkeypatch)
+    first = rm.post_message(root, "charc", ["operator"], "status", "same", "b")
+    twin = rm.ack_message(root, "operator", first[0].name)
+    ext = outside / "external.md"
+    ext.write_bytes(twin.read_bytes())
+    twin.unlink()
+    try:
+        os.symlink(str(ext), str(twin))
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create a file symlink on this box")
+    real_read = rm._read_frontmatter
+    reads: list[Path] = []
+
+    def spy_read(path):
+        reads.append(Path(path))
+        return real_read(path)
+
+    monkeypatch.setattr(rm, "_read_frontmatter", spy_read)
+    _post_then_ack_patch(monkeypatch)
+    rc, out, err = _run(capsys, _pv(root, subject="same"))
+    assert rc == 0, err
+    assert _verified_path(out).name.endswith("-2.md")
+    assert twin not in reads

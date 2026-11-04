@@ -882,7 +882,8 @@ def _landing_candidates(inbox_final: Path, by_nonce: bool) -> list[Path]:
     return out
 
 
-def _locate_landing(inbox_final: Path, want_msg_id: str | None = None
+def _locate_landing(inbox_final: Path, want_msg_id: str | None = None,
+                    root: Path | None = None
                     ) -> tuple[Path | None, dict[str, str]]:
     """(where the message REALLY is now, its frontmatter), or (None, {}).
 
@@ -897,11 +898,20 @@ def _locate_landing(inbox_final: Path, want_msg_id: str | None = None
     from EITHER pass wins; the fallback is returned only after BOTH passes
     miss, never at the end of the first (an older archived twin would
     otherwise pre-empt the retry -- Reviewer A R2 F1).
+
+    With ``root``, a candidate that resolves OUTSIDE it is never READ (a
+    symlinked archive twin must not be opened while searching -- Reviewer A
+    R3 F2); it can still become the fallback, with empty frontmatter, so a
+    landing that only exists outside is reported as such by the caller.
     """
     fallback: tuple[Path, dict[str, str]] | None = None
     for _attempt in range(2):
         for cand in _landing_candidates(inbox_final, want_msg_id is not None):
             if not cand.is_file():
+                continue
+            if root is not None and not _within(root, cand):
+                if fallback is None:
+                    fallback = (cand, {})
                 continue
             fm = _read_frontmatter(cand)
             if not fm and not cand.is_file():
@@ -959,7 +969,7 @@ def _check_landing(root: Path, final: Path, sender: str, mtype: str,
     ``want_msg_id``) -- really is THE specific message just composed rather
     than a header-twin sharing from/to/type/subject.
     """
-    landed, fm = _locate_landing(final, want_msg_id)
+    landed, fm = _locate_landing(final, want_msg_id, root)
     if landed is None:
         return f"did not land at all: {final} is not there", None, {}
     if not _within(root, landed):
