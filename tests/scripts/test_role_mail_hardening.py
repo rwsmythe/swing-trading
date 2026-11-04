@@ -918,3 +918,19 @@ def test_r3_f2_a_real_external_symlink_twin_is_never_read(root, outside, capsys,
     assert rc == 0, err
     assert _verified_path(out).name.endswith("-2.md")
     assert twin not in reads
+
+
+def test_r3_f3_an_empty_comms_root_counts_as_defaulted(linked_pair, capsys,
+                                                       monkeypatch):
+    # --comms-root "" (an empty variable) selects the default root, so it must
+    # also get the linked-checkout notice the default gets.
+    primary, linked = linked_pair
+    monkeypatch.setattr(rm, "_REPO_ROOT", linked)
+    rc = rm.main(["--comms-root", "", "post-verified", "--from", "charc",
+                  "--to", "operator", "--type", "status", "--subject", "s",
+                  "--body", "b"])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "notice:" in err
+    assert str((primary / "comms").absolute()) in err
+    assert len(list((linked / "comms" / "operator" / "inbox").glob("*.md"))) == 1

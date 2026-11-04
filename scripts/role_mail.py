@@ -1031,7 +1031,9 @@ def _landing_matches_request(token: str, landed: list[tuple[str, str]],
 
 def cmd_post_verified(args: argparse.Namespace) -> int:
     root = _comms_root(args)
-    defaulted = getattr(args, "comms_root", None) is None
+    # The same predicate _comms_root uses: an EMPTY --comms-root also selects
+    # the default, so it gets the default's notice (Reviewer A R3 F3).
+    defaulted = not getattr(args, "comms_root", None)
     expect = getattr(args, "expect_root", None)
     mismatch = expect is not None and not _same_dir(root, Path(expect))
     # The notice goes out FIRST, so when the root is also wrong it stands next
