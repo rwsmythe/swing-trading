@@ -56,6 +56,7 @@ from pathlib import Path
 # ANY import-time failure degrades to _IMPORT_OK=False -> main() allow-stops
 # (exit 0), the same fail-OPEN direction as every runtime error path below.
 try:
+    import comms_unread_hook as _unread_hook
     from comms_unread_hook import (
         DIRECTOR_ROLES,
         comms_root_default,
@@ -149,9 +150,14 @@ def main() -> int:
     if not _IMPORT_OK:
         return 0  # R1: sibling import failed at load -> fail-open (allow stop)
     try:
+        # The sibling's bounded reader: a payload pipe that never reaches EOF
+        # is abandoned at its deadline (None) and read as EMPTY -> allow stop,
+        # the fail-open direction (Reviewer A R5 F1).
         try:
-            raw = sys.stdin.buffer.read()
+            raw = _unread_hook._read_stdin_bytes(sys.stdin)
         except Exception:  # noqa: BLE001 -- cannot read stdin -> allow stop
+            raw = b""
+        if raw is None:
             raw = b""
         payload = _parse_stop_payload(raw)
         reason = handle_stop(payload, dict(os.environ), comms_root_default())
@@ -163,4 +169,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if _IMPORT_OK:
+        # Flush under a guard and skip finalization after an abandoned stdin
+        # or a gone stdout reader (never exit 120 -- cell flag 5, R5).
+        _unread_hook.finish_hook_process(main())
+    else:
+        sys.exit(main())

@@ -178,6 +178,26 @@ def _read_stdin_bytes(stdin) -> bytes | None:  # noqa: ANN001
     return box.get("raw", b"")
 
 
+def finish_hook_process(rc: int) -> None:
+    """Exit a hook PROCESS with rc, never hanging or failing on the way out.
+
+    Shared by the three comms hooks' script paths. Flushes stdout/stderr once
+    under a guard: if the reader is gone the flush fails, and normal
+    finalization would retry it and exit 120, so the process leaves through
+    os._exit(rc) instead (Reviewer A R4 F2). After an abandoned stdin read the
+    reader thread still holds sys.stdin's buffer lock, so finalization is
+    skipped the same way (R3 F1). Otherwise a normal sys.exit(rc).
+    """
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 -- the stdout/stderr reader is gone
+        os._exit(rc)
+    if _stdin_abandoned:
+        os._exit(rc)
+    sys.exit(rc)
+
+
 def _read_hook_payload() -> dict:
     """The hook JSON payload from stdin, or {} on any problem.
 
@@ -352,13 +372,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    _rc = main()
-    try:
-        sys.stdout.flush()
-    except Exception:  # noqa: BLE001 -- the stdout reader is gone
-        # Finalization would retry the flush and exit 120; skip it.
-        os._exit(_rc)
-    if _stdin_abandoned:
-        # A reader thread is still blocked on stdin; skip finalization.
-        os._exit(_rc)
-    sys.exit(_rc)
+    finish_hook_process(main())

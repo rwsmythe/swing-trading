@@ -248,3 +248,70 @@ def test_subprocess_exit_0_when_sibling_import_broken(tmp_path):
         "a broken sibling import must fail-OPEN (exit 0), got "
         f"{proc.returncode}: {proc.stderr.decode('utf-8', 'replace')}")
     assert proc.stdout.strip() == b""  # degraded hook emits no block
+
+
+# --- Reviewer A round 5 fixes ----------------------------------------------------
+
+def _popen_hook(script: Path, env: dict):
+    return subprocess.Popen(
+        [sys.executable, str(script)], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+
+
+def _reap(proc) -> None:
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait()
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        with contextlib.suppress(OSError):
+            stream.close()
+
+
+def test_r5_f1_a_held_open_stdin_never_blocks_the_stop_hook():
+    # A director session whose payload pipe never reaches EOF: the hook must
+    # give up on stdin after its deadline and ALLOW the stop (empty payload,
+    # the fail-open direction) -- never hang the turn's end.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    env["SWING_ROLE"] = "charc"
+    proc = _popen_hook(_HOOK_PATH, env)
+    try:
+        proc.stdin.write(b'{"stop_hook_active": false}\n')
+        proc.stdin.flush()
+        try:
+            rc = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the Stop hook blocked on a held-open stdin")
+        assert rc == 0
+        assert proc.stdout.read().strip() == b""   # allowed, never blocked
+        assert b"Fatal Python error" not in proc.stderr.read()
+    finally:
+        _reap(proc)
+
+
+def test_r5_f1_a_closed_stdout_on_the_block_path_still_exits_0(tmp_path):
+    # Cell flag 5: the block decision is buffered when the stdout reader goes
+    # away; the final flush fails, and the hook must still exit 0 (not 120).
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in ("comms_stop_hook.py", "comms_unread_hook.py"):
+        (scripts / name).write_bytes((_DIR / name).read_bytes())
+    (scripts / "role_mail.py").write_text(
+        'VALID_TO = ("charc", "rd", "operator", "orchestrator")\n',
+        encoding="utf-8")
+    _seed_inbox(tmp_path / "comms", "charc")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    env["SWING_ROLE"] = "charc"
+    proc = _popen_hook(scripts / "comms_stop_hook.py", env)
+    try:
+        proc.stdout.close()
+        proc.stdin.write(b'{"stop_hook_active": false}')
+        proc.stdin.close()
+        try:
+            rc = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the Stop hook blocked")
+        assert rc == 0, proc.stderr.read()
+    finally:
+        _reap(proc)
