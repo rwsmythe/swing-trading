@@ -84,11 +84,10 @@ running: HOLD -- dispatch nothing new, await the return, QA, commit, then roll;
 if context cannot survive the wait, stop the cell and WIP-commit its worktree
 FIRST. The MIRROR binds too: at or past 400K, dispatch NOTHING new -- that
 dispatch is your successor's to make. Below 400K it is YOURS, whatever the
-QA costs. THE ONE EXCEPTION (operator-ruled 2026-11-03): a unit you cannot see
-finish inside the WINDOW (1M) -- a dispatch whose cells' life plus QA exceeds
-your remaining window, or a long job that would outlive it -- is rolled BEFORE,
-with the arithmetic in your rollover post; "it would cross 400K" is not that
-arithmetic. Pre-dispatch only, never mid-round, never mid-job. The precondition also covers ANY BACKGROUND JOB OF YOUR OWN (2026-11-03,
+QA costs. NO EXCEPTION (operator-ruled 2026-11-03: "I do not want rollovers to
+happen until after 400k is hit. Once it is hit, rollovers should happen as soon
+as practicable."): a unit you are about to start below 400K is started,
+whatever its size; the roll comes at the first clean boundary after 400K. The precondition also covers ANY BACKGROUND JOB OF YOUR OWN (2026-11-03,
 from the template; operator-directed 2026-11-02: "the generations should not have
 handed over if the previous generation was still working"): a process spawned
 from your pane dies when the pane closes -- at the cap with a job running, wait
