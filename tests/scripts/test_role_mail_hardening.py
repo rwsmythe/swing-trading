@@ -1007,3 +1007,24 @@ def test_self_sweep_a_non_regular_sessions_map_is_never_opened(root, capsys,
     assert rc == 0, err
     assert ".sessions.json" not in opened
     assert "ping -> rd: no session recorded" in out
+
+
+# --- Reviewer A round 6 fixes ----------------------------------------------------
+
+def test_r6_f1_a_sessions_map_metadata_error_never_fails_a_post(root, capsys,
+                                                                monkeypatch):
+    # A PermissionError from the regular-file check itself (older Pythons let
+    # metadata errors escape is_file) must read as no map, never fail the
+    # delivered post.
+    (root / ".sessions.json").write_text("{}", encoding="utf-8")
+    real_is_file = Path.is_file
+
+    def is_file(self):
+        if self.name == ".sessions.json":
+            raise PermissionError("denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    rc, out, err = _run(capsys, _pv(root, to="rd"))
+    assert rc == 0, err
+    assert "ping -> rd: no session recorded" in out

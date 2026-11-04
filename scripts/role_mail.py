@@ -719,12 +719,13 @@ def _read_session_map(root: Path) -> dict[str, str]:
     runs) and never change cmd_post's exit code.
     """
     path = root / ".sessions.json"
-    # Only a regular file is opened: a FIFO or other special file at this name
-    # could block the read after the delivery already succeeded (self-sweep,
-    # the R3 F1 class). is_file() is False for a missing file too.
-    if not path.is_file():
-        return {}
     try:
+        # Only a regular file is opened: a FIFO or other special file at this
+        # name could block the read after the delivery already succeeded
+        # (self-sweep, the R3 F1 class). is_file() is False for a missing file
+        # too, and its own metadata errors land in this handler (R6 F1).
+        if not path.is_file():
+            return {}
         text = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):  # not UTF-8 -> no map (R3 F4)
         return {}
