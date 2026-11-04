@@ -276,12 +276,15 @@ def _last_usage_dict(transcript_path: Path) -> dict | None:
     # the transcript could block open() or read() (Reviewer A R3 F1).
     if not stat.S_ISREG(st.st_mode):
         return None
-    size = st.st_size
     try:
         with open(transcript_path, "rb") as fh:
+            # Size from the OPENED descriptor, and an explicitly bounded read:
+            # a transcript that grows after the stat above can never be read
+            # past the tail bound (Reviewer A R5 F2).
+            size = os.fstat(fh.fileno()).st_size
             if size > _CTX_TAIL_BYTES:
                 fh.seek(-_CTX_TAIL_BYTES, os.SEEK_END)
-            data = fh.read()
+            data = fh.read(_CTX_TAIL_BYTES)
     except OSError:
         return None
     for raw in reversed(data.split(b"\n")):

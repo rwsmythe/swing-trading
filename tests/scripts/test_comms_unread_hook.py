@@ -645,3 +645,48 @@ def test_r4_f5_the_unread_notice_is_ascii_under_a_non_ascii_checkout(
     assert notice is not None
     notice.encode("ascii")
     assert "\\u4e2d" in notice
+
+
+# --- Reviewer A round 5 fixes ----------------------------------------------------
+
+class _ReadSizeSpy:
+    """Wraps an open binary file; records the size of every read() call."""
+
+    def __init__(self, fh, sizes: list):
+        self._fh = fh
+        self._sizes = sizes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._fh.close()
+
+    def read(self, n=-1):
+        self._sizes.append(n)
+        return self._fh.read(n)
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+
+def _spy_reads(monkeypatch) -> list:
+    sizes: list = []
+    real_open = open
+    monkeypatch.setattr(hook, "open",
+                        lambda path, *a, **k: _ReadSizeSpy(
+                            real_open(path, *a, **k), sizes),
+                        raising=False)
+    return sizes
+
+
+def test_r5_f2_the_transcript_read_is_explicitly_bounded(tmp_path, monkeypatch):
+    # Every read the gauge makes asks for at most _CTX_TAIL_BYTES, so a file
+    # that grows between the size check and the read cannot be read whole.
+    path = tmp_path / "big.jsonl"
+    path.write_bytes(b"x" * (hook._CTX_TAIL_BYTES + 4096) + b"\n"
+                     + _usage_line(123_000).encode("utf-8"))
+    sizes = _spy_reads(monkeypatch)
+    usage = hook._last_usage_dict(path)
+    assert usage is not None and usage["input_tokens"] == 123_000
+    assert sizes and all(0 < n <= hook._CTX_TAIL_BYTES for n in sizes), sizes
