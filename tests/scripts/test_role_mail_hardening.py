@@ -749,3 +749,34 @@ def test_r1_f2_a_real_file_symlink_in_a_contained_inbox_is_refused(
     with pytest.raises(rm.MailError, match="OUTSIDE the mailbox root"):
         rm.ack_message(root, "charc", "external.md")
     assert (inbox / "external.md").is_symlink()
+
+
+# --- Reviewer A round 2 fixes ----------------------------------------------------
+
+def test_r2_f1_an_ack_during_the_first_read_with_an_archived_twin_verifies(
+        root, capsys, monkeypatch):
+    # An older same-second, same-subject twin already sits at read/<name>.md.
+    # Our message lands at inbox/<name>.md and is acked (to read/<name>-2.md)
+    # AFTER the first pass globbed its candidates but BEFORE it read the inbox
+    # file. Pass 1 then sees only the old twin; it must not be returned as the
+    # answer before pass 2 re-globs and finds -2.md by its nonce.
+    _freeze_now(monkeypatch)
+    first = rm.post_message(root, "charc", ["operator"], "status", "same", "b")
+    rm.ack_message(root, "operator", first[0].name)
+    real_read = rm._read_frontmatter
+    acked: list[str] = []
+
+    def read_after_ack(path):
+        path = Path(path)
+        if path.parent.name == "inbox" and not acked:
+            acked.append(path.name)
+            rm.ack_message(root, path.parent.parent.name, path.name)
+        return real_read(path)
+
+    monkeypatch.setattr(rm, "_read_frontmatter", read_after_ack)
+    rc, out, err = _run(capsys, _pv(root, subject="same"))
+    assert acked, "the race was not exercised"
+    assert rc == 0, err
+    landed = _verified_path(out)
+    assert landed.name.endswith("-2.md") and landed.parent.name == "read"
+    assert landed.is_file()

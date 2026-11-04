@@ -890,10 +890,14 @@ def _locate_landing(inbox_final: Path, want_msg_id: str | None = None
     that vanishes between its existence check and its read was acked in that
     instant: the search moves on to the read/ candidates instead of reporting
     it unreadable (Reviewer A R1 F3). Two passes cover an ack landing between
-    passes.
+    passes: the second re-globs, so an ack archived as ``read/<stem>-N.md``
+    after the first pass listed its candidates is found there. A nonce match
+    from EITHER pass wins; the fallback is returned only after BOTH passes
+    miss, never at the end of the first (an older archived twin would
+    otherwise pre-empt the retry -- Reviewer A R2 F1).
     """
+    fallback: tuple[Path, dict[str, str]] | None = None
     for _attempt in range(2):
-        fallback: tuple[Path, dict[str, str]] | None = None
         for cand in _landing_candidates(inbox_final, want_msg_id is not None):
             if not cand.is_file():
                 continue
@@ -904,8 +908,8 @@ def _locate_landing(inbox_final: Path, want_msg_id: str | None = None
                 return cand, fm
             if fallback is None:
                 fallback = (cand, fm)
-        if fallback is not None:
-            return fallback
+    if fallback is not None:
+        return fallback
     return None, {}
 
 
