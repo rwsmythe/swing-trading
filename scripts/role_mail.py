@@ -61,6 +61,10 @@ filesystem access any read would grant.
 ASCII-only console output (Windows cp1252 stdout gotcha); message files
 are written/read as UTF-8.
 
+A subject over SUBJECT_MAX_CHARS (120; operator-directed 2026-11-03, was 80)
+characters is REJECTED by post and post-verified (nothing is written) -- a
+subject names the message; the body carries it.
+
 Usage (from the repo root):
     python scripts/role_mail.py post --from charc --to rd --type status \\
         --subject "Arc 1 shipped" --body "All green."
@@ -112,9 +116,10 @@ _AUTOMATED_EMITTER_TYPES = {
 }
 
 _SLUG_MAX = 40
-# Hard cap on `--subject`, enforced in `post` before anything is written.
-# See the guard for the reasoning; 80 vs git's 50-char subject convention.
-_MAX_SUBJECT_LEN = 80
+# Hard cap on `--subject`, enforced in `post` (and so `post-verified`) before
+# anything is written. See the guard for the reasoning. The name is the
+# harness template's.
+SUBJECT_MAX_CHARS = 120  # operator-directed 2026-11-03 (was 80)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -532,11 +537,13 @@ def post_message(
     # convention. Two concrete costs: `_slugify` truncates the filename to
     # `_SLUG_MAX` (40), so everything past that is invisible in a listing and reaches no
     # reader; and a subject carrying the argument duplicates the body it sits
-    # on top of. 80 is deliberately generous -- git's own subject convention is
-    # 50 -- so anything tripping this is an abstract, not a tight subject.
-    if len(subject) > _MAX_SUBJECT_LEN:
+    # on top of. The cap was 80 from 2026-08-12; the operator raised it to 120
+    # on 2026-11-03, the figure the harness template's lineage uses. Either is
+    # well past git's own 50-char convention, so anything tripping this is an
+    # abstract, not a tight subject.
+    if len(subject) > SUBJECT_MAX_CHARS:
         raise MailError(
-            f"subject is {len(subject)} chars; the cap is {_MAX_SUBJECT_LEN}. "
+            f"subject is {len(subject)} chars; the cap is {SUBJECT_MAX_CHARS}. "
             "A subject NAMES the message; the body CARRIES it. Put the finding, "
             "the evidence and the reasoning in the body -- they are why the "
             "body exists. Nothing was written."

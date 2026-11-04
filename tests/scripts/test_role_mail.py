@@ -951,3 +951,39 @@ def test_ack_message_orchestrator_moves_inbox_to_read(comms):
     dest = role_mail.ack_message(comms, "orchestrator", fname)
     assert dest == Path(comms) / "orchestrator" / "read" / fname
     assert dest.is_file()
+
+
+# --- T5: the subject cap is 120 (operator-directed 2026-11-03, was 80) ----------
+
+def test_subject_cap_constant_is_120_under_the_template_name():
+    assert role_mail.SUBJECT_MAX_CHARS == 120
+    assert not hasattr(role_mail, "_MAX_SUBJECT_LEN")
+
+
+def test_subject_of_exactly_120_chars_is_accepted(comms):
+    subject = "s" * 120
+    rc = _post(comms, **{"from": "charc", "to": "rd", "type": "fyi",
+                         "subject": subject, "body": "b"})
+    assert rc == 0
+    files = _inbox(comms, "rd")
+    assert len(files) == 1
+    assert f"subject: {subject}\n" in files[0].read_text(encoding="utf-8")
+
+
+def test_subject_of_121_chars_is_refused_and_nothing_is_written(comms, capsys):
+    rc = _post(comms, **{"from": "charc", "to": "rd", "type": "fyi",
+                         "subject": "s" * 121, "body": "b"})
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "121 chars" in err and "the cap is 120" in err
+    assert "Nothing was written" in err
+    assert not Path(comms).exists() or list(Path(comms).rglob("*")) == []
+
+
+def test_subject_cap_also_binds_post_verified(comms, capsys):
+    rc = role_mail.main(["--comms-root", str(comms), "post-verified",
+                         "--from", "charc", "--to", "rd", "--type", "fyi",
+                         "--subject", "s" * 121, "--body", "b"])
+    assert rc == 1
+    assert "the cap is 120" in capsys.readouterr().err
+    assert not Path(comms).exists() or list(Path(comms).rglob("*")) == []
