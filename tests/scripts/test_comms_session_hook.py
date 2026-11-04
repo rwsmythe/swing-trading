@@ -383,3 +383,38 @@ def test_self_sweep_the_import_failure_warning_never_raises(monkeypatch):
                         raising=False)
     monkeypatch.setattr(sys, "stderr", _DeadStream())
     assert hook.main(["heartbeat"]) == 0
+
+
+# --- Reviewer A round 6 fixes ----------------------------------------------------
+
+def test_r6_f2_no_siblings_and_a_closed_stderr_still_exit_0(tmp_path):
+    # Staged ALONE: both the registry and the unread-hook imports fail, so the
+    # hook warns on stderr and takes its no-sibling exit. With stderr's reader
+    # gone, that exit must still be 0 (not finalization's 120).
+    import contextlib
+    import os
+    staged = tmp_path / "scripts"
+    staged.mkdir()
+    (staged / _HOOK_PATH.name).write_bytes(_HOOK_PATH.read_bytes())
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    proc = subprocess.Popen(
+        [sys.executable, str(staged / _HOOK_PATH.name), "heartbeat"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env)
+    try:
+        proc.stderr.close()
+        proc.stdin.write(b"{}")
+        proc.stdin.close()
+        try:
+            rc = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the session hook blocked")
+        assert rc == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            with contextlib.suppress(OSError):
+                stream.close()

@@ -193,4 +193,12 @@ if __name__ == "__main__":
         # Guarded flush; no finalization after an abandoned stdin read.
         _unread_hook.finish_hook_process(main())
     else:
-        sys.exit(main())
+        # No sibling: the same guarded flush, inline. A gone stdout/stderr
+        # reader must not turn main()'s 0 into finalization's 120 (R6 F2).
+        _rc = main()
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- the reader is gone
+            os._exit(_rc)
+        sys.exit(_rc)
