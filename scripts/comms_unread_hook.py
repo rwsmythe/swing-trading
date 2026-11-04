@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
+import threading
 from pathlib import Path
 
 # The Stop hook's gate (comms_stop_hook imports it). NOT widened by T1.
@@ -128,20 +130,56 @@ def unread_notice(role: str, comms_root: Path) -> str | None:
 
 # --- the stdin hook payload ---------------------------------------------------
 
+# How long the hook waits for stdin to reach EOF. A producer that writes its
+# payload and closes the pipe (the normal case) returns at once; one that keeps
+# the write end open would otherwise block the prompt indefinitely (Reviewer A
+# R3 F1), so past this deadline the payload is abandoned and the hook carries
+# on without it (no [ctx] line; the unread notice needs no payload).
+_STDIN_DEADLINE_S = 2.0
+# Set when a stdin read was abandoned at the deadline: its daemon thread still
+# holds sys.stdin's buffer lock, so the __main__ path exits with os._exit
+# rather than through interpreter finalization (which would abort trying to
+# take that lock).
+_stdin_abandoned = False
+
+
+def _read_stdin_bytes(stdin) -> bytes | None:  # noqa: ANN001
+    """stdin's bytes up to EOF, or None if EOF did not come in the deadline."""
+    global _stdin_abandoned
+    box: dict[str, bytes] = {}
+
+    def _reader() -> None:
+        try:
+            box["raw"] = stdin.buffer.read()
+        except Exception:  # noqa: BLE001 -- unreadable -> no payload
+            box["raw"] = b""
+
+    worker = threading.Thread(target=_reader, name="hook-stdin", daemon=True)
+    worker.start()
+    worker.join(_STDIN_DEADLINE_S)
+    if worker.is_alive():
+        _stdin_abandoned = True
+        return None
+    return box.get("raw", b"")
+
+
 def _read_hook_payload() -> dict:
     """The hook JSON payload from stdin, or {} on any problem.
 
     Read as RAW BYTES and decoded utf-8-sig (a leading BOM is stripped however
     the spawning shell encodes the pipe -- the Stop hook's reader shape). A
-    missing stdin or a TTY is never read, so the hook can never block waiting
-    for input. Empty, undecodable, unparseable and non-dict payloads all
+    missing stdin or a TTY is never read, and a pipe that does not reach EOF
+    within _STDIN_DEADLINE_S is abandoned, so the hook can never block waiting
+    for input. Empty, undecodable, unparseable, late and non-dict payloads all
     degrade to {}.
     """
     try:
         stdin = sys.stdin
         if stdin is None or stdin.isatty():
             return {}
-        raw = stdin.buffer.read()
+        raw = _read_stdin_bytes(stdin)
+        if raw is None:
+            return {}
         text = raw.decode("utf-8-sig").strip()
         if not text:
             return {}
@@ -196,9 +234,14 @@ def _last_usage_dict(transcript_path: Path) -> dict | None:
     with a dict message.usage -- best-effort, never raises.
     """
     try:
-        size = transcript_path.stat().st_size
+        st = transcript_path.stat()
     except OSError:
         return None
+    # Only a regular file is opened: a FIFO (or other special file) named as
+    # the transcript could block open() or read() (Reviewer A R3 F1).
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    size = st.st_size
     try:
         with open(transcript_path, "rb") as fh:
             if size > _CTX_TAIL_BYTES:
@@ -294,4 +337,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _rc = main()
+    if _stdin_abandoned:
+        # A reader thread is still blocked on stdin; skip finalization.
+        sys.stdout.flush()
+        os._exit(_rc)
+    sys.exit(_rc)

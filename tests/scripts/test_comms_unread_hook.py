@@ -477,3 +477,80 @@ def test_r1_f8_unknown_role_never_reaches_the_cap_line(tmp_path):
     assert "docs/role-state.md" in notice
     notice = hook.context_depth_notice(str(path), {}, "not-a-role")
     assert "docs/role-state.md" in notice
+
+
+# --- Reviewer A round 3 fixes ----------------------------------------------------
+
+def test_r3_f1_a_held_open_stdin_never_blocks_the_hook():
+    # The producer writes a complete payload but keeps the pipe's write end
+    # open (no EOF). The hook must give up on stdin after its deadline and
+    # exit 0 promptly -- a UserPromptSubmit hook must never block a prompt.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    proc = subprocess.Popen(
+        [sys.executable, str(_HOOK_PATH)], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    try:
+        proc.stdin.write(b"{}\n")
+        proc.stdin.flush()
+        try:
+            rc = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the hook blocked on a held-open stdin")
+        assert rc == 0
+        out = proc.stdout.read()
+        err = proc.stderr.read()
+        assert out.strip() == b"", out
+        assert b"Fatal Python error" not in err, err
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        import contextlib
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            with contextlib.suppress(OSError):
+                stream.close()
+
+
+def test_r3_f1_a_slow_payload_reader_degrades_to_empty(monkeypatch):
+    # In-process: a stdin whose read never returns within the deadline yields
+    # {} and flags the read as abandoned (the __main__ path then hard-exits).
+    import threading
+    release = threading.Event()
+
+    class _Stuck:
+        def isatty(self):
+            return False
+
+        class buffer:  # noqa: N801 -- mimics sys.stdin.buffer
+            @staticmethod
+            def read():
+                release.wait(10)
+                return b"{}"
+
+    monkeypatch.setattr(sys, "stdin", _Stuck())
+    monkeypatch.setattr(hook, "_STDIN_DEADLINE_S", 0.2)
+    monkeypatch.setattr(hook, "_stdin_abandoned", False)
+    try:
+        assert hook._read_hook_payload() == {}
+        assert hook._stdin_abandoned is True
+    finally:
+        release.set()
+
+
+def test_r3_f1_a_non_regular_transcript_is_never_opened(tmp_path, monkeypatch):
+    # A FIFO (or any non-regular file) at transcript_path could block open();
+    # the gauge must refuse it from its stat, before opening. A directory is
+    # the portable non-regular stand-in.
+    opened: list[str] = []
+    real_open = open
+
+    def spy_open(path, *a, **k):
+        opened.append(str(path))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(hook, "open", spy_open, raising=False)
+    d = tmp_path / "not-a-file"
+    d.mkdir()
+    assert hook._last_usage_dict(d) is None
+    assert opened == []
