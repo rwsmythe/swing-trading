@@ -6,7 +6,9 @@ next prompt -- the on-demand, activity-gated half of comms Stage 1.5 (NO
 autonomous wake; that is Stage 3, explicitly held).
 
 Contract:
-  * Reads SWING_ROLE from the environment. If unset or not in {charc, rd} the
+  * Reads the role from the environment: HARNESS_ROLE first, SWING_ROLE second
+    (role_from_env; the template's name is an ALIAS here, every SWING_ROLE pin
+    stays). If unset or not in {charc, rd} the
     hook is a SILENT no-op (exit 0) -- so it does nothing in any orchestrator,
     plain VS Code, or ad-hoc session (the seeded-gate-masks-default discipline:
     the quiet default is the common case and is witnessed at the gate).
@@ -26,6 +28,21 @@ import sys
 from pathlib import Path
 
 DIRECTOR_ROLES = ("charc", "rd")
+
+# The role env vars, in precedence order. HARNESS_ROLE is the harness
+# template's name (renamed there from SWING_ROLE); this instance reads it as an
+# ALIAS ahead of SWING_ROLE, and the launcher sets BOTH, so a session carrying
+# either is recognised (harness-template merge 2026-11-03, T2).
+HARNESS_ROLE_ENV = "HARNESS_ROLE"
+SWING_ROLE_ENV = "SWING_ROLE"
+
+
+def role_from_env(env) -> str:  # noqa: ANN001 -- any Mapping[str, str]
+    """The session's role: HARNESS_ROLE, else SWING_ROLE, else ''.
+
+    An EMPTY HARNESS_ROLE counts as unset (falls through to SWING_ROLE).
+    """
+    return env.get(HARNESS_ROLE_ENV) or env.get(SWING_ROLE_ENV, "")
 
 
 def comms_root_default() -> Path:
@@ -79,7 +96,7 @@ def unread_notice(role: str, comms_root: Path) -> str | None:
 
 def main() -> int:
     try:
-        role = os.environ.get("SWING_ROLE", "")
+        role = role_from_env(os.environ)
         if role not in DIRECTOR_ROLES:
             return 0  # no-op in every non-director session
         notice = unread_notice(role, comms_root_default())

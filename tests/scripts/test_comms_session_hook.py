@@ -69,6 +69,38 @@ def test_session_start_registers_orchestrator(root):
     assert entry["role"] == "orchestrator"
 
 
+# --- T2 (harness-template merge 2026-11-03): the HARNESS_ROLE alias --------
+
+def test_session_start_registers_via_harness_role_alias(root):
+    hook.handle_session_start(
+        {"session_id": "h1", "transcript_path": "/t.jsonl"},
+        {"HARNESS_ROLE": "orchestrator"}, root, _NOW)
+    entry = reg.read_entry(root, "h1")
+    assert entry is not None and entry["role"] == "orchestrator"
+
+
+def test_harness_role_wins_over_swing_role(root):
+    # HARNESS_ROLE is read FIRST: an unregistrable HARNESS_ROLE wins over a
+    # registrable SWING_ROLE (no entry), and a registrable one is the role
+    # recorded even when SWING_ROLE names another.
+    hook.handle_session_start(
+        {"session_id": "h2"},
+        {"HARNESS_ROLE": "operator", "SWING_ROLE": "orchestrator"}, root, _NOW)
+    assert reg.read_entry(root, "h2") is None
+    hook.handle_session_start(
+        {"session_id": "h3"},
+        {"HARNESS_ROLE": "orchestrator", "SWING_ROLE": "charc"}, root, _NOW)
+    assert reg.read_entry(root, "h3")["role"] == "orchestrator"
+
+
+def test_heartbeat_reads_harness_role_alias(root):
+    t1 = _NOW + timedelta(minutes=10)
+    reg.write_entry(root, "h4", "orchestrator", "", _NOW)
+    hook.handle_heartbeat(
+        {"session_id": "h4"}, {"HARNESS_ROLE": "orchestrator"}, root, t1)
+    assert reg.read_entry(root, "h4")["last_seen"] == t1.isoformat()
+
+
 def test_session_start_creates_no_mailbox_directory(root):
     """21-D: registration is presence-only -- it builds NO per-gen mailbox.
 
@@ -191,6 +223,7 @@ def test_main_no_args_exits_zero():
 def test_main_session_start_no_stdin_exits_zero(monkeypatch):
     # pytest's DontReadFromInput raises on stdin.read(); the hook must swallow it.
     monkeypatch.delenv("SWING_ROLE", raising=False)
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     assert hook.main(["session-start"]) == 0
     assert hook.main(["heartbeat"]) == 0
 
@@ -201,6 +234,7 @@ def test_main_internal_raise_exits_zero(monkeypatch):
 
     monkeypatch.setattr(hook, "handle_session_start", boom)
     monkeypatch.setattr(hook, "_read_payload", lambda: {"session_id": "g1"})
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     monkeypatch.setenv("SWING_ROLE", "orchestrator")
     assert hook.main(["session-start"]) == 0
 
@@ -219,6 +253,7 @@ def test_main_never_prunes_the_real_comms_tree(monkeypatch,
                         lambda root, now, *a, **k: (seen.append(Path(root)),
                                                     real_prune(root, now))[1])
     monkeypatch.delenv("SWING_ROLE", raising=False)
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     assert hook.main(["session-start"]) == 0
     assert seen == [_never_the_real_comms_tree]
     real_comms = Path(_SCRIPTS).parent / "comms"
@@ -249,7 +284,8 @@ def test_subprocess_no_swing_role_exits_zero_no_registration(tmp_path):
     reg.write_entry(staged_root, "stalegen", "orchestrator", "", _NOW,
                     started_ts=stale)
     _force_last_seen(staged_root, "stalegen", stale)
-    env = {k: v for k, v in os.environ.items() if k != "SWING_ROLE"}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
     proc = subprocess.run(
         [sys.executable, str(staged / _HOOK_PATH.name), "session-start"],
         input=b'{"session_id":"g1"}',

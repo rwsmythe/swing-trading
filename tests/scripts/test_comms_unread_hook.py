@@ -103,12 +103,14 @@ def test_notice_only_counts_own_role(comms):
 
 def test_main_noop_without_swing_role(monkeypatch, capsys):
     monkeypatch.delenv("SWING_ROLE", raising=False)
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     rc = hook.main()
     assert rc == 0
     assert capsys.readouterr().out == ""
 
 
 def test_main_noop_for_non_director_role(monkeypatch, capsys):
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     monkeypatch.setenv("SWING_ROLE", "orchestrator")
     rc = hook.main()
     assert rc == 0
@@ -117,6 +119,7 @@ def test_main_noop_for_non_director_role(monkeypatch, capsys):
 
 def test_main_prints_for_director_with_unread(monkeypatch, capsys, comms):
     _make_msg(comms, "charc")
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     monkeypatch.setenv("SWING_ROLE", "charc")
     monkeypatch.setattr(hook, "comms_root_default", lambda: comms)
     rc = hook.main()
@@ -125,7 +128,41 @@ def test_main_prints_for_director_with_unread(monkeypatch, capsys, comms):
     assert "1 unread for charc" in out
 
 
+# --- T2 (harness-template merge 2026-11-03): the HARNESS_ROLE alias --------
+# The template renamed the role env var SWING_ROLE -> HARNESS_ROLE. This
+# instance keeps every SWING_ROLE pin and reads HARNESS_ROLE FIRST, SWING_ROLE
+# second (the launcher sets both), so a session carrying either is recognised.
+
+def test_main_reads_harness_role_alias(monkeypatch, capsys, comms):
+    _make_msg(comms, "charc")
+    monkeypatch.delenv("SWING_ROLE", raising=False)
+    monkeypatch.setenv("HARNESS_ROLE", "charc")
+    monkeypatch.setattr(hook, "comms_root_default", lambda: comms)
+    assert hook.main() == 0
+    assert "1 unread for charc" in capsys.readouterr().out
+
+
+def test_main_harness_role_wins_over_swing_role(monkeypatch, capsys, comms):
+    _make_msg(comms, "charc")
+    _make_msg(comms, "rd")
+    _make_msg(comms, "rd")
+    monkeypatch.setenv("HARNESS_ROLE", "charc")
+    monkeypatch.setenv("SWING_ROLE", "rd")
+    monkeypatch.setattr(hook, "comms_root_default", lambda: comms)
+    assert hook.main() == 0
+    out = capsys.readouterr().out
+    assert "1 unread for charc" in out
+    assert "for rd" not in out
+
+
+def test_role_from_env_empty_harness_role_falls_through_to_swing_role():
+    # an EMPTY HARNESS_ROLE is "unset" (the `or` chain), not a role of ''
+    assert hook.role_from_env({"HARNESS_ROLE": "", "SWING_ROLE": "rd"}) == "rd"
+    assert hook.role_from_env({}) == ""
+
+
 def test_main_always_exit_0_on_internal_error(monkeypatch, capsys):
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     monkeypatch.setenv("SWING_ROLE", "charc")
 
     def boom():
@@ -140,7 +177,8 @@ def test_main_always_exit_0_on_internal_error(monkeypatch, capsys):
 def test_subprocess_noop_exit_0_no_output():
     # the unseeded default: a session WITHOUT SWING_ROLE prints nothing and
     # exits 0 (the seeded-gate-masks-default lesson -- witness the quiet path).
-    env = {k: v for k, v in os.environ.items() if k != "SWING_ROLE"}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
     proc = subprocess.run(
         [sys.executable, str(_HOOK_PATH)],
         capture_output=True, text=True, env=env, timeout=30)

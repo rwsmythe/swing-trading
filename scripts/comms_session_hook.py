@@ -42,6 +42,17 @@ except Exception as _import_exc:  # noqa: BLE001 -- never block a session/prompt
     _REGISTRY_IMPORT_ERR = _import_exc
 
 
+# The harness template's role env var (renamed there from SWING_ROLE). Read as an
+# ALIAS ahead of the registry's ROLE_ENV (SWING_ROLE); the launcher sets both
+# (harness-template merge 2026-11-03, T2).
+HARNESS_ROLE_ENV = "HARNESS_ROLE"
+
+
+def _role_from_env(env: dict) -> str:
+    """HARNESS_ROLE, else the registry's ROLE_ENV (SWING_ROLE), else ''."""
+    return env.get(HARNESS_ROLE_ENV) or env.get(_reg.ROLE_ENV, "")
+
+
 def _read_payload() -> dict:
     """Parse the hook JSON from stdin; {} on any problem (degrade-gracefully).
 
@@ -94,7 +105,7 @@ def handle_session_start(payload: dict, env: dict, root: Path,
     """
     _reg.prune_stale(root, now)  # ALWAYS, regardless of role
 
-    role = env.get(_reg.ROLE_ENV, "")
+    role = _role_from_env(env)
     if role not in _reg.REGISTRABLE_ROLES:
         return
 
@@ -116,7 +127,7 @@ def handle_heartbeat(payload: dict, env: dict, root: Path,
     Refresh last_seen for any REGISTRABLE role (recreate-if-missing self-heal).
     Presence-only: no mailbox directory is touched (21-D).
     """
-    role = env.get(_reg.ROLE_ENV, "")
+    role = _role_from_env(env)
     if role not in _reg.REGISTRABLE_ROLES:
         return
 

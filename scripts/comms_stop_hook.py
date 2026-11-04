@@ -10,7 +10,9 @@ consistent with the comms taxonomy (autonomously processing fyi/status/return_re
 is in-lane; dispatch authority stays operator-hand-carried).
 
 Contract:
-  * Reads SWING_ROLE from env. If unset or not in {charc, rd} -> SILENT no-op
+  * Reads the role from env -- HARNESS_ROLE first, SWING_ROLE second (the
+    sibling's role_from_env; harness-template merge 2026-11-03, T2). If unset
+    or not in {charc, rd} -> SILENT no-op
     (exit 0): does nothing in any orchestrator / plain / ad-hoc session.
   * Reads the Stop-hook JSON payload from stdin (RAW BYTES, decoded STRICT
     utf-8-sig so a leading BOM is stripped regardless of the console codepage)
@@ -57,6 +59,7 @@ try:
     from comms_unread_hook import (
         DIRECTOR_ROLES,
         comms_root_default,
+        role_from_env,
         unread_notice,
     )
     _IMPORT_OK = True
@@ -118,7 +121,7 @@ def handle_stop(payload: dict, env: dict, root: Path) -> str | None:
     inbox); returns the drain-instruction reason ONLY on a first stop (exact
     `stop_hook_active: False`) with unread mail.
     """
-    role = env.get("SWING_ROLE", "")
+    role = role_from_env(env)
     if role not in DIRECTOR_ROLES:
         return None  # no-op in every non-director session
 

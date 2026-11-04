@@ -254,6 +254,27 @@ def test_dryrun_launch_line_scrubs_markers_before_claude():
     assert launch.index("$env:SWING_ROLE='charc'") < claude_at
 
 
+# --- T2 (harness-template merge 2026-11-03): HARNESS_ROLE alias ------------
+# The template's hooks read HARNESS_ROLE; this instance's read HARNESS_ROLE
+# first and SWING_ROLE second. The spawned shell sets BOTH, HARNESS_ROLE
+# IMMEDIATELY after SWING_ROLE, so a seat launched here is recognised by either
+# reader and no existing SWING_ROLE pin moves.
+
+def test_build_launch_command_sets_harness_role_right_after_swing_role():
+    text = _script_text()
+    assert "`$env:SWING_ROLE='$role'; `$env:HARNESS_ROLE='$role'; " in text
+
+
+@pytest.mark.parametrize("role", ["charc", "orchestrator"])
+def test_dryrun_launch_line_sets_harness_role_after_swing_role(role):
+    r, out = _dryrun("-Role", role)
+    assert r.returncode == 0
+    launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
+    pair = f"$env:SWING_ROLE='{role}'; $env:HARNESS_ROLE='{role}'; "
+    assert pair in launch
+    assert launch.index(pair) < launch.index("; claude ")
+
+
 # --- the launcher scrubs the Bash-tool environment leak (2026-09-23) -------
 # Claude Code injects NO_COLOR=1 and GIT_EDITOR=true into the shell its Bash
 # tool runs commands in; a self-launched successor inherits them via

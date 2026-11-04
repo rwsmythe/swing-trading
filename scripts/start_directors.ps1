@@ -336,8 +336,13 @@ function Build-LaunchCommand($role, $argList) {
     # no figure. Role seats run one heavy job at a time by rule, so the
     # reaper's protection is given up for a complete run. Applies at the
     # seat's NEXT launch only; the operator's own terminals are untouched.
+    #
+    # THEN SET THE ROLE UNDER BOTH NAMES (harness-template merge 2026-11-03,
+    # T2): SWING_ROLE (every pin here) and, immediately after it, HARNESS_ROLE
+    # (the template's name). The hooks read HARNESS_ROLE first and SWING_ROLE
+    # second, so either reader recognises the seat.
     $scrub = ($SessionMarkers | ForEach-Object { "Remove-Item Env:$_ -ErrorAction SilentlyContinue" }) -join '; '
-    return "$scrub; `$env:DISABLE_AUTOUPDATER='1'; `$env:CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP='1'; `$env:CLAUDE_CODE_GIT_BASH_PATH='$GitBashPath'; `$env:SWING_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
+    return "$scrub; `$env:DISABLE_AUTOUPDATER='1'; `$env:CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP='1'; `$env:CLAUDE_CODE_GIT_BASH_PATH='$GitBashPath'; `$env:SWING_ROLE='$role'; `$env:HARNESS_ROLE='$role'; Set-Location '$RepoRoot'; claude " + ($argList -join ' ')
 }
 
 function Get-EncodedCommand($inner) {

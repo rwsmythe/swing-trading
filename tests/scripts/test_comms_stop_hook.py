@@ -158,6 +158,24 @@ def test_non_dict_payload_allows_stop(comms):
     assert hook.handle_stop(payload, {"SWING_ROLE": "charc"}, comms) is None
 
 
+# --- T2 (harness-template merge 2026-11-03): the HARNESS_ROLE alias --------
+
+def test_harness_role_alias_is_gated_like_swing_role(comms):
+    _seed_inbox(comms, "charc")
+    reason = hook.handle_stop(
+        {"stop_hook_active": False}, {"HARNESS_ROLE": "charc"}, comms)
+    assert reason is not None and "unread for charc" in reason
+
+
+def test_harness_role_wins_over_swing_role(comms):
+    # HARNESS_ROLE is read FIRST: an orchestrator HARNESS_ROLE is not gated
+    # even when a stale SWING_ROLE=charc is also present.
+    _seed_inbox(comms, "charc")
+    assert hook.handle_stop(
+        {"stop_hook_active": False},
+        {"HARNESS_ROLE": "orchestrator", "SWING_ROLE": "charc"}, comms) is None
+
+
 def test_output_is_ascii(comms):
     _seed_inbox(comms, "charc")
     reason = hook.handle_stop(
@@ -173,6 +191,7 @@ def test_main_blocks_and_emits_decision_json(comms, monkeypatch):
     fake_stdin = mock.Mock()
     fake_stdin.buffer = io.BytesIO(b'{"stop_hook_active": false}')
     monkeypatch.setattr(hook, "comms_root_default", lambda: comms)
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     monkeypatch.setenv("SWING_ROLE", "charc")
     with mock.patch.object(sys, "stdin", fake_stdin), \
             contextlib.redirect_stdout(buf):
@@ -184,6 +203,7 @@ def test_main_blocks_and_emits_decision_json(comms, monkeypatch):
 
 
 def test_main_always_exit_0_on_internal_error(monkeypatch):
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     monkeypatch.setenv("SWING_ROLE", "charc")
 
     def boom():
@@ -199,7 +219,8 @@ def test_main_always_exit_0_on_internal_error(monkeypatch):
 
 def test_subprocess_noop_exit_0_no_block_without_role():
     # the unseeded default: a session WITHOUT SWING_ROLE never blocks the stop.
-    env = {k: v for k, v in os.environ.items() if k != "SWING_ROLE"}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
     proc = subprocess.run(
         [sys.executable, str(_HOOK_PATH)],
         input=b'{"stop_hook_active": false}',
