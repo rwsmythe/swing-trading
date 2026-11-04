@@ -41,6 +41,15 @@ except Exception as _import_exc:  # noqa: BLE001 -- never block a session/prompt
     _REGISTRY_IMPORT_OK = False
     _REGISTRY_IMPORT_ERR = _import_exc
 
+# The unread hook's BOUNDED stdin reader and its process finisher (Reviewer A
+# R5 F1): a payload pipe that never reaches EOF is abandoned at its deadline
+# instead of blocking the prompt. Guarded like the registry import; if the
+# sibling cannot load, the plain read below is the fallback.
+try:
+    import comms_unread_hook as _unread_hook  # noqa: E402
+except Exception:  # noqa: BLE001 -- never block a session/prompt
+    _unread_hook = None
+
 
 # The harness template's role env var (renamed there from SWING_ROLE). Read as an
 # ALIAS ahead of the registry's ROLE_ENV (SWING_ROLE); the launcher sets both
@@ -57,12 +66,21 @@ def _read_payload() -> dict:
     """Parse the hook JSON from stdin; {} on any problem (degrade-gracefully).
 
     Defensive against pytest's no-stdin DontReadFromInput (which raises on
-    .read()) and any decode/parse failure.
+    .read()) and any decode/parse failure. Read through the unread hook's
+    bounded reader (raw bytes, decoded utf-8-sig) when the sibling loaded; a
+    payload that does not reach EOF in its deadline degrades to {}. Without
+    the sibling, the plain read (Reviewer A R5 F1).
     """
     import json
 
     try:
-        raw = sys.stdin.read()
+        if _unread_hook is not None:
+            raw_bytes = _unread_hook._read_stdin_bytes(sys.stdin)
+            if raw_bytes is None:
+                return {}
+            raw = raw_bytes.decode("utf-8-sig")
+        else:
+            raw = sys.stdin.read()
     except Exception:  # noqa: BLE001
         return {}
     if not raw or not raw.strip():
@@ -167,4 +185,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if _unread_hook is not None:
+        # Guarded flush; no finalization after an abandoned stdin read.
+        _unread_hook.finish_hook_process(main())
+    else:
+        sys.exit(main())
