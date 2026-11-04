@@ -585,11 +585,15 @@ def test_r4_f1_a_non_regular_inbox_entry_is_never_opened(comms, monkeypatch):
 
 
 def test_r4_f1_the_decision_request_read_is_bounded(comms, monkeypatch):
-    # Only the leading block is read, never a whole (possibly huge) file.
+    # Only the leading block is read, never a whole (possibly huge) file: every
+    # read asks for at most _DR_HEAD_BYTES (a read-size spy, so an unbounded
+    # whole-file read fails this test -- Reviewer A R5 F4).
     path = _make_msg(comms, "orchestrator", mtype="decision_request")
     with open(path, "ab") as fh:
         fh.write(b"x" * (2 * hook._DR_HEAD_BYTES))
+    sizes = _spy_reads(monkeypatch)
     assert hook._is_decision_request(path) is True
+    assert sizes and all(0 < n <= hook._DR_HEAD_BYTES for n in sizes), sizes
 
 
 @pytest.mark.parametrize("hold_stdin", [True, False])
