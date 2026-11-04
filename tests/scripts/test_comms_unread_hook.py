@@ -554,3 +554,39 @@ def test_r3_f1_a_non_regular_transcript_is_never_opened(tmp_path, monkeypatch):
     d.mkdir()
     assert hook._last_usage_dict(d) is None
     assert opened == []
+
+
+# --- Reviewer A round 4 fixes ----------------------------------------------------
+
+def test_r4_f1_a_non_regular_inbox_entry_is_never_opened(comms, monkeypatch):
+    # A FIFO named *.md in an inbox would block a synchronous open/read. The
+    # decision-request scan must refuse any non-regular entry from its stat,
+    # before opening it. A directory is the portable non-regular stand-in.
+    _make_msg(comms, "orchestrator", mtype="decision_request", slug="real")
+    special = comms / "orchestrator" / "inbox" / "stuck.md"
+    special.mkdir()
+    opened: list[str] = []
+    real_open = open
+    real_read_text = Path.read_text
+
+    def spy_open(path, *a, **k):
+        opened.append(Path(path).name)
+        return real_open(path, *a, **k)
+
+    def spy_read_text(self, *a, **k):
+        opened.append(self.name)
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr(hook, "open", spy_open, raising=False)
+    monkeypatch.setattr(Path, "read_text", spy_read_text)
+    notice = hook.unread_notice("orchestrator", comms)
+    assert "stuck.md" not in opened
+    assert notice is not None and "(1 decision_request)" in notice
+
+
+def test_r4_f1_the_decision_request_read_is_bounded(comms, monkeypatch):
+    # Only the leading block is read, never a whole (possibly huge) file.
+    path = _make_msg(comms, "orchestrator", mtype="decision_request")
+    with open(path, "ab") as fh:
+        fh.write(b"x" * (2 * hook._DR_HEAD_BYTES))
+    assert hook._is_decision_request(path) is True

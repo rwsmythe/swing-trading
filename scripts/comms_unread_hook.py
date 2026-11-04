@@ -84,15 +84,26 @@ def comms_root_default() -> Path:
     return Path(__file__).resolve().parent.parent / "comms"
 
 
+# How much of a message the decision-request scan reads: the frontmatter block
+# sits at the top, so the head suffices and a huge file costs no more.
+_DR_HEAD_BYTES = 64 * 1024
+
+
 def _is_decision_request(path: Path) -> bool:
     """True if the message's frontmatter type is decision_request.
 
-    Reads only the leading frontmatter block; degrades to False on any error.
+    Reads only the head of a REGULAR file (a FIFO or other special entry
+    named *.md could block a synchronous open or read, and a hook must never
+    block a prompt -- Reviewer A R4 F1); degrades to False on any error.
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        if not stat.S_ISREG(path.stat().st_mode):
+            return False
+        with open(path, "rb") as fh:
+            head = fh.read(_DR_HEAD_BYTES)
     except OSError:
         return False
+    text = head.decode("utf-8", errors="replace")
     if not text.startswith("---"):
         return False
     rest = text.split("\n", 1)[1] if "\n" in text else ""
