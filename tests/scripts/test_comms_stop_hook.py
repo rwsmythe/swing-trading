@@ -158,6 +158,24 @@ def test_non_dict_payload_allows_stop(comms):
     assert hook.handle_stop(payload, {"SWING_ROLE": "charc"}, comms) is None
 
 
+# --- T2 (harness-template merge 2026-11-03): the HARNESS_ROLE alias --------
+
+def test_harness_role_alias_is_gated_like_swing_role(comms):
+    _seed_inbox(comms, "charc")
+    reason = hook.handle_stop(
+        {"stop_hook_active": False}, {"HARNESS_ROLE": "charc"}, comms)
+    assert reason is not None and "unread for charc" in reason
+
+
+def test_harness_role_wins_over_swing_role(comms):
+    # HARNESS_ROLE is read FIRST: an orchestrator HARNESS_ROLE is not gated
+    # even when a stale SWING_ROLE=charc is also present.
+    _seed_inbox(comms, "charc")
+    assert hook.handle_stop(
+        {"stop_hook_active": False},
+        {"HARNESS_ROLE": "orchestrator", "SWING_ROLE": "charc"}, comms) is None
+
+
 def test_output_is_ascii(comms):
     _seed_inbox(comms, "charc")
     reason = hook.handle_stop(
@@ -173,6 +191,7 @@ def test_main_blocks_and_emits_decision_json(comms, monkeypatch):
     fake_stdin = mock.Mock()
     fake_stdin.buffer = io.BytesIO(b'{"stop_hook_active": false}')
     monkeypatch.setattr(hook, "comms_root_default", lambda: comms)
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     monkeypatch.setenv("SWING_ROLE", "charc")
     with mock.patch.object(sys, "stdin", fake_stdin), \
             contextlib.redirect_stdout(buf):
@@ -184,6 +203,7 @@ def test_main_blocks_and_emits_decision_json(comms, monkeypatch):
 
 
 def test_main_always_exit_0_on_internal_error(monkeypatch):
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     monkeypatch.setenv("SWING_ROLE", "charc")
 
     def boom():
@@ -199,7 +219,8 @@ def test_main_always_exit_0_on_internal_error(monkeypatch):
 
 def test_subprocess_noop_exit_0_no_block_without_role():
     # the unseeded default: a session WITHOUT SWING_ROLE never blocks the stop.
-    env = {k: v for k, v in os.environ.items() if k != "SWING_ROLE"}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
     proc = subprocess.run(
         [sys.executable, str(_HOOK_PATH)],
         input=b'{"stop_hook_active": false}',
@@ -227,3 +248,70 @@ def test_subprocess_exit_0_when_sibling_import_broken(tmp_path):
         "a broken sibling import must fail-OPEN (exit 0), got "
         f"{proc.returncode}: {proc.stderr.decode('utf-8', 'replace')}")
     assert proc.stdout.strip() == b""  # degraded hook emits no block
+
+
+# --- Reviewer A round 5 fixes ----------------------------------------------------
+
+def _popen_hook(script: Path, env: dict):
+    return subprocess.Popen(
+        [sys.executable, str(script)], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+
+
+def _reap(proc) -> None:
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait()
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        with contextlib.suppress(OSError):
+            stream.close()
+
+
+def test_r5_f1_a_held_open_stdin_never_blocks_the_stop_hook():
+    # A director session whose payload pipe never reaches EOF: the hook must
+    # give up on stdin after its deadline and ALLOW the stop (empty payload,
+    # the fail-open direction) -- never hang the turn's end.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    env["SWING_ROLE"] = "charc"
+    proc = _popen_hook(_HOOK_PATH, env)
+    try:
+        proc.stdin.write(b'{"stop_hook_active": false}\n')
+        proc.stdin.flush()
+        try:
+            rc = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the Stop hook blocked on a held-open stdin")
+        assert rc == 0
+        assert proc.stdout.read().strip() == b""   # allowed, never blocked
+        assert b"Fatal Python error" not in proc.stderr.read()
+    finally:
+        _reap(proc)
+
+
+def test_r5_f1_a_closed_stdout_on_the_block_path_still_exits_0(tmp_path):
+    # Cell flag 5: the block decision is buffered when the stdout reader goes
+    # away; the final flush fails, and the hook must still exit 0 (not 120).
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in ("comms_stop_hook.py", "comms_unread_hook.py"):
+        (scripts / name).write_bytes((_DIR / name).read_bytes())
+    (scripts / "role_mail.py").write_text(
+        'VALID_TO = ("charc", "rd", "operator", "orchestrator")\n',
+        encoding="utf-8")
+    _seed_inbox(tmp_path / "comms", "charc")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    env["SWING_ROLE"] = "charc"
+    proc = _popen_hook(scripts / "comms_stop_hook.py", env)
+    try:
+        proc.stdout.close()
+        proc.stdin.write(b'{"stop_hook_active": false}')
+        proc.stdin.close()
+        try:
+            rc = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the Stop hook blocked")
+        assert rc == 0, proc.stderr.read()
+    finally:
+        _reap(proc)

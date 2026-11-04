@@ -25,12 +25,52 @@ each fail with an actionable message naming the singular replacement. A stale
 caller LEARNS instead of silently misrouting -- that rejection is what made the
 convention change safe to land mid-flight.
 
+VERIFIED POSTING (harness-template merge 2026-11-03, T3): ``post-verified``
+takes exactly the ``post`` arguments and, in the same call, confirms the
+message landed in the inbox it was addressed to under the mailbox root that was
+actually resolved (``--expect-root`` asserts WHICH root that is, up front,
+before anything is written). It confirms the SPECIFIC message it just wrote --
+a per-message ``msg-id`` + ``posted`` discriminator, not the shared headers
+alone -- so a header-twin (same from/to/type/subject) cannot answer for it. A
+message a receiver already acked (inbox -> read) in the verify gap still
+counts as landed. Anything else is a non-zero exit naming where the message
+actually is, or that it is nowhere. When the root was DEFAULTED and this
+checkout is a linked working copy (a worktree), a notice on stderr names the
+primary copy's mailbox -- the 2026-06-21 worktree-misdelivery class.
+
+CONTAINMENT BOUNDARY (what the _within guard is + is NOT): THIS tool's mailbox
+OPERATIONS are ``_within``-guarded fail-closed against a junctioned /
+symlinked inbox or role dir -- post delivery (recipient-tree creation + each
+delivery target, checked BEFORE any temp is staged), list/read/peek
+ENUMERATION (``_list_inbox`` / ``_list_read`` refuse an EXISTING-but-escaping
+dir BEFORE any glob/read/print), and ack (SOURCE inbox + DEST read/ dir).
+Create + enumerate paths route through ``_guarded_mkdir`` /
+``_guarded_enum_dir`` (both resolve symlinks + junctions via ``_within``); a
+MISSING dir stays empty (a not-yet-created singular inbox is normal). A post
+creates ONLY its addressed recipients' trees, never an unaddressed role's. It
+is NOT a claim that every write under ``comms/`` is guarded, and it is
+deliberately NOT a defense against an active attacker. OUT-OF-MODEL: the
+session registry (``comms/sessions/``, comms_session_registry.py), the
+launcher's ``comms/.sessions.json``, and the mail UI's own code (separate
+modules; the UI's mail writes come through post_message / ack_message here); a
+TOCTOU race (a dir swapped for a junction BETWEEN check and use); and a
+DELIBERATELY junctioned tree. A junctioned comms tree is a SETUP
+MISCONFIGURATION -- an actor who can create the junction already has the
+filesystem access any read would grant.
+
 ASCII-only console output (Windows cp1252 stdout gotcha); message files
 are written/read as UTF-8.
+
+A subject over SUBJECT_MAX_CHARS (120; operator-directed 2026-11-03, was 80)
+characters is REJECTED by post and post-verified (nothing is written) -- a
+subject names the message; the body carries it.
 
 Usage (from the repo root):
     python scripts/role_mail.py post --from charc --to rd --type status \\
         --subject "Arc 1 shipped" --body "All green."
+    python scripts/role_mail.py post-verified --from charc --to rd \\
+        --type status --subject "Arc 1 shipped" --body "All green." \\
+        --expect-root /path/to/the/main/repo/comms
     python scripts/role_mail.py list --role charc
     python scripts/role_mail.py read --role charc --all
     python scripts/role_mail.py read --role orchestrator --all
@@ -48,6 +88,7 @@ import contextlib
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 from datetime import UTC, datetime
@@ -75,14 +116,19 @@ _AUTOMATED_EMITTER_TYPES = {
 }
 
 _SLUG_MAX = 40
-# Hard cap on `--subject`, enforced in `post` before anything is written.
-# See the guard for the reasoning; 80 vs git's 50-char subject convention.
-_MAX_SUBJECT_LEN = 80
+# Hard cap on `--subject`, enforced in `post` (and so `post-verified`) before
+# anything is written. See the guard for the reasoning. The name is the
+# harness template's.
+SUBJECT_MAX_CHARS = 120  # operator-directed 2026-11-03 (was 80)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class MailError(Exception):
     """A validation / governance error to surface as exit 1 with a message."""
+
+
+class VerificationError(MailError):
+    """A posted message did not land where it was addressed (post-verified)."""
 
 
 # The one message every retired per-generation form points at (single-sourced so
@@ -156,12 +202,74 @@ def _comms_root(args: argparse.Namespace) -> Path:
     return _REPO_ROOT / "comms"
 
 
+def _within(parent: Path, child: Path) -> bool:
+    """True iff `child` resolves to a path CONTAINED in `parent` (both resolved).
+
+    ``resolve()`` follows symlinks AND Windows junctions, so this catches a
+    reparse point that escapes the mailbox tree even though the LEXICAL path
+    still reads as contained. Any resolve/comparison error is treated as NOT
+    contained (fail-closed).
+    """
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _guarded_mkdir(root: Path, target: Path) -> None:
+    """Create `target` (mkdir -p) ONLY if it resolves INSIDE `root`.
+
+    The containment choke point for THIS tool's mailbox directory creation
+    (post's recipient trees, ack's read/ dir). Resolves symlinks AND junctions
+    first (via _within), so a reparse-point dir that escapes the mailbox tree
+    while its lexical path reads as inside is REFUSED fail-closed.
+    """
+    if not _within(root, target):
+        raise MailError(
+            f"refusing to create {target}: it resolves OUTSIDE the mailbox "
+            f"root {root} (symlink/junction escape); nothing was written.")
+    target.mkdir(parents=True, exist_ok=True)
+
+
+def _guarded_enum_dir(root: Path, d: Path) -> Path:
+    """Return `d` for enumeration, REFUSING an existing-but-escaping dir.
+
+    The read-side sibling of _guarded_mkdir: list / read / peek (all through
+    _list_inbox/_list_read) must not glob/read/print the content of a
+    junctioned/symlinked inbox that resolves OUTSIDE the mailbox root. A
+    MISSING dir is fine and returned as-is (the caller treats absence as
+    empty); only an EXISTING dir that escapes once resolved is refused.
+    """
+    if d.exists() and not _within(root, d):
+        raise MailError(
+            f"refusing to enumerate {d}: it resolves OUTSIDE the mailbox root "
+            f"{root} (symlink/junction escape); nothing was read.")
+    return d
+
+
 def _ensure_tree(root: Path) -> None:
-    # Every role is singular now, so every role's {inbox,read} is bootstrapped
-    # here -- including comms/orchestrator/{inbox,read} (21-D).
+    """Bootstrap EVERY role's {inbox,read} (a test/setup helper; guarded).
+
+    No longer on the post path: post_message creates only its addressed
+    recipients' trees (_ensure_recipient_trees), so a junctioned UNADDRESSED
+    role can never be mkdir'd through on a post that never names it.
+    """
     for role in SINGULAR_INBOX_ROLES:
-        (root / role / "inbox").mkdir(parents=True, exist_ok=True)
-        (root / role / "read").mkdir(parents=True, exist_ok=True)
+        _guarded_mkdir(root, root / role / "inbox")
+        _guarded_mkdir(root, root / role / "read")
+
+
+def _ensure_recipient_trees(root: Path, inboxes: list[Path]) -> None:
+    """Create the inbox/read dirs for ONLY this post's validated recipients.
+
+    Every dir goes through the _within-guarded choke point (_guarded_mkdir).
+    The recipients' delivery targets were already containment-checked in
+    post_message BEFORE this runs, so a refusal there left the root untouched.
+    """
+    for inbox in inboxes:
+        _guarded_mkdir(root, inbox)
+        _guarded_mkdir(root, inbox.parent / "read")
 
 
 def _validate_recipients(recipients: list[str]) -> list[str]:
@@ -322,7 +430,9 @@ def _unique_dest(dest_dir: Path, filename: str) -> Path:
 
 
 def _compose(sender: str, recipient: str, mtype: str, subject: str,
-             posted: str, thread: str | None, body: str) -> str:
+             posted: str, msg_id: str, thread: str | None, body: str) -> str:
+    # msg-id: a per-message nonce (one per delivery) -- post-verified's D1
+    # discriminator, so a header-twin cannot answer for THIS message.
     lines = [
         "---",
         f"from: {sender}",
@@ -330,6 +440,7 @@ def _compose(sender: str, recipient: str, mtype: str, subject: str,
         f"type: {mtype}",
         f"subject: {subject}",
         f"posted: {posted}",
+        f"msg-id: {msg_id}",
     ]
     if thread:
         lines.append(f"thread: {thread}")
@@ -342,7 +453,9 @@ def _read_frontmatter(path: Path) -> dict[str, str]:
     fm: dict[str, str] = {}
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Unreadable OR not UTF-8: no frontmatter. A corrupt unrelated file
+        # among the read/ candidates must not abort a verify (Reviewer A R2 F2).
         return fm
     if not text.startswith("---"):
         return fm
@@ -368,6 +481,7 @@ def post_message(
     subject: str,
     body: str,
     thread: str | None = None,
+    posted_ids: list[tuple[Path, str, str, str]] | None = None,
 ) -> list[Path]:
     """Validate, governance-lock, and atomically deliver one message.
 
@@ -379,6 +493,16 @@ def post_message(
     wrote cleanly; a failure rolls back). Raises MailError on any
     validation/governance/IO failure; nothing partial is left behind. Returns
     the list of committed final Paths (recipient order).
+
+    CONTAINMENT (T3): every delivery target is checked with _within BEFORE any
+    directory is created or temp staged, so a junctioned/symlinked recipient
+    inbox is refused with the mailbox root untouched; only the ADDRESSED
+    recipients' trees are then created (_ensure_recipient_trees, guarded).
+
+    ``posted_ids`` (optional out-param): if a list is passed it is EXTENDED with
+    one ``(final_path, to_label, posted, msg_id)`` record per committed
+    delivery -- the WRITE-side discriminators post-verified uses to confirm THE
+    specific message it wrote. Every other caller leaves it None.
     """
     if sender not in VALID_FROM:
         raise MailError(
@@ -415,11 +539,13 @@ def post_message(
     # convention. Two concrete costs: `_slugify` truncates the filename to
     # `_SLUG_MAX` (40), so everything past that is invisible in a listing and reaches no
     # reader; and a subject carrying the argument duplicates the body it sits
-    # on top of. 80 is deliberately generous -- git's own subject convention is
-    # 50 -- so anything tripping this is an abstract, not a tight subject.
-    if len(subject) > _MAX_SUBJECT_LEN:
+    # on top of. The cap was 80 from 2026-08-12; the operator raised it to 120
+    # on 2026-11-03, the figure the harness template's lineage uses. Either is
+    # well past git's own 50-char convention, so anything tripping this is an
+    # abstract, not a tight subject.
+    if len(subject) > SUBJECT_MAX_CHARS:
         raise MailError(
-            f"subject is {len(subject)} chars; the cap is {_MAX_SUBJECT_LEN}. "
+            f"subject is {len(subject)} chars; the cap is {SUBJECT_MAX_CHARS}. "
             "A subject NAMES the message; the body CARRIES it. Put the finding, "
             "the evidence and the reasoning in the body -- they are why the "
             "body exists. Nothing was written."
@@ -436,7 +562,6 @@ def post_message(
             "(role->role traffic is fyi|status|query|return_report). "
             "Nothing was written."
         )
-    _ensure_tree(root)
 
     now = _now()
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
@@ -460,13 +585,30 @@ def post_message(
     # multi-recipient post delivers all-or-nothing (atomicity): stage temps in
     # each destination dir, then os.replace each into place only once every
     # temp wrote cleanly. A failure mid-stage removes the temps -> no partial.
-    targets = [
-        (
-            _unique_path(inbox, stamp, sender, slug),
-            _compose(sender, label, mtype, subject, posted, thread, body),
-        )
-        for inbox, label in resolved
-    ]
+    # THE PRE-WRITE CONTAINMENT GUARD (T3): each delivery TARGET is resolved
+    # and refused if it escapes the mailbox root through a symlink/junction --
+    # here, before any dir is created or temp staged, so a refusal leaves the
+    # root byte-for-byte untouched.
+    targets: list[tuple[Path, str]] = []
+    records: list[tuple[Path, str, str, str]] = []
+    for inbox, label in resolved:
+        final = _unique_path(inbox, stamp, sender, slug)
+        if not _within(root, final):
+            raise MailError(
+                f"post refused: delivery target {final} resolves OUTSIDE the "
+                f"mailbox root {root} (symlink/junction escape); nothing was "
+                "written.")
+        msg_id = secrets.token_hex(8)
+        targets.append(
+            (final, _compose(sender, label, mtype, subject, posted, msg_id,
+                             thread, body)))
+        records.append((final, label, posted, msg_id))
+
+    # All targets contained: NOW create the trees for THIS post's recipients
+    # ONLY (never an unaddressed role's -- a junctioned unaddressed role dir
+    # must not be mkdir'd through on a post that never names it).
+    _ensure_recipient_trees(root, [inbox for inbox, _label in resolved])
+
     staged: list[tuple[Path, Path]] = []  # (temp, final)
     try:
         for final, content in targets:
@@ -507,6 +649,9 @@ def post_message(
             f"post failed during delivery ({exc}); rolled back, nothing delivered."
         ) from exc
 
+    if posted_ids is not None:
+        committed_set = set(committed)
+        posted_ids.extend(r for r in records if r[0] in committed_set)
     return committed
 
 
@@ -523,8 +668,11 @@ def ack_message(root: Path, role: str, filename: str,
     gets the actionable MailError instead of a TypeError -- passing anything but
     None is REFUSED before any move (D2 on the library entry point; an ignored
     selector would silently ack the singular inbox while the caller believed it
-    addressed a generation). Raises MailError on an invalid role, a retired
-    session_id, a traversal attempt, or a missing file.
+    addressed a generation). BOTH ends of the move are containment-guarded
+    (T3): the SOURCE inbox (a junctioned inbox cannot make ack read/remove an
+    EXTERNAL file) and the DEST read/ dir (via _guarded_mkdir). Raises MailError
+    on an invalid role, a retired session_id, a traversal attempt, a missing
+    file, or a containment escape.
     """
     if role not in VALID_TO:
         raise MailError(
@@ -534,11 +682,21 @@ def ack_message(root: Path, role: str, filename: str,
         raise MailError(f"refusing non-basename filename {filename!r}")
     inbox_dir = _role_inbox_dir(root, role)
     read_dir = _role_read_dir(root, role)
+    if not _within(root, inbox_dir):
+        raise MailError(
+            f"refusing to ack from {inbox_dir}: it resolves OUTSIDE the mailbox "
+            f"root {root} (symlink/junction escape); nothing was moved.")
     src = inbox_dir / filename
     if not src.is_file():
         raise MailError(
             f"no inbox message named {filename!r} for role {role}")
-    read_dir.mkdir(parents=True, exist_ok=True)
+    if not _within(root, src):
+        # A message FILE that is itself a link out of the tree (Reviewer A R1
+        # F2): refused like an escaping dir. Nothing is moved.
+        raise MailError(
+            f"refusing to ack {src}: it resolves OUTSIDE the mailbox root "
+            f"{root} (symlink/junction escape); nothing was moved.")
+    _guarded_mkdir(root, read_dir)  # guard the DEST side
     dest = _unique_dest(read_dir, src.name)
     src.rename(dest)
     return dest
@@ -562,8 +720,14 @@ def _read_session_map(root: Path) -> dict[str, str]:
     """
     path = root / ".sessions.json"
     try:
+        # Only a regular file is opened: a FIFO or other special file at this
+        # name could block the read after the delivery already succeeded
+        # (self-sweep, the R3 F1 class). is_file() is False for a missing file
+        # too, and its own metadata errors land in this handler (R6 F1).
+        if not path.is_file():
+            return {}
         text = path.read_text(encoding="utf-8-sig")
-    except OSError:
+    except (OSError, UnicodeDecodeError):  # not UTF-8 -> no map (R3 F4)
         return {}
     try:
         obj = json.loads(text)
@@ -606,25 +770,379 @@ def cmd_post(args: argparse.Namespace) -> int:
     recipients = [r.strip() for r in args.to.split(",") if r.strip()]
     finals = post_message(
         root, sender, recipients, args.type, args.subject, body, args.thread)
-    # The ping line is READ-ONLY output computed AFTER the post already
-    # succeeded: a missing/malformed session map must never fail the post or
-    # change its exit code (D57 C2).
-    session_map = _read_session_map(root)
-    for final in finals:
-        role = final.parent.parent.name
-        print(f"posted -> {role}/inbox/{final.name}")
-        print(_ping_line(role, session_map))
+    _print_posted(root, finals)
     return 0
 
 
+def _print_posted(root: Path, finals: list[Path],
+                  verified_at: dict[Path, Path] | None = None) -> None:
+    """The per-delivery console lines shared by post and post-verified.
+
+    ``posted ->`` then ``ping ->`` per delivery. post-verified passes
+    ``verified_at`` (final -> where the message ACTUALLY is now -- the inbox,
+    or the read/ file a receiver acked it into) and gets a third line,
+    ``verified -> <absolute path>``. The ping line is READ-ONLY output
+    computed AFTER the post already succeeded: a missing/malformed session map
+    must never fail the post or change its exit code (D57 C2).
+    """
+    session_map = _read_session_map(root)
+    for final in finals:
+        role = final.parent.parent.name
+        print(f"posted -> {role}/inbox/{_ascii(final.name)}")
+        print(_ascii(_ping_line(role, session_map)))  # R4 F3
+        if verified_at is not None:
+            where = verified_at.get(final) or final
+            print(_ascii(f"verified -> {where.absolute()}"))
+
+
+# --- post-verified: post + confirm the landing in ONE call ------------------
+# (harness-template merge 2026-11-03, T3; ported from the template's
+# role_mail.py at master 4335ff6.) The manual discipline this mechanizes is
+# "post, then go look whether the file is really where you meant it" --
+# skipped exactly when it matters, and the failure it catches is silent by
+# nature (the post reports success either way): the 2026-06-21 incident, where
+# a post from a worktree cwd landed in the worktree's gitignored comms/.
+
+def _same_dir(a: Path, b: Path) -> bool:
+    """True iff two paths name the same directory (existing or not).
+
+    samefile when both exist; otherwise the RESOLVED paths are compared, so a
+    not-yet-created child reached through a symlinked/junctioned parent still
+    matches its real spelling (Reviewer A R1 F5).
+    """
+    with contextlib.suppress(OSError, ValueError):
+        if a.exists() and b.exists():
+            return os.path.samefile(str(a), str(b))
+
+    def _norm(p: Path) -> str:
+        try:
+            resolved = Path(p).resolve()
+        except (OSError, RuntimeError, ValueError):
+            resolved = Path(os.path.abspath(str(p)))
+        return os.path.normcase(str(resolved))
+
+    return _norm(a) == _norm(b)
+
+
+def _linked_checkout_primary(repo_root: Path) -> Path | None:
+    """The PRIMARY checkout behind a linked working copy, or None.
+
+    A linked working copy (a git worktree) carries a ``.git`` FILE (a
+    ``gitdir:`` pointer) where a primary checkout has a ``.git`` directory.
+    Used only to NOTICE that a DEFAULTED mailbox root belongs to the linked
+    copy -- posting into one on purpose is legitimate, so this never fails a
+    post. Any problem reading the pointer yields None (advisory, never raises).
+    """
+    try:
+        marker = repo_root / ".git"
+        if not marker.is_file():
+            return None
+        text = marker.read_text(encoding="utf-8", errors="replace").strip()
+        prefix = "gitdir:"
+        if not text.lower().startswith(prefix):
+            return None
+        pointer = Path(text[len(prefix):].strip())
+        if not pointer.is_absolute():
+            # A relative pointer is relative to the CHECKOUT, never the
+            # process cwd (Reviewer A R1 F6).
+            pointer = Path(os.path.normpath(str(repo_root / pointer)))
+        # Only the linked-worktree shape <primary>/.git/worktrees/<name>
+        # names a primary checkout. A submodule pointer (.git/modules/<name>,
+        # and any worktree of one) does not, so it gets no notice rather
+        # than a wrong one (Reviewer A R4 F4).
+        admin = pointer.parent
+        if admin.name == "worktrees" and admin.parent.name == ".git":
+            return admin.parent.parent
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _read_sibling(inbox_path: Path) -> Path | None:
+    """For an ``.../inbox/<file>`` path, its ``.../read/<file>`` sibling.
+
+    None when the path is not directly under an ``inbox/`` directory.
+    """
+    if inbox_path.parent.name != "inbox":
+        return None
+    return inbox_path.parent.parent / "read" / inbox_path.name
+
+
+def _landing_candidates(inbox_final: Path, by_nonce: bool) -> list[Path]:
+    """Where a delivered message may legitimately be now, in search order.
+
+    The addressed inbox path, then its ``read/`` sibling (a receiver acked it
+    in the verify gap). When searching BY NONCE, also the ``read/<stem>-N.md``
+    names ``_unique_dest`` gives an ack whose plain name was already taken --
+    e.g. a same-second, same-subject twin acked earlier (Reviewer A R1 F1).
+    """
+    out = [inbox_final]
+    sibling = _read_sibling(inbox_final)
+    if sibling is None:
+        return out
+    out.append(sibling)
+    if by_nonce and sibling.parent.is_dir():
+        pat = re.compile(re.escape(sibling.stem) + r"-(\d+)\.md")
+        suffixed = []
+        for cand in sibling.parent.glob(sibling.stem + "-*.md"):
+            m = pat.fullmatch(cand.name)
+            if m:
+                suffixed.append((int(m.group(1)), cand))
+        out.extend(c for _n, c in sorted(suffixed))
+    return out
+
+
+def _locate_landing(inbox_final: Path, want_msg_id: str | None = None,
+                    root: Path | None = None
+                    ) -> tuple[Path | None, dict[str, str]]:
+    """(where the message REALLY is now, its frontmatter), or (None, {}).
+
+    With ``want_msg_id`` the message is located by its nonce among the
+    candidates (falling back to the first readable candidate, so a mismatch
+    is REPORTED as a header-twin rather than as "did not land"). A candidate
+    that vanishes between its existence check and its read was acked in that
+    instant: the search moves on to the read/ candidates instead of reporting
+    it unreadable (Reviewer A R1 F3). Two passes cover an ack landing between
+    passes: the second re-globs, so an ack archived as ``read/<stem>-N.md``
+    after the first pass listed its candidates is found there. A nonce match
+    from EITHER pass wins; the fallback is returned only after BOTH passes
+    miss, never at the end of the first (an older archived twin would
+    otherwise pre-empt the retry -- Reviewer A R2 F1).
+
+    With ``root``, a candidate that resolves OUTSIDE it is never READ (a
+    symlinked archive twin must not be opened while searching -- Reviewer A
+    R3 F2); it can still become the fallback, with empty frontmatter, so a
+    landing that only exists outside is reported as such by the caller.
+    """
+    fallback: tuple[Path, dict[str, str]] | None = None
+    for _attempt in range(2):
+        for cand in _landing_candidates(inbox_final, want_msg_id is not None):
+            if not cand.is_file():
+                continue
+            if root is not None and not _within(root, cand):
+                if fallback is None:
+                    fallback = (cand, {})
+                continue
+            fm = _read_frontmatter(cand)
+            if not fm and not cand.is_file():
+                continue  # moved (acked) between the check and the read
+            if want_msg_id is None or fm.get("msg-id") == want_msg_id:
+                return cand, fm
+            if fallback is None:
+                fallback = (cand, fm)
+    if fallback is not None:
+        return fallback
+    return None, {}
+
+
+def _actual_landing(inbox_final: Path) -> Path | None:
+    """Where the message REALLY is now, or None if it is nowhere.
+
+    The addressed inbox path, or -- if a receiver acked it in the verify gap --
+    the ``read/`` sibling (an ack is normal traffic, not a delivery failure).
+    """
+    return _locate_landing(inbox_final)[0]
+
+
+def _landed_in_expected(landed_dir: Path, expected_inbox: Path) -> bool:
+    """True iff landed_dir is the addressed inbox OR its ``read/`` sibling."""
+    if _same_dir(landed_dir, expected_inbox):
+        return True
+    if expected_inbox.name == "inbox":
+        return _same_dir(landed_dir, expected_inbox.parent / "read")
+    return False
+
+
+def _verify_landing(root: Path, final: Path, sender: str, mtype: str,
+                    subject: str, want_posted: str | None = None,
+                    want_msg_id: str | None = None) -> str | None:
+    """Why `final` is NOT a valid landing under `root`, or None if it is.
+
+    The problem string of _check_landing (which also returns where the message
+    was found and its frontmatter, for the caller's accounting).
+    """
+    return _check_landing(root, final, sender, mtype, subject, want_posted,
+                          want_msg_id)[0]
+
+
+def _check_landing(root: Path, final: Path, sender: str, mtype: str,
+                   subject: str, want_posted: str | None = None,
+                   want_msg_id: str | None = None
+                   ) -> tuple[str | None, Path | None, dict[str, str]]:
+    """(problem-or-None, where it landed, its frontmatter) for one delivery.
+
+    Checks the message is really on disk (in its addressed ``inbox/`` OR the
+    ``read/`` sibling a receiver may have acked it into), really CONTAINED in
+    the mailbox root once symlinks/junctions are RESOLVED, really in the inbox
+    its own ``to:`` header names, really carries what was asked for, AND --
+    when the write-side discriminators are supplied (``want_posted`` /
+    ``want_msg_id``) -- really is THE specific message just composed rather
+    than a header-twin sharing from/to/type/subject.
+    """
+    landed, fm = _locate_landing(final, want_msg_id, root)
+    if landed is None:
+        return f"did not land at all: {final} is not there", None, {}
+    if not _within(root, landed):
+        return f"landed OUTSIDE the mailbox root: {landed}", landed, fm
+    if not fm:
+        return f"landed unreadable (no frontmatter): {landed}", landed, fm
+    label = fm.get("to", "")
+    try:
+        role, _sid = _split_target(label)
+        expected = _inbox_for_target(root, role)
+    except MailError as exc:
+        return (f"landed carrying an unusable 'to: {label}' ({exc}): {landed}",
+                landed, fm)
+    if not _landed_in_expected(landed.parent, expected):
+        return (f"landed in the WRONG inbox: {landed} -- addressed to "
+                f"{label!r}, whose inbox is {expected}"), landed, fm
+    # The frontmatter reader strips each value, so compare against the
+    # stripped request (a subject with surrounding spaces delivers fine and
+    # must verify fine -- Reviewer A R1 F4).
+    for field, want in (("from", sender), ("type", mtype),
+                        ("subject", subject)):
+        if fm.get(field) != str(want).strip():
+            return (f"landed with {field}={fm.get(field)!r}, expected "
+                    f"{want!r}: {landed}"), landed, fm
+    # D1 per-message discriminator: a landing matching the shared headers but
+    # carrying a DIFFERENT stamp/nonce is a header-twin, not our message.
+    # Skipped when the discriminators are absent (a mocked post / a legacy
+    # file), degrading to the header-only check.
+    if want_posted is not None and fm.get("posted") != want_posted:
+        return (f"landed with posted={fm.get('posted')!r}, expected "
+                f"{want_posted!r} (header-twin, not the message just posted): "
+                f"{landed}"), landed, fm
+    if want_msg_id is not None and fm.get("msg-id") != want_msg_id:
+        return (f"landed with msg-id={fm.get('msg-id')!r}, expected "
+                f"{want_msg_id!r} (header-twin, not the message just posted): "
+                f"{landed}"), landed, fm
+    return None, landed, fm
+
+
+def _landing_matches_request(token: str, landed: list[tuple[str, str]],
+                             posted_msg_ids: set[str] | None = None) -> bool:
+    """True iff a requested --to token is answered by one of the landed files.
+
+    ``landed`` is ``(to_label, msg_id)`` read off the files that really landed.
+    A token matches when some landed file carries its role label AND -- when
+    the write-side msg-id set is known and the landed file carries a msg-id --
+    that msg-id belongs to THIS post. When the posted set is unknown (a mocked
+    post) or the landed file has no msg-id, the match degrades to label-only.
+    """
+    role, _ = _split_target(token)
+    for lbl, mid in landed:
+        if lbl != role:
+            continue
+        if posted_msg_ids and mid and mid not in posted_msg_ids:
+            continue  # right label, but not one of THIS post's messages
+        return True
+    return False
+
+
+def cmd_post_verified(args: argparse.Namespace) -> int:
+    root = _comms_root(args)
+    # The same predicate _comms_root uses: an EMPTY --comms-root also selects
+    # the default, so it gets the default's notice (Reviewer A R3 F3).
+    defaulted = not getattr(args, "comms_root", None)
+    expect = getattr(args, "expect_root", None)
+    mismatch = expect is not None and not _same_dir(root, Path(expect))
+    # The notice goes out FIRST, so when the root is also wrong it stands next
+    # to the error explaining how the root got that way. Suppressed when
+    # --expect-root was given and MATCHED: the caller stated this exact intent.
+    if defaulted and (expect is None or mismatch):
+        primary = _linked_checkout_primary(_REPO_ROOT)
+        if primary is not None:
+            print(
+                _ascii(
+                    f"notice: mailbox root defaulted to {Path(root).absolute()},"
+                    f" which belongs to a linked working copy. The primary "
+                    f"copy's mailbox is {(primary / 'comms').absolute()}. Pass "
+                    "--comms-root if you meant that one."),
+                file=sys.stderr)
+    if mismatch:
+        # Checked BEFORE the write: a root mismatch means the message would
+        # land in a mailbox nobody is reading, so do not write it at all.
+        raise MailError(
+            f"mailbox root mismatch: resolved {Path(root).absolute()} but "
+            f"--expect-root named {Path(expect).absolute()}. Nothing was "
+            "written. Pass --comms-root to choose the root explicitly.")
+
+    sender = args.__dict__["from"]
+    body = _resolve_body(args)
+    recipients = [r.strip() for r in args.to.split(",") if r.strip()]
+    posted_ids: list[tuple[Path, str, str, str]] = []
+    finals = post_message(
+        root, sender, recipients, args.type, args.subject, body, args.thread,
+        posted_ids=posted_ids)
+
+    # The WRITE-side per-message discriminators, keyed by the exact final path
+    # this post returned (independent of what is read back -- that is what
+    # makes them a discriminator rather than a self-consistency tautology).
+    want_by_final = {f: (posted, mid) for f, _lbl, posted, mid in posted_ids}
+    posted_msg_ids = {mid for _f, _lbl, _p, mid in posted_ids}
+
+    # ONE locate+read per delivery: the same (path, frontmatter) feeds the
+    # landing check, the per-recipient accounting and the verified -> line,
+    # so an ack between two separate reads cannot make them disagree
+    # (Reviewer A R1 F3/F7). The read follows the message to the read/ file
+    # a receiver may have acked it into.
+    problems: list[str] = []
+    landed: list[tuple[str, str]] = []
+    verified_at: dict[Path, Path] = {}
+    for f in finals:
+        want_posted, want_msg_id = want_by_final.get(f, (None, None))
+        problem, where, lfm = _check_landing(
+            root, f, sender, args.type, args.subject, want_posted, want_msg_id)
+        if problem is not None:
+            problems.append(problem)
+        if where is not None:
+            verified_at[f] = where
+            landed.append((lfm.get("to", ""), lfm.get("msg-id", "")))
+    # Tie each requested recipient to THIS post's messages, not the shared
+    # label alone.
+    for token in dict.fromkeys(recipients):
+        if not _landing_matches_request(token, landed, posted_msg_ids):
+            landed_labels = [lbl for lbl, _ in landed]
+            problems.append(
+                f"nothing landed for requested recipient {token!r} "
+                f"(landed: {', '.join(landed_labels) or 'nothing'})")
+    if problems:
+        raise VerificationError(
+            "post could NOT be verified -- "
+            + "; ".join(problems)
+            + ". The write path reported success, so treat the message as "
+              "NOT delivered until this is resolved.")
+    _print_posted(root, finals, verified_at=verified_at)
+    return 0
+
+
+def _contained_files(root: Path, d: Path) -> list[Path]:
+    """The *.md files of `d`, REFUSING the lot if any resolves outside `root`.
+
+    The per-FILE half of the enumeration guard (Reviewer A R1 F2): a contained
+    inbox holding a message file that is itself a link out of the tree is
+    refused BEFORE any path is returned, so nothing is listed, read or printed.
+    """
+    paths = sorted(d.glob("*.md")) if d.is_dir() else []
+    for path in paths:
+        if not _within(root, path):
+            raise MailError(
+                f"refusing to enumerate {path}: it resolves OUTSIDE the mailbox "
+                f"root {root} (symlink/junction escape); nothing was read.")
+    return paths
+
+
 def _list_inbox(root: Path, role: str) -> list[Path]:
-    inbox = _role_inbox_dir(root, role)
-    return sorted(inbox.glob("*.md")) if inbox.is_dir() else []
+    # The enumeration choke shared by read/list/peek -- guarded FIRST so a
+    # junctioned inbox (or an escaping message file) is refused BEFORE any
+    # glob result is read or printed (T3).
+    inbox = _guarded_enum_dir(root, _role_inbox_dir(root, role))
+    return _contained_files(root, inbox)
 
 
 def _list_read(root: Path, role: str) -> list[Path]:
-    rd = _role_read_dir(root, role)
-    return sorted(rd.glob("*.md")) if rd.is_dir() else []
+    rd = _guarded_enum_dir(root, _role_read_dir(root, role))
+    return _contained_files(root, rd)
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -712,6 +1230,29 @@ def _add_comms_root(p: argparse.ArgumentParser) -> None:
         help="mailbox root (default: <repo>/comms; tests pass tmp_path)")
 
 
+def _add_post_arguments(p: argparse.ArgumentParser) -> None:
+    """The message arguments shared by `post` and `post-verified`.
+
+    Single-sourced so `post-verified` is a drop-in for `post` -- swapping the
+    subcommand word can never silently change how the message is addressed.
+    """
+    _add_comms_root(p)
+    p.add_argument("--from", required=True, dest="from",
+                   help="sender: " + "|".join(VALID_FROM))
+    p.add_argument(
+        "--to", required=True,
+        help="recipient(s), comma-separated: " + "|".join(VALID_TO)
+        + " (every role is a singular inbox; a :<session_id> suffix is retired"
+          " and refused)")
+    p.add_argument("--type", required=True,
+                   help="message type: " + "|".join(VALID_TYPES))
+    p.add_argument("--subject", required=True)
+    p.add_argument("--body", default=None, help="inline body text")
+    p.add_argument("--body-file", dest="body_file", default=None,
+                   help="read body from this file")
+    p.add_argument("--thread", default=None, help="optional thread slug")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = _AsciiArgumentParser(
         description="Inter-role file mailbox (comms Stage 1).")
@@ -721,22 +1262,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_post = sub.add_parser("post", help="post a message to recipient inbox(es)")
-    _add_comms_root(p_post)
-    p_post.add_argument("--from", required=True, dest="from",
-                        help="sender: " + "|".join(VALID_FROM))
-    p_post.add_argument(
-        "--to", required=True,
-        help="recipient(s), comma-separated: " + "|".join(VALID_TO)
-        + " (every role is a singular inbox; a :<session_id> suffix is retired"
-          " and refused)")
-    p_post.add_argument("--type", required=True,
-                        help="message type: " + "|".join(VALID_TYPES))
-    p_post.add_argument("--subject", required=True)
-    p_post.add_argument("--body", default=None, help="inline body text")
-    p_post.add_argument("--body-file", dest="body_file", default=None,
-                        help="read body from this file")
-    p_post.add_argument("--thread", default=None, help="optional thread slug")
+    _add_post_arguments(p_post)
     p_post.set_defaults(func=cmd_post)
+
+    p_verified = sub.add_parser(
+        "post-verified",
+        help="post AND confirm the message landed where it was addressed")
+    _add_post_arguments(p_verified)
+    p_verified.add_argument(
+        "--expect-root", dest="expect_root", default=None,
+        help="fail BEFORE writing unless the resolved mailbox root is this "
+             "directory (guards against posting into the wrong checkout)")
+    p_verified.set_defaults(func=cmd_post_verified)
 
     # The flag is KEPT (not deleted) purely so a stale caller gets the actionable
     # retirement message instead of argparse's bare "unrecognized arguments".

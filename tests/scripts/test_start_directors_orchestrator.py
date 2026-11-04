@@ -8,6 +8,7 @@ test, skip-guarded on the operator's box where powershell + claude both resolve
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -254,6 +255,27 @@ def test_dryrun_launch_line_scrubs_markers_before_claude():
     assert launch.index("$env:SWING_ROLE='charc'") < claude_at
 
 
+# --- T2 (harness-template merge 2026-11-03): HARNESS_ROLE alias ------------
+# The template's hooks read HARNESS_ROLE; this instance's read HARNESS_ROLE
+# first and SWING_ROLE second. The spawned shell sets BOTH, HARNESS_ROLE
+# IMMEDIATELY after SWING_ROLE, so a seat launched here is recognised by either
+# reader and no existing SWING_ROLE pin moves.
+
+def test_build_launch_command_sets_harness_role_right_after_swing_role():
+    text = _script_text()
+    assert "`$env:SWING_ROLE='$role'; `$env:HARNESS_ROLE='$role'; " in text
+
+
+@pytest.mark.parametrize("role", ["charc", "orchestrator"])
+def test_dryrun_launch_line_sets_harness_role_after_swing_role(role):
+    r, out = _dryrun("-Role", role)
+    assert r.returncode == 0
+    launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
+    pair = f"$env:SWING_ROLE='{role}'; $env:HARNESS_ROLE='{role}'; "
+    assert pair in launch
+    assert launch.index(pair) < launch.index("; claude ")
+
+
 # --- the launcher scrubs the Bash-tool environment leak (2026-09-23) -------
 # Claude Code injects NO_COLOR=1 and GIT_EDITOR=true into the shell its Bash
 # tool runs commands in; a self-launched successor inherits them via
@@ -351,30 +373,117 @@ def test_dryrun_launch_line_disables_bg_shell_reaper_after_scrub_before_claude()
 # C:\Program Files\Git\usr\bin\bash.exe costs 60-900 ms on this box (root cause
 # unproven after an admin-level elimination); identical bytes at any other
 # path are instant. The CLI honours CLAUDE_CODE_GIT_BASH_PATH; the launcher
-# sets it in the spawned shell beside DISABLE_AUTOUPDATER and REFUSES to
-# launch if the copy is absent -- a Git reinstall wipes it silently, and a
-# seat launched without it pays 100+ s per Bash tool call.
+# sets it in the spawned shell beside DISABLE_AUTOUPDATER.
+#
+# T4 (harness-template merge 2026-11-03; the template's Invoke-BashCcPreflight
+# at 8031617): when the fast copy is absent (a Git reinstall wipes it
+# silently) the launcher WARNS, naming the path and the opt-in remedy, and
+# spawns with the sibling bash.exe; it REFUSES only when that is absent too. A
+# DIRECTORY at either path is not a bash (-PathType Leaf). The DryRun prints
+# the path actually chosen. HARNESS_BASH_CC_PATH redirects the checked path
+# under -DryRun ONLY (the hermetic test seam; a real launch never reads it).
 
 _GIT_BASH_COPY = r"C:\Program Files\Git\usr\bin\bash-cc.exe"
 
 
-def test_launcher_names_the_bash_copy_and_refuses_when_absent():
+def test_launcher_names_the_bash_copy_and_falls_back_before_the_probe():
     text = _script_text()
     assert _GIT_BASH_COPY in text
-    # the preflight refuses BEFORE the first claude invocation
     probe = "(claude --version | Out-String)"
-    guard = "Test-Path $GitBashPath"
+    guard = "Test-Path -LiteralPath $checkPath -PathType Leaf"
     assert guard in text
     assert text.index(guard) < text.index(probe), (
         "the launcher probes the CLI before it checks the bash copy exists")
-    assert "throw" in text[text.index(guard):text.index(guard) + 400]
+    block = text[text.index(guard):text.index(probe)]
+    # the sibling plain bash is checked as a LEAF too; a miss there throws,
+    # a hit warns and is the chosen path
+    assert "'bash.exe'" in block
+    assert "Test-Path -LiteralPath $plain -PathType Leaf" in block
+    assert "throw" in block and "Write-Warning" in block
+    assert "$script:GitBashPath = $checkPath" in block
 
 
-def test_dryrun_launch_line_sets_git_bash_path_after_scrub_before_claude():
-    r, out = _dryrun("-Role", "charc")
+def test_launcher_test_override_is_dryrun_only():
+    text = _script_text()
+    assert "if ($DryRun -and $env:HARNESS_BASH_CC_PATH)" in text
+
+
+def _squash(s) -> str:
+    # The warning/error streams hard-wrap at the console width, mid-path, so
+    # compare with ALL whitespace removed (a " ".join would leave a space
+    # inside a wrapped path and false-fail on a long tmp path).
+    return "".join(str(s).split())
+
+
+def _dryrun_env(extra_env, *args):
+    if shutil.which("powershell") is None or shutil.which("claude") is None:
+        pytest.skip("powershell + claude CLI required for the behavioral DryRun")
+    env = {**os.environ, **extra_env}
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-File", str(_SCRIPT), *args, "-DryRun"],
+        capture_output=True, text=True, timeout=60, env=env)
+    return r, r.stdout + r.stderr
+
+
+def test_dryrun_falls_back_to_sibling_bash_when_fast_copy_absent(tmp_path):
+    fast = tmp_path / "bash-cc.exe"           # absent
+    plain = tmp_path / "bash.exe"
+    plain.write_bytes(b"stub")
+    r, out = _dryrun_env({"HARNESS_BASH_CC_PATH": str(fast)}, "-Role", "charc")
+    assert r.returncode == 0, out
+    flat = _squash(out)                        # the warning stream wraps
+    assert "WARNING" in out
+    assert _squash(fast) in flat and _squash(plain) in flat
+    assert "Copy-Item" in flat                 # the opt-in remedy is named
+    launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
+    assert f"$env:CLAUDE_CODE_GIT_BASH_PATH='{plain}'" in launch
+    assert str(fast) not in launch
+    assert f"git bash: {plain}" in out         # the DryRun prints the CHOSEN path
+
+
+def test_dryrun_uses_fast_copy_when_present_without_warning(tmp_path):
+    fast = tmp_path / "bash-cc.exe"
+    fast.write_bytes(b"stub")
+    (tmp_path / "bash.exe").write_bytes(b"stub")
+    r, out = _dryrun_env({"HARNESS_BASH_CC_PATH": str(fast)}, "-Role", "charc")
+    assert r.returncode == 0, out
+    assert "WARNING" not in out
+    assert f"git bash: {fast}" in out
+    launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
+    assert f"$env:CLAUDE_CODE_GIT_BASH_PATH='{fast}'" in launch
+
+
+def test_dryrun_refuses_when_neither_bash_exists(tmp_path):
+    fast = tmp_path / "bash-cc.exe"
+    r, out = _dryrun_env({"HARNESS_BASH_CC_PATH": str(fast)}, "-Role", "charc")
+    assert r.returncode != 0
+    flat = _squash(out)
+    assert _squash(fast) in flat and _squash(tmp_path / "bash.exe") in flat
+    assert "cmd:" not in out                   # nothing computed, nothing launched
+
+
+def test_dryrun_a_directory_is_not_a_bash(tmp_path):
+    # -PathType Leaf: a DIRECTORY named bash-cc.exe / bash.exe must not pass
+    (tmp_path / "bash-cc.exe").mkdir()
+    (tmp_path / "bash.exe").mkdir()
+    r, out = _dryrun_env(
+        {"HARNESS_BASH_CC_PATH": str(tmp_path / "bash-cc.exe")}, "-Role", "charc")
+    assert r.returncode != 0
+    assert "cmd:" not in out
+
+
+def test_dryrun_launch_line_sets_git_bash_path_after_scrub_before_claude(
+        tmp_path):
+    # Hermetic (Reviewer A R1 F10): the fast copy is staged through the DryRun
+    # seam, so this ordering pin holds on a box WITHOUT bash-cc.exe too (where
+    # the launcher now correctly falls back). The literal default path is
+    # pinned by the static test above.
+    fast = tmp_path / "bash-cc.exe"
+    fast.write_bytes(b"stub")
+    r, out = _dryrun_env({"HARNESS_BASH_CC_PATH": str(fast)}, "-Role", "charc")
     assert r.returncode == 0
     launch = next(ln for ln in out.splitlines() if "  launch: " in ln)
-    stanza = "$env:CLAUDE_CODE_GIT_BASH_PATH='" + _GIT_BASH_COPY + "'"
+    stanza = "$env:CLAUDE_CODE_GIT_BASH_PATH='" + str(fast) + "'"
     assert stanza in launch
     at = launch.index(stanza)
     last_scrub = max(

@@ -22,6 +22,7 @@ Output is ASCII (Windows cp1252 stderr); registry files are written as UTF-8.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from datetime import UTC, datetime
@@ -41,17 +42,46 @@ except Exception as _import_exc:  # noqa: BLE001 -- never block a session/prompt
     _REGISTRY_IMPORT_OK = False
     _REGISTRY_IMPORT_ERR = _import_exc
 
+# The unread hook's BOUNDED stdin reader and its process finisher (Reviewer A
+# R5 F1): a payload pipe that never reaches EOF is abandoned at its deadline
+# instead of blocking the prompt. Guarded like the registry import; if the
+# sibling cannot load, the plain read below is the fallback.
+try:
+    import comms_unread_hook as _unread_hook  # noqa: E402
+except Exception:  # noqa: BLE001 -- never block a session/prompt
+    _unread_hook = None
+
+
+# The harness template's role env var (renamed there from SWING_ROLE). Read as an
+# ALIAS ahead of the registry's ROLE_ENV (SWING_ROLE); the launcher sets both
+# (harness-template merge 2026-11-03, T2).
+HARNESS_ROLE_ENV = "HARNESS_ROLE"
+
+
+def _role_from_env(env: dict) -> str:
+    """HARNESS_ROLE, else the registry's ROLE_ENV (SWING_ROLE), else ''."""
+    return env.get(HARNESS_ROLE_ENV) or env.get(_reg.ROLE_ENV, "")
+
 
 def _read_payload() -> dict:
     """Parse the hook JSON from stdin; {} on any problem (degrade-gracefully).
 
     Defensive against pytest's no-stdin DontReadFromInput (which raises on
-    .read()) and any decode/parse failure.
+    .read()) and any decode/parse failure. Read through the unread hook's
+    bounded reader (raw bytes, decoded utf-8-sig) when the sibling loaded; a
+    payload that does not reach EOF in its deadline degrades to {}. Without
+    the sibling, the plain read (Reviewer A R5 F1).
     """
     import json
 
     try:
-        raw = sys.stdin.read()
+        if _unread_hook is not None:
+            raw_bytes = _unread_hook._read_stdin_bytes(sys.stdin)
+            if raw_bytes is None:
+                return {}
+            raw = raw_bytes.decode("utf-8-sig")
+        else:
+            raw = sys.stdin.read()
     except Exception:  # noqa: BLE001
         return {}
     if not raw or not raw.strip():
@@ -94,7 +124,7 @@ def handle_session_start(payload: dict, env: dict, root: Path,
     """
     _reg.prune_stale(root, now)  # ALWAYS, regardless of role
 
-    role = env.get(_reg.ROLE_ENV, "")
+    role = _role_from_env(env)
     if role not in _reg.REGISTRABLE_ROLES:
         return
 
@@ -116,7 +146,7 @@ def handle_heartbeat(payload: dict, env: dict, root: Path,
     Refresh last_seen for any REGISTRABLE role (recreate-if-missing self-heal).
     Presence-only: no mailbox directory is touched (21-D).
     """
-    role = env.get(_reg.ROLE_ENV, "")
+    role = _role_from_env(env)
     if role not in _reg.REGISTRABLE_ROLES:
         return
 
@@ -130,10 +160,13 @@ def handle_heartbeat(payload: dict, env: dict, root: Path,
 
 def main(argv: list[str] | None = None) -> int:
     if not _REGISTRY_IMPORT_OK:
-        print(
-            "[registry] WARNING: could not import comms_session_registry "
-            f"({_REGISTRY_IMPORT_ERR!r}); skipping registration. Not blocked.",
-            file=sys.stderr)
+        # The warning sat outside every guard (self-sweep, R5 rulings): a gone
+        # stderr must never fail the hook.
+        with contextlib.suppress(Exception):
+            print(
+                "[registry] WARNING: could not import comms_session_registry "
+                f"({_REGISTRY_IMPORT_ERR!r}); skipping registration. Not "
+                "blocked.", file=sys.stderr)
         return 0
     argv = list(sys.argv[1:]) if argv is None else argv
     mode = argv[0] if argv else ""
@@ -156,4 +189,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if _unread_hook is not None:
+        # Guarded flush; no finalization after an abandoned stdin read.
+        _unread_hook.finish_hook_process(main())
+    else:
+        # No sibling: the same guarded flush, inline. A gone stdout/stderr
+        # reader must not turn main()'s 0 into finalization's 120 (R6 F2).
+        _rc = main()
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001 -- the reader is gone
+            os._exit(_rc)
+        sys.exit(_rc)

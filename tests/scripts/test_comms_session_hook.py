@@ -69,6 +69,38 @@ def test_session_start_registers_orchestrator(root):
     assert entry["role"] == "orchestrator"
 
 
+# --- T2 (harness-template merge 2026-11-03): the HARNESS_ROLE alias --------
+
+def test_session_start_registers_via_harness_role_alias(root):
+    hook.handle_session_start(
+        {"session_id": "h1", "transcript_path": "/t.jsonl"},
+        {"HARNESS_ROLE": "orchestrator"}, root, _NOW)
+    entry = reg.read_entry(root, "h1")
+    assert entry is not None and entry["role"] == "orchestrator"
+
+
+def test_harness_role_wins_over_swing_role(root):
+    # HARNESS_ROLE is read FIRST: an unregistrable HARNESS_ROLE wins over a
+    # registrable SWING_ROLE (no entry), and a registrable one is the role
+    # recorded even when SWING_ROLE names another.
+    hook.handle_session_start(
+        {"session_id": "h2"},
+        {"HARNESS_ROLE": "operator", "SWING_ROLE": "orchestrator"}, root, _NOW)
+    assert reg.read_entry(root, "h2") is None
+    hook.handle_session_start(
+        {"session_id": "h3"},
+        {"HARNESS_ROLE": "orchestrator", "SWING_ROLE": "charc"}, root, _NOW)
+    assert reg.read_entry(root, "h3")["role"] == "orchestrator"
+
+
+def test_heartbeat_reads_harness_role_alias(root):
+    t1 = _NOW + timedelta(minutes=10)
+    reg.write_entry(root, "h4", "orchestrator", "", _NOW)
+    hook.handle_heartbeat(
+        {"session_id": "h4"}, {"HARNESS_ROLE": "orchestrator"}, root, t1)
+    assert reg.read_entry(root, "h4")["last_seen"] == t1.isoformat()
+
+
 def test_session_start_creates_no_mailbox_directory(root):
     """21-D: registration is presence-only -- it builds NO per-gen mailbox.
 
@@ -191,6 +223,7 @@ def test_main_no_args_exits_zero():
 def test_main_session_start_no_stdin_exits_zero(monkeypatch):
     # pytest's DontReadFromInput raises on stdin.read(); the hook must swallow it.
     monkeypatch.delenv("SWING_ROLE", raising=False)
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     assert hook.main(["session-start"]) == 0
     assert hook.main(["heartbeat"]) == 0
 
@@ -201,6 +234,7 @@ def test_main_internal_raise_exits_zero(monkeypatch):
 
     monkeypatch.setattr(hook, "handle_session_start", boom)
     monkeypatch.setattr(hook, "_read_payload", lambda: {"session_id": "g1"})
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     monkeypatch.setenv("SWING_ROLE", "orchestrator")
     assert hook.main(["session-start"]) == 0
 
@@ -219,6 +253,7 @@ def test_main_never_prunes_the_real_comms_tree(monkeypatch,
                         lambda root, now, *a, **k: (seen.append(Path(root)),
                                                     real_prune(root, now))[1])
     monkeypatch.delenv("SWING_ROLE", raising=False)
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
     assert hook.main(["session-start"]) == 0
     assert seen == [_never_the_real_comms_tree]
     real_comms = Path(_SCRIPTS).parent / "comms"
@@ -249,7 +284,8 @@ def test_subprocess_no_swing_role_exits_zero_no_registration(tmp_path):
     reg.write_entry(staged_root, "stalegen", "orchestrator", "", _NOW,
                     started_ts=stale)
     _force_last_seen(staged_root, "stalegen", stale)
-    env = {k: v for k, v in os.environ.items() if k != "SWING_ROLE"}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
     proc = subprocess.run(
         [sys.executable, str(staged / _HOOK_PATH.name), "session-start"],
         input=b'{"session_id":"g1"}',
@@ -269,3 +305,116 @@ def _force_last_seen(root, sid, value):
     data = json.loads(path.read_text(encoding="utf-8"))
     data["last_seen"] = value
     path.write_text(json.dumps(data), encoding="utf-8")
+
+
+# --- Reviewer A round 5 fixes ----------------------------------------------------
+
+def test_r5_f1_a_held_open_stdin_never_blocks_the_session_hook(tmp_path):
+    # The heartbeat is a UserPromptSubmit hook too: a payload pipe that never
+    # reaches EOF must be abandoned at the deadline, never block the prompt.
+    # Staged copies, so the hook's prune resolves tmp_path/comms (never the
+    # operator's live tree).
+    import contextlib
+    import os
+    import shutil
+    staged = tmp_path / "scripts"
+    staged.mkdir()
+    for src in (_HOOK_PATH, _REG_PATH, _SCRIPTS / "comms_unread_hook.py"):
+        shutil.copy2(src, staged / src.name)
+    (staged / "role_mail.py").write_text(
+        'VALID_TO = ("charc", "rd", "operator", "orchestrator")\n',
+        encoding="utf-8")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    proc = subprocess.Popen(
+        [sys.executable, str(staged / _HOOK_PATH.name), "heartbeat"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env)
+    try:
+        proc.stdin.write(b'{"session_id": "g1"}\n')
+        proc.stdin.flush()
+        try:
+            rc = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the session hook blocked on a held-open stdin")
+        assert rc == 0
+        assert b"Fatal Python error" not in proc.stderr.read()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            with contextlib.suppress(OSError):
+                stream.close()
+
+
+def test_r5_f1_the_plain_read_is_the_fallback_without_the_sibling(monkeypatch):
+    # With the unread hook's reader unavailable (its guarded import failed),
+    # the payload is still read, by the plain read.
+    import io
+    monkeypatch.setattr(hook, "_unread_hook", None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"session_id": "s1"}'))
+    assert hook._read_payload() == {"session_id": "s1"}
+
+
+def test_r5_f1_the_bounded_reader_decodes_a_bom_payload(monkeypatch):
+    import io
+
+    class _Stdin:
+        buffer = io.BytesIO(b'\xef\xbb\xbf{"session_id": "s2"}')
+
+    assert hook._unread_hook is not None
+    monkeypatch.setattr(sys, "stdin", _Stdin())
+    assert hook._read_payload() == {"session_id": "s2"}
+
+
+def test_self_sweep_the_import_failure_warning_never_raises(monkeypatch):
+    # The registry-import-failure warning was printed OUTSIDE main()'s guard;
+    # a stderr that cannot be written must not make the hook raise.
+    class _DeadStream:
+        def write(self, *_a):
+            raise OSError("stderr reader is gone")
+
+        def flush(self):
+            raise OSError("stderr reader is gone")
+
+    monkeypatch.setattr(hook, "_REGISTRY_IMPORT_OK", False)
+    monkeypatch.setattr(hook, "_REGISTRY_IMPORT_ERR", RuntimeError("x"),
+                        raising=False)
+    monkeypatch.setattr(sys, "stderr", _DeadStream())
+    assert hook.main(["heartbeat"]) == 0
+
+
+# --- Reviewer A round 6 fixes ----------------------------------------------------
+
+def test_r6_f2_no_siblings_and_a_closed_stderr_still_exit_0(tmp_path):
+    # Staged ALONE: both the registry and the unread-hook imports fail, so the
+    # hook warns on stderr and takes its no-sibling exit. With stderr's reader
+    # gone, that exit must still be 0 (not finalization's 120).
+    import contextlib
+    import os
+    staged = tmp_path / "scripts"
+    staged.mkdir()
+    (staged / _HOOK_PATH.name).write_bytes(_HOOK_PATH.read_bytes())
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    proc = subprocess.Popen(
+        [sys.executable, str(staged / _HOOK_PATH.name), "heartbeat"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env)
+    try:
+        proc.stderr.close()
+        proc.stdin.write(b"{}")
+        proc.stdin.close()
+        try:
+            rc = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the session hook blocked")
+        assert rc == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            with contextlib.suppress(OSError):
+                stream.close()

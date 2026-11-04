@@ -10,7 +10,9 @@ consistent with the comms taxonomy (autonomously processing fyi/status/return_re
 is in-lane; dispatch authority stays operator-hand-carried).
 
 Contract:
-  * Reads SWING_ROLE from env. If unset or not in {charc, rd} -> SILENT no-op
+  * Reads the role from env -- HARNESS_ROLE first, SWING_ROLE second (the
+    sibling's role_from_env; harness-template merge 2026-11-03, T2). If unset
+    or not in {charc, rd} -> SILENT no-op
     (exit 0): does nothing in any orchestrator / plain / ad-hoc session.
   * Reads the Stop-hook JSON payload from stdin (RAW BYTES, decoded STRICT
     utf-8-sig so a leading BOM is stripped regardless of the console codepage)
@@ -54,9 +56,11 @@ from pathlib import Path
 # ANY import-time failure degrades to _IMPORT_OK=False -> main() allow-stops
 # (exit 0), the same fail-OPEN direction as every runtime error path below.
 try:
+    import comms_unread_hook as _unread_hook
     from comms_unread_hook import (
         DIRECTOR_ROLES,
         comms_root_default,
+        role_from_env,
         unread_notice,
     )
     _IMPORT_OK = True
@@ -118,7 +122,7 @@ def handle_stop(payload: dict, env: dict, root: Path) -> str | None:
     inbox); returns the drain-instruction reason ONLY on a first stop (exact
     `stop_hook_active: False`) with unread mail.
     """
-    role = env.get("SWING_ROLE", "")
+    role = role_from_env(env)
     if role not in DIRECTOR_ROLES:
         return None  # no-op in every non-director session
 
@@ -146,9 +150,14 @@ def main() -> int:
     if not _IMPORT_OK:
         return 0  # R1: sibling import failed at load -> fail-open (allow stop)
     try:
+        # The sibling's bounded reader: a payload pipe that never reaches EOF
+        # is abandoned at its deadline (None) and read as EMPTY -> allow stop,
+        # the fail-open direction (Reviewer A R5 F1).
         try:
-            raw = sys.stdin.buffer.read()
+            raw = _unread_hook._read_stdin_bytes(sys.stdin)
         except Exception:  # noqa: BLE001 -- cannot read stdin -> allow stop
+            raw = b""
+        if raw is None:
             raw = b""
         payload = _parse_stop_payload(raw)
         reason = handle_stop(payload, dict(os.environ), comms_root_default())
@@ -160,4 +169,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if _IMPORT_OK:
+        # Flush under a guard and skip finalization after an abandoned stdin
+        # or a gone stdout reader (never exit 120 -- cell flag 5, R5).
+        _unread_hook.finish_hook_process(main())
+    else:
+        sys.exit(main())
