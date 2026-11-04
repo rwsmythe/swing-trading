@@ -187,6 +187,16 @@ function Get-LaunchArgs($role) {
     return @('--model', $useModel, '--effort', $useEffort, '--permission-mode', 'auto')
 }
 
+function Get-BashCcCheckPath {
+    # The path the bash preflight checks. A REAL (non-DryRun) launch ALWAYS
+    # checks $GitBashPath -- a leaked env var can never redirect a real launch.
+    # -DryRun MAY read HARNESS_BASH_CC_PATH, the hermetic test seam (template
+    # parity), so the fallback and refusal paths are testable without touching
+    # the real bash-cc.exe.
+    if ($DryRun -and $env:HARNESS_BASH_CC_PATH) { return $env:HARNESS_BASH_CC_PATH }
+    return $GitBashPath
+}
+
 function Invoke-Preflight {
     # Verify the claude CLI exists and carries the flags we depend on. Returns
     # the version string; throws on any failure (ASCII messages).
@@ -205,11 +215,26 @@ function Invoke-Preflight {
     # (root cause unproven after an admin-level elimination) while identical
     # bytes at any other path are instant. The CLI honours
     # CLAUDE_CODE_GIT_BASH_PATH; the spawned shell sets it (Build-LaunchCommand).
-    # A Git reinstall wipes the copy silently, and a seat launched without it
-    # pays 100+ s per Bash tool call -- so refuse, loudly, before the probe.
-    if (-not (Test-Path $GitBashPath)) {
-        throw "fast bash copy missing at $GitBashPath -- recreate it (admin): Copy-Item 'C:\Program Files\Git\usr\bin\bash.exe' '$GitBashPath'; then relaunch. Refusing to launch a seat onto the slow bash path."
+    # A Git reinstall wipes the copy silently.
+    #
+    # FALLBACK, NOT REFUSAL (harness-template merge 2026-11-03, T4; the
+    # template's Invoke-BashCcPreflight at 8031617): the fast copy is an
+    # OPTIONAL one-machine workaround, so when it is absent the launcher WARNS
+    # (naming the path and the opt-in remedy) and spawns with the plain
+    # bash.exe beside it; it THROWS only when that is absent too. -PathType
+    # Leaf on BOTH checks: a DIRECTORY at either path is not a runnable bash.
+    # The chosen path is written back to $script:GitBashPath, which
+    # Build-LaunchCommand reads, and the main section prints it.
+    $checkPath = Get-BashCcCheckPath
+    if (-not (Test-Path -LiteralPath $checkPath -PathType Leaf)) {
+        $plain = Join-Path (Split-Path -Parent $checkPath) 'bash.exe'
+        if (-not (Test-Path -LiteralPath $plain -PathType Leaf)) {
+            throw "fast bash copy missing at $checkPath, and no bash.exe beside it ($plain). Install Git for Windows, then relaunch. Refusing to launch a seat with no bash."
+        }
+        Write-Warning "fast bash copy missing at $checkPath -- spawning with $plain instead (Bash tool calls may be slow on this box). Opt back in (admin): Copy-Item '$plain' '$checkPath'; then relaunch."
+        $checkPath = $plain
     }
+    $script:GitBashPath = $checkPath
     $cmd = Get-Command claude -ErrorAction SilentlyContinue
     if ($null -eq $cmd) {
         throw "claude CLI not found on PATH. Install Claude Code or open a shell where 'claude' resolves."
@@ -437,6 +462,7 @@ catch {
     exit 1
 }
 Write-Info "claude CLI OK: $version"
+Write-Info "git bash: $GitBashPath"
 if ($DryRun) { Write-Info "DRY RUN -- no windows launched, session map not written." }
 
 if ($Role -eq 'both') { $roles = @('charc', 'rd') }
