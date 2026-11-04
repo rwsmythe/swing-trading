@@ -123,8 +123,8 @@ whatever its size; the roll comes at the first clean boundary after 400K. The pr
 from the template; operator-directed 2026-11-02: "the generations should not have
 handed over if the previous generation was still working"): a process spawned
 from your pane dies when the pane closes -- at the cap with a job running, wait
-for its exit line and record it, then roll; near the cap start no long job you
-cannot see finish. Then THREE acts, in this order, nothing between them (the
+for its exit line and record it, then roll; a unit that outlives your seat is
+your successor's from the ledger. Then THREE acts, in this order, nothing between them (the
 former act 3, stop the inbox Monitor, was retired 2026-11-03 as a two-month
 no-op; a seat that armed one under the named exception stops it BEFORE act 2,
 with the process-tree-scoped check in harness-architecture section 6):
