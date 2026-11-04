@@ -631,3 +631,17 @@ def test_r4_f2_a_closed_stdout_still_exits_0(tmp_path, hold_stdin):
         for stream in (proc.stdin, proc.stderr):
             with contextlib.suppress(OSError):
                 stream.close()
+
+
+def test_r4_f5_the_unread_notice_is_ascii_under_a_non_ascii_checkout(
+        comms, monkeypatch):
+    # The notice names the role_mail path; a checkout under a CJK directory
+    # must not make the line unprintable on cp1252 (it would be dropped).
+    cjk = chr(0x4E2D)
+    monkeypatch.setattr(hook, "__file__",
+                        str(comms.parent / cjk / "scripts" / "comms_unread_hook.py"))
+    _make_msg(comms, "orchestrator")
+    notice = hook.unread_notice("orchestrator", comms)
+    assert notice is not None
+    notice.encode("ascii")
+    assert "\\u4e2d" in notice

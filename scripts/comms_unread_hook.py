@@ -133,10 +133,14 @@ def unread_notice(role: str, comms_root: Path) -> str | None:
     # cwd (the 2026-06-12 blocked-prompt incident -- a persistent bash cd had
     # moved the session cwd and the relative form failed alongside the hook).
     role_mail = Path(__file__).resolve().parent / "role_mail.py"
-    return (
+    line = (
         f"[comms] {len(msgs)} unread for {role}{dr_note} -- run: "
         f'python "{role_mail}" read --role {role} --all'
     )
+    # ASCII-only: a checkout path with non-ASCII characters would make the
+    # print raise on a cp1252 console and the whole notice be dropped
+    # (Reviewer A R4 F5).
+    return line.encode("ascii", "backslashreplace").decode("ascii")
 
 
 # --- the stdin hook payload ---------------------------------------------------
