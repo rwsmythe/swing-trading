@@ -987,3 +987,23 @@ def test_r4_f4_a_submodule_pointer_is_not_a_linked_worktree(tmp_path):
         f"{(sup / '.git' / 'modules' / 'mailrepo' / 'worktrees' / 'wt').as_posix()}"
         "\n", encoding="utf-8")
     assert rm._linked_checkout_primary(wt) is None
+
+
+def test_self_sweep_a_non_regular_sessions_map_is_never_opened(root, capsys,
+                                                               monkeypatch):
+    # A FIFO named .sessions.json could block the read after the delivery; the
+    # map reader must refuse a non-regular file before opening it. A directory
+    # is the portable non-regular stand-in.
+    (root / ".sessions.json").mkdir()
+    real_read_text = Path.read_text
+    opened: list[str] = []
+
+    def spy(self, *a, **k):
+        opened.append(self.name)
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+    rc, out, err = _run(capsys, _pv(root, to="rd"))
+    assert rc == 0, err
+    assert ".sessions.json" not in opened
+    assert "ping -> rd: no session recorded" in out

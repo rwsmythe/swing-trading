@@ -22,6 +22,7 @@ Output is ASCII (Windows cp1252 stderr); registry files are written as UTF-8.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from datetime import UTC, datetime
@@ -159,10 +160,13 @@ def handle_heartbeat(payload: dict, env: dict, root: Path,
 
 def main(argv: list[str] | None = None) -> int:
     if not _REGISTRY_IMPORT_OK:
-        print(
-            "[registry] WARNING: could not import comms_session_registry "
-            f"({_REGISTRY_IMPORT_ERR!r}); skipping registration. Not blocked.",
-            file=sys.stderr)
+        # The warning sat outside every guard (self-sweep, R5 rulings): a gone
+        # stderr must never fail the hook.
+        with contextlib.suppress(Exception):
+            print(
+                "[registry] WARNING: could not import comms_session_registry "
+                f"({_REGISTRY_IMPORT_ERR!r}); skipping registration. Not "
+                "blocked.", file=sys.stderr)
         return 0
     argv = list(sys.argv[1:]) if argv is None else argv
     mode = argv[0] if argv else ""

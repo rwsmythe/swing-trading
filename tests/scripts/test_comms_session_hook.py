@@ -366,3 +366,20 @@ def test_r5_f1_the_bounded_reader_decodes_a_bom_payload(monkeypatch):
     assert hook._unread_hook is not None
     monkeypatch.setattr(sys, "stdin", _Stdin())
     assert hook._read_payload() == {"session_id": "s2"}
+
+
+def test_self_sweep_the_import_failure_warning_never_raises(monkeypatch):
+    # The registry-import-failure warning was printed OUTSIDE main()'s guard;
+    # a stderr that cannot be written must not make the hook raise.
+    class _DeadStream:
+        def write(self, *_a):
+            raise OSError("stderr reader is gone")
+
+        def flush(self):
+            raise OSError("stderr reader is gone")
+
+    monkeypatch.setattr(hook, "_REGISTRY_IMPORT_OK", False)
+    monkeypatch.setattr(hook, "_REGISTRY_IMPORT_ERR", RuntimeError("x"),
+                        raising=False)
+    monkeypatch.setattr(sys, "stderr", _DeadStream())
+    assert hook.main(["heartbeat"]) == 0
