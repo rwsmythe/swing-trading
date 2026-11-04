@@ -1,14 +1,18 @@
 """Tests for scripts/comms_unread_hook.py -- the UserPromptSubmit unread hook.
 
-The hook is stdlib-only and a no-op in any session without SWING_ROLE in
-{charc, rd}. The bulk logic is a pure function exercised over a tmp_path comms
-tree (never the real comms/); main()'s env + __file__ wiring is exercised by
-monkeypatching the default root and by a real subprocess for the no-op path.
+The hook is stdlib-only. It prints the unread line for any comms role
+(role_mail.VALID_TO) and, after it, the [ctx] context-depth gauge for any
+session whose stdin payload names a transcript (harness-template merge
+2026-11-03, T1). The bulk logic is pure functions exercised over a tmp_path
+comms tree (never the real comms/); main()'s env + stdin + __file__ wiring is
+exercised by monkeypatching the default root and by real subprocesses.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import os
 import subprocess
 import sys
@@ -109,12 +113,258 @@ def test_main_noop_without_swing_role(monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_main_noop_for_non_director_role(monkeypatch, capsys):
+def test_main_noop_for_unknown_role(monkeypatch, capsys, comms):
+    # 'pipeline' is a SENDER only (role_mail.VALID_FROM), never a recipient,
+    # so it has no inbox to notice -- and no payload means no [ctx] line.
+    _make_msg(comms, "pipeline")
     monkeypatch.delenv("HARNESS_ROLE", raising=False)
-    monkeypatch.setenv("SWING_ROLE", "orchestrator")
+    monkeypatch.setenv("SWING_ROLE", "pipeline")
+    monkeypatch.setattr(hook, "comms_root_default", lambda: comms)
     rc = hook.main()
     assert rc == 0
     assert capsys.readouterr().out == ""
+
+
+# --- T1: the unread line fires for EVERY comms role -------------------------
+
+def test_comms_roles_single_sourced_from_role_mail_valid_to():
+    spec = importlib.util.spec_from_file_location("_rm_probe", _DIR / "role_mail.py")
+    rm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rm)
+    assert tuple(hook.COMMS_ROLES) == tuple(rm.VALID_TO)
+    assert "orchestrator" in hook.COMMS_ROLES
+    # the stop hook's gate is NOT widened (it imports DIRECTOR_ROLES)
+    assert hook.DIRECTOR_ROLES == ("charc", "rd")
+
+
+def test_comms_roles_frozen_fallback_when_role_mail_unloadable(tmp_path):
+    # A copy of the hook with NO role_mail.py beside it: the module must still
+    # load (a hook must never block a prompt) and fall back to the frozen set.
+    (tmp_path / "comms_unread_hook.py").write_bytes(_HOOK_PATH.read_bytes())
+    spec = importlib.util.spec_from_file_location(
+        "_hook_no_role_mail", tmp_path / "comms_unread_hook.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert tuple(mod.COMMS_ROLES) == ("charc", "rd", "operator", "orchestrator")
+
+
+def test_main_prints_for_orchestrator_with_unread(monkeypatch, capsys, comms):
+    _make_msg(comms, "orchestrator")
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
+    monkeypatch.setenv("SWING_ROLE", "orchestrator")
+    monkeypatch.setattr(hook, "comms_root_default", lambda: comms)
+    assert hook.main() == 0
+    out = capsys.readouterr().out
+    assert "[comms] 1 unread for orchestrator" in out
+    assert "read --role orchestrator --all" in out
+
+
+# --- T1: the [ctx] context-depth gauge (template ContextDepthNoticeTest) ----
+
+def _usage_line(input_tokens: int, cache_creation: int = 0,
+                cache_read: int = 0) -> str:
+    """One transcript line whose message.usage sums to the given tokens."""
+    return json.dumps({"message": {"usage": {
+        "input_tokens": input_tokens,
+        "cache_creation_input_tokens": cache_creation,
+        "cache_read_input_tokens": cache_read,
+    }}})
+
+
+def _write(tmp_path: Path, name: str, text: str) -> Path:
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_ctx_two_usage_lines_uses_the_last_ones_sum(tmp_path):
+    # the first line sums to 100_000; the LAST sums to 250_000 across all
+    # three fields -- the gauge must reflect the last, not the first.
+    path = _write(tmp_path, "t.jsonl", "\n".join([
+        _usage_line(100_000),
+        _usage_line(200_000, cache_creation=30_000, cache_read=20_000),
+    ]))
+    assert hook.context_depth_notice(str(path), {}, "charc") == \
+        "[ctx] 250K of 1000K (25%)"
+
+
+def test_ctx_cap_line_appears_at_and_above_cap_not_below(tmp_path):
+    below = _write(tmp_path, "below.jsonl", _usage_line(399_999))
+    at = _write(tmp_path, "at.jsonl", _usage_line(400_000))
+    above = _write(tmp_path, "above.jsonl", _usage_line(400_001))
+    below_notice = hook.context_depth_notice(str(below), {}, "charc")
+    at_notice = hook.context_depth_notice(str(at), {}, "charc")
+    above_notice = hook.context_depth_notice(str(above), {}, "charc")
+    assert "DEPTH CAP" not in below_notice
+    assert "DEPTH CAP 400K REACHED" in at_notice
+    assert "docs/charc-state.md" in at_notice
+    assert "DEPTH CAP 400K REACHED" in above_notice
+
+
+def test_ctx_cap_line_role_label_defaults_to_role_when_unknown(tmp_path):
+    path = _write(tmp_path, "cap.jsonl", _usage_line(400_000))
+    assert "docs/role-state.md" in hook.context_depth_notice(str(path), {}, None)
+    assert "docs/role-state.md" in hook.context_depth_notice(str(path), {}, "")
+
+
+def test_ctx_cap_line_names_the_orchestrator_handoff_doc(tmp_path):
+    # this instance's orchestrator rolls into docs/orchestrator-handoff-<date>.md
+    path = _write(tmp_path, "cap.jsonl", _usage_line(450_000))
+    notice = hook.context_depth_notice(str(path), {}, "orchestrator")
+    assert "docs/orchestrator-handoff-<date>.md" in notice
+    assert "orchestrator-state.md" not in notice
+    assert "docs/rd-state.md" in hook.context_depth_notice(str(path), {}, "rd")
+
+
+def test_ctx_env_overrides_honored(tmp_path):
+    path = _write(tmp_path, "t.jsonl", _usage_line(600))
+    notice = hook.context_depth_notice(
+        str(path), {"HARNESS_CTX_WINDOW": "1000", "HARNESS_CTX_CAP": "1000000"},
+        "charc")
+    assert notice == "[ctx] 1K of 1K (60%)"
+    assert "DEPTH CAP" not in notice
+
+
+def test_ctx_bad_env_values_ignored_defaults_kept(tmp_path):
+    path = _write(tmp_path, "t.jsonl", _usage_line(250_000))
+    notice = hook.context_depth_notice(
+        str(path), {"HARNESS_CTX_WINDOW": "not-a-number",
+                    "HARNESS_CTX_CAP": "also-bad"}, "charc")
+    assert notice == "[ctx] 250K of 1000K (25%)"
+
+
+def test_ctx_missing_file_returns_none(tmp_path):
+    assert hook.context_depth_notice(
+        str(tmp_path / "does-not-exist.jsonl"), {}, "charc") is None
+
+
+def test_ctx_empty_file_returns_none(tmp_path):
+    assert hook.context_depth_notice(
+        str(_write(tmp_path, "empty.jsonl", "")), {}, "charc") is None
+
+
+def test_ctx_malformed_only_line_returns_none(tmp_path):
+    path = _write(tmp_path, "bad.jsonl", "not json at all {{{")
+    assert hook.context_depth_notice(str(path), {}, "charc") is None
+
+
+def test_ctx_no_transcript_path_returns_none():
+    assert hook.context_depth_notice(None, {}, "charc") is None
+    assert hook.context_depth_notice("", {}, "charc") is None
+
+
+def test_ctx_non_string_transcript_path_returns_none():
+    # a malformed payload (transcript_path: 123 / a list) must not raise
+    assert hook.context_depth_notice(123, {}, "charc") is None
+    assert hook.context_depth_notice(["x"], {}, "charc") is None
+
+
+def test_ctx_big_file_still_finds_usage_past_600kb_of_filler(tmp_path):
+    filler = ("x" * 200 + "\n") * 4000  # well over 600 KB of filler lines
+    path = tmp_path / "big.jsonl"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(filler)
+        fh.write(_usage_line(300_000))
+    assert path.stat().st_size > 600 * 1024
+    assert hook.context_depth_notice(str(path), {}, "charc") == \
+        "[ctx] 300K of 1000K (30%)"
+
+
+def test_ctx_notice_is_ascii(tmp_path):
+    path = _write(tmp_path, "cap.jsonl", _usage_line(450_000))
+    hook.context_depth_notice(str(path), {}, "orchestrator").encode("ascii")
+
+
+# --- T1: notice ORDER + the stdin payload ------------------------------------
+
+def test_ctx_notice_prints_after_comms_notice(tmp_path, comms, capsys):
+    _make_msg(comms, "charc")
+    transcript = _write(tmp_path, "transcript.jsonl", _usage_line(250_000))
+    hook.handle_user_prompt_submit(
+        {"session_id": "sid-ctx", "transcript_path": str(transcript)},
+        {"HARNESS_ROLE": "charc"}, comms)
+    out = capsys.readouterr().out
+    assert "[comms]" in out
+    assert "[ctx] 250K of 1000K (25%)" in out
+    assert out.index("[comms]") < out.index("[ctx]")
+
+
+def test_no_ctx_line_when_transcript_path_absent(comms, capsys):
+    _make_msg(comms, "charc")
+    hook.handle_user_prompt_submit(
+        {"session_id": "sid-noctx"}, {"HARNESS_ROLE": "charc"}, comms)
+    out = capsys.readouterr().out
+    assert "[comms]" in out
+    assert "[ctx]" not in out
+
+
+def test_ctx_line_fires_for_a_session_with_no_role(tmp_path, comms, capsys):
+    # the template's step 4: the gauge is for ANY session with a transcript
+    transcript = _write(tmp_path, "t.jsonl", _usage_line(120_000))
+    hook.handle_user_prompt_submit(
+        {"transcript_path": str(transcript)}, {}, comms)
+    assert capsys.readouterr().out.strip() == "[ctx] 120K of 1000K (12%)"
+
+
+def test_unread_failure_does_not_suppress_the_ctx_line(tmp_path, comms,
+                                                        capsys, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(hook, "unread_notice", boom)
+    transcript = _write(tmp_path, "t.jsonl", _usage_line(120_000))
+    hook.handle_user_prompt_submit(
+        {"transcript_path": str(transcript)}, {"SWING_ROLE": "charc"}, comms)
+    assert "[ctx] 120K" in capsys.readouterr().out
+
+
+class _FakeStdin:
+    def __init__(self, data: bytes, tty: bool = False):
+        self.buffer = io.BytesIO(data)
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+def test_read_hook_payload_decodes_raw_bytes_utf8_sig(monkeypatch):
+    data = b"\xef\xbb\xbf" + json.dumps({"transcript_path": "C:/t.jsonl"}).encode()
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(data))
+    assert hook._read_hook_payload() == {"transcript_path": "C:/t.jsonl"}
+
+
+@pytest.mark.parametrize("data", [b"", b"   \n", b"not json", b"[1, 2]", b"\xff\xfe"])
+def test_read_hook_payload_degrades_to_empty(monkeypatch, data):
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(data))
+    assert hook._read_hook_payload() == {}
+
+
+def test_read_hook_payload_never_reads_a_tty(monkeypatch):
+    fake = _FakeStdin(b'{"transcript_path": "x"}', tty=True)
+    monkeypatch.setattr(sys, "stdin", fake)
+    assert hook._read_hook_payload() == {}
+    assert fake.buffer.tell() == 0        # never read -> never blocks
+
+
+def test_read_hook_payload_no_stdin(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", None)
+    assert hook._read_hook_payload() == {}
+
+
+def test_main_reads_transcript_path_from_stdin(tmp_path, monkeypatch, capsys,
+                                               comms):
+    _make_msg(comms, "rd")
+    transcript = _write(tmp_path, "t.jsonl", _usage_line(410_000))
+    payload = json.dumps({"transcript_path": str(transcript)}).encode()
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(payload))
+    monkeypatch.delenv("HARNESS_ROLE", raising=False)
+    monkeypatch.setenv("SWING_ROLE", "rd")
+    monkeypatch.setattr(hook, "comms_root_default", lambda: comms)
+    assert hook.main() == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("[comms] 1 unread for rd")
+    assert lines[1].startswith("[ctx] 410K of 1000K (41%) -- DEPTH CAP 400K REACHED")
+    assert "docs/rd-state.md" in lines[1]
 
 
 def test_main_prints_for_director_with_unread(monkeypatch, capsys, comms):
@@ -180,7 +430,23 @@ def test_subprocess_noop_exit_0_no_output():
     env = {k: v for k, v in os.environ.items()
            if k not in ("SWING_ROLE", "HARNESS_ROLE")}
     proc = subprocess.run(
-        [sys.executable, str(_HOOK_PATH)],
+        [sys.executable, str(_HOOK_PATH)], stdin=subprocess.DEVNULL,
         capture_output=True, text=True, env=env, timeout=30)
     assert proc.returncode == 0
     assert proc.stdout.strip() == ""
+
+
+def test_subprocess_ctx_line_from_a_real_bom_payload(tmp_path):
+    # the real process path: raw stdin bytes WITH a BOM, no role -> the [ctx]
+    # line alone, exit 0 (no role -> the real comms/ tree is never read).
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(_usage_line(90_000), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWING_ROLE", "HARNESS_ROLE")}
+    payload = b"\xef\xbb\xbf" + json.dumps(
+        {"session_id": "s", "transcript_path": str(transcript)}).encode("utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(_HOOK_PATH)], input=payload,
+        capture_output=True, env=env, timeout=30)
+    assert proc.returncode == 0
+    assert proc.stdout.decode("ascii").strip() == "[ctx] 90K of 1000K (9%)"
