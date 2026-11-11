@@ -351,14 +351,17 @@ def _run_to_file(
 
 def cmd_turn(args: argparse.Namespace) -> int:
     """Run one cell turn and print the assertions as JSON."""
-    ev = pathlib.Path(args.evidence)
+    # Absolute first (Codex R1-8): the worktree is both the child's cwd and its -C argument,
+    # and the child resolves the -o path, so a relative value would resolve twice.
+    worktree = str(pathlib.Path(args.worktree).resolve())
+    ev = pathlib.Path(args.evidence).resolve()
     ev.mkdir(parents=True, exist_ok=True)
     n = args.turn
     transcript = ev / f"turn-{n}.txt"
     return_file = ev / f"return-{n}.md"
     roots = tuple(args.add_dir) if args.add_dir else DEFAULT_WRITABLE_ROOTS
     cmd = build_turn_command(
-        worktree=args.worktree,
+        worktree=worktree,
         session_id=args.session,
         return_file=str(return_file),
         model=args.model,
@@ -370,7 +373,7 @@ def cmd_turn(args: argparse.Namespace) -> int:
     # the same turn is removed too, so a return file present afterwards is THIS run's.
     return_file.unlink(missing_ok=True)
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    rc = _run_to_file(cmd, str(staged), str(transcript), args.worktree)
+    rc = _run_to_file(cmd, str(staged), str(transcript), worktree)
     text = transcript.read_text("utf-8", errors="replace")
     banner = parse_banner(text)
     identity = identity_witness(text, getpass.getuser())

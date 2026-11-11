@@ -485,6 +485,31 @@ def test_commit_stages_and_commits_with_literal_pathspecs(tmp_path, monkeypatch,
     assert m.CODEX_FOOTER in commit
 
 
+def test_turn_resolves_relative_worktree_and_evidence_paths(tmp_path, monkeypatch, capsys):
+    """Codex R1-8: the worktree is both the child's cwd and its ``-C`` argument, and the
+    ``-o`` path is resolved by the child. A relative value resolved twice
+    (``wt/wt``) and the return file landed under the child's cwd."""
+    m = _load()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codexhome"))
+    (tmp_path / "wt").mkdir()
+    (tmp_path / "brief.md").write_bytes(b"Do the task.\n")
+    seen: dict = {}
+
+    def fake_run(cmd, stdin_path, out_path, cwd):
+        seen["cmd"], seen["cwd"] = cmd, cwd
+        Path(out_path).write_text(_turn_transcript("x"), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(m, "_run_to_file", fake_run)
+    m.main(["turn", "--worktree", "wt", "--prompt", "brief.md", "--evidence", "ev", "--turn", "1"])
+    capsys.readouterr()
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("-C") + 1] == str(tmp_path / "wt")
+    assert seen["cwd"] == str(tmp_path / "wt")
+    assert cmd[cmd.index("-o") + 1] == str(tmp_path / "ev" / "return-1.md")
+
+
 # ---------------------------------------- completion evidence in the exit rule (R1-1) --
 def test_turn_aborted_after_the_witness_fails(tmp_path, monkeypatch, capsys) -> None:
     """Codex R1-1: banner and identity right, then an abort -- no footer. The footer is
