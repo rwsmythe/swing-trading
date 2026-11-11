@@ -476,8 +476,8 @@ def worktree_snapshot(worktree: str) -> dict[str, Any]:
     """HEAD, its branch, every ref and the status INCLUDING ignored files (CHARC R1-3).
 
     Compared before and after the review pass (``ref_differences`` for the refs, CHARC
-    2a): a failing difference, or a read that failed (``ok`` false), FAILS the review.
-    Writes OUTSIDE the worktree are not seen.
+    2a; ``ignored_files`` for the C1 manifest): a failing difference, or a read that
+    failed (``ok`` false), FAILS the review. Writes OUTSIDE the worktree are not seen.
     """
     reads = {
         "head": ["rev-parse", "HEAD"],
@@ -485,6 +485,8 @@ def worktree_snapshot(worktree: str) -> dict[str, Any]:
         "branch": ["rev-parse", "--symbolic-full-name", "HEAD"],
         "refs": ["for-each-ref", "--format=%(refname) %(objectname)"],
         "status_ignored": ["status", "--porcelain", "--ignored"],
+        # Every ignored file, one per entry, even under a wholly ignored directory.
+        "ignored": ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
     }
     snap: dict[str, Any] = {"ok": True}
     for name, cmd in reads.items():
@@ -497,7 +499,27 @@ def worktree_snapshot(worktree: str) -> dict[str, Any]:
         )
         snap["ok"] = snap["ok"] and proc.returncode == 0
         snap[name] = proc.stdout
+    snap["ignored_files"] = ignored_manifest(worktree, snap.pop("ignored"))
     return snap
+
+
+def ignored_manifest(worktree: str, listing: str) -> dict[str, tuple[int, int] | None]:
+    """Each ignored file's ``(size, mtime_ns)``; ``None`` for a path that cannot be read.
+
+    CHARC C1 (20261111T200824Z, on Codex R2-1): ``status --ignored`` names an existing
+    ignored file, or a wholly ignored directory, once, so it cannot see a rewrite of the
+    one or a new file under the other; this manifest can. A write that restores the mtime
+    it overwrote is not seen (a DECLARED limitation, docs/codex-reviewer.md delta 10).
+    """
+    root = pathlib.Path(worktree)
+    manifest: dict[str, tuple[int, int] | None] = {}
+    for rel in filter(None, listing.split("\0")):
+        try:
+            st = (root / rel).stat()
+            manifest[rel] = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            manifest[rel] = None
+    return manifest
 
 
 def ref_differences(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
@@ -578,6 +600,12 @@ def cmd_review(args: argparse.Namespace) -> int:
     changed = [k for k in ("head", "branch") if before[k] != after[k]]
     changed += ["refs"] if refs.pop("fail") else []
     changed += ["status_ignored"] if before["status_ignored"] != after["status_ignored"] else []
+    # The C1 manifest: a path added, removed, resized or re-timed; failure names the paths.
+    b_ign, a_ign, absent = before["ignored_files"], after["ignored_files"], object()
+    ignored_changed = sorted(
+        k for k in b_ign.keys() | a_ign.keys() if b_ign.get(k, absent) != a_ign.get(k, absent)
+    )
+    changed += ["ignored_files"] if ignored_changed else []
     summary: dict[str, Any] = {
         "exit": rc,
         "diff": str(diff),
@@ -588,6 +616,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         # The full lists (CHARC 2a), so a moved ref is visible even when it does not fail.
         "refs_before": before["refs"].splitlines(),
         "refs_after": after["refs"].splitlines(),
+        "ignored_changed": ignored_changed,
     }
     try:
         data = json.loads(result_json.read_text("utf-8", errors="replace"))

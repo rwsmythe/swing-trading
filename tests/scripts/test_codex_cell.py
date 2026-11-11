@@ -617,7 +617,8 @@ OPUS_USAGE = {"claude-opus-4-7": {"inputTokens": 10}}
 
 
 def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = None,
-            after: dict | None = None, real_run: bool = False, out: str | None = None):
+            after: dict | None = None, real_run: bool = False, out: str | None = None,
+            during=None):
     """Drive ``cmd_review`` with no real git and no real claude.
 
     ``git`` maps a git read (``status``, ``status --ignored``, ``rev-parse``,
@@ -625,7 +626,8 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
     ``after`` overrides those answers once the reviewer has run, which is how a write by the
     reviewer is simulated. ``real_run`` keeps the driver's own ``_run_to_file``, so the
     claude process (faked at ``subprocess.run``) receives the env the driver builds. ``out``
-    replaces the default ``--out`` (``<tmp>/out``, outside the worktree)."""
+    replaces the default ``--out`` (``<tmp>/out``, outside the worktree). ``during(wt)`` runs
+    while the reviewer runs: a real write to the worktree's files."""
     wt = tmp_path / "wt"
     wt.mkdir(exist_ok=True)
     prompt = tmp_path / "p.md"
@@ -636,6 +638,7 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
         "rev-parse": (0, "abc1234\n"),
         "rev-parse --symbolic-full-name": (0, "refs/heads/lane\n"),
         "for-each-ref": (0, "refs/heads/lane abc1234\n"),
+        "ls-files": (0, ""),
     }
     answers.update(git or {})
     state = {"ran": False}
@@ -648,6 +651,8 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
     def fake_git(cmd, *a, **k):
         if cmd[0] != "git":  # the claude process, reached only with real_run
             state["ran"] = True
+            if during:
+                during(wt)
             seen["cmd"], seen["env"] = cmd, k["env"]
             k["stdout"].write(json.dumps(result).encode("utf-8"))
             return _P(0, "")
@@ -665,6 +670,8 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
 
     def fake_claude(cmd, stdin_path, out_path, cwd, extra_env=None):
         state["ran"] = True
+        if during:
+            during(wt)
         seen["cmd"], seen["env"] = cmd, extra_env
         Path(out_path).write_text(json.dumps(result), encoding="utf-8")
         return 0
@@ -874,6 +881,86 @@ def test_review_records_the_full_ref_lists_before_and_after(
     )
     assert out["refs_before"] == SHARED_REFS.splitlines()
     assert out["refs_after"] == SHARED_REFS_MOVED.splitlines()
+
+
+# CHARC C1 (20261111T200824Z, on Codex R2-1): ``status --ignored`` names an existing ignored
+# file, or a wholly ignored directory, once, so it cannot see a rewrite of the one or a new
+# file under the other. Every ignored file is also read by path, size and mtime.
+OLD_MTIME_NS = 1_000_000_000 * 10**9  # 2001: any write by the reviewer moves the mtime past it
+
+
+def _ignored(wt: Path, rel: str, text: str) -> None:
+    f = wt / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text, encoding="utf-8")
+    os.utime(f, ns=(OLD_MTIME_NS, OLD_MTIME_NS))
+
+
+@pytest.mark.parametrize(
+    "rewrite", ["the ledger, rewritten longer\n", "same size\n"], ids=["size", "mtime-only"]
+)
+def test_review_fails_when_an_existing_ignored_file_is_rewritten(
+    tmp_path, monkeypatch, capsys, rewrite
+) -> None:
+    """CHARC C1: the reviewer rewrites the cell's own ledger; status (plain and ignored),
+    HEAD and the refs are unchanged, and the manifest names the file."""
+    m = _load()
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    _ignored(wt, ".copowers-findings.md", "same size\n")
+    listing = (0, ".copowers-findings.md\0")
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        git={"ls-files": listing, "status --ignored": (0, "!! .copowers-findings.md\n")},
+        during=lambda w: (w / ".copowers-findings.md").write_text(rewrite, encoding="utf-8"),
+    )
+    assert out["worktree_clean_after"] is True
+    assert out["snapshot_changed"] == ["ignored_files"]
+    assert out["ignored_changed"] == [".copowers-findings.md"]
+    assert rc == 1
+
+
+def test_review_fails_on_a_new_file_under_a_wholly_ignored_directory(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """CHARC C1: ``!! cache/`` reads the same before and after; the manifest does not."""
+    m = _load()
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    _ignored(wt, "cache/a.txt", "a\n")
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        git={"ls-files": (0, "cache/a.txt\0"), "status --ignored": (0, "!! cache/\n")},
+        after={"ls-files": (0, "cache/a.txt\0cache/b.txt\0")},
+        during=lambda w: (w / "cache" / "b.txt").write_text("b\n", encoding="utf-8"),
+    )
+    assert out["snapshot_changed"] == ["ignored_files"]
+    assert out["ignored_changed"] == ["cache/b.txt"]
+    assert rc == 1
+
+
+def test_review_passes_with_ignored_files_left_alone(tmp_path, monkeypatch, capsys) -> None:
+    m = _load()
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    _ignored(wt, ".copowers-findings.md", "x\n")
+    _ignored(wt, "cache/a.txt", "a\n")
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        git={"ls-files": (0, ".copowers-findings.md\0cache/a.txt\0")},
+    )
+    assert out["snapshot_changed"] == [] and out["ignored_changed"] == []
+    assert rc == 0
+
+
+def test_review_fails_when_the_ignored_listing_fails(tmp_path, monkeypatch, capsys) -> None:
+    m = _load()
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        after={"ls-files": (128, "")},
+    )
+    assert out["snapshot_unchanged"] is False
+    assert rc == 1
 
 
 def test_review_runs_tests_without_writing_bytecode_or_a_pytest_cache(

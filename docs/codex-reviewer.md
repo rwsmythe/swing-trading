@@ -451,7 +451,12 @@ turn in a git worktree, resumed by session id (`codex exec resume <id>`); the dr
     CHANGED value fails it only for this branch's ref and HEAD, because a worktree shares
     every ref with the main repo and `main`, remotes or another worktree's branch moving
     mid-review are not the reviewer's writes; the full before/after ref lists are in the
-    review's JSON either way. **Dispatch note: `codex_cell.py review --out` names a folder
+    review's JSON either way. Every ignored file is also read by path, size and mtime
+    (`git ls-files --others --ignored --exclude-standard`; CHARC C1, 20261111T200824Z, on
+    Codex R2-1), because `status --ignored` names an existing ignored file, or a wholly
+    ignored directory, once and so cannot see a rewrite of the one or a new file under
+    the other; a difference fails the review and `ignored_changed` names the paths.
+    **Dispatch note: `codex_cell.py review --out` names a folder
     OUTSIDE the worktree** (the review's own files there would read as a change); the
     driver refuses an `--out` at or under the worktree, so the note cannot be forgotten
     (CHARC 2c). The pass runs with
