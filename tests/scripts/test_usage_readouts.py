@@ -215,3 +215,27 @@ def test_settings_grant_is_the_exact_rule_and_records_the_operators_word():
     note = data["permissions"]["_comment_usage"]
     assert "scripts/usage_claude.py" in note
     assert "2026-11-03" in note and "2026-11-11" in note
+
+
+# ------------------------------------------- the tiebreak with an unknown budget (N2) --
+RECIPE = REPO_ROOT / "docs" / "implementer-dispatch-recipe.md"
+
+
+def test_recipe_lane_row_routes_an_unknown_budget():
+    """CHARC N2 (2026-11-11): a readout that prints ``error`` is an UNKNOWN budget, not a
+    reading, so the tiebreak has nothing to compare. The recipe's section-2A Codex-lane row
+    says where the build goes and that the operator hears of the error in the same turn."""
+    rows = [
+        ln
+        for ln in RECIPE.read_text(encoding="utf-8").splitlines()
+        if ln.startswith("| **Codex implementer lane**")
+    ]
+    assert len(rows) == 1
+    for phrase in (
+        "prints `error`",
+        "UNKNOWN",
+        "goes to the OTHER lane",
+        "if both are unknown it goes to the Claude lane (the default)",
+        "reports the error to the operator in the same turn",
+    ):
+        assert phrase in rows[0], phrase
