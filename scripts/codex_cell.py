@@ -455,6 +455,35 @@ def check_files_changed(files: list[str], worktree: str) -> list[str]:
     return problems
 
 
+def check_index_selection(files: list[str], worktree: str) -> list[str]:
+    """Problems with what each entry SELECTS in the index (Codex R3-1).
+
+    A deleted directory is no directory on disk, so ``check_files_changed`` passes it, yet
+    its name still selects every indexed file under it (a directory prefix, literal
+    pathspecs or not). Each entry may select nothing (a new file, which must then exist)
+    or exactly itself (a changed or deleted file), never another indexed path.
+    """
+    root = pathlib.Path(worktree).resolve()
+    problems: list[str] = []
+    for f in files:
+        proc = subprocess.run(
+            ["git", "-C", worktree, "--literal-pathspecs", "ls-files", "-z", "--", f],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        selected = [p for p in proc.stdout.split("\0") if p]
+        own = pathlib.PurePosixPath(f.replace("\\", "/")).as_posix()
+        if proc.returncode != 0:
+            problems.append(f"{f}: the index read failed")
+        elif any(p != own for p in selected):
+            problems.append(f"{f}: selects {len(selected)} indexed path(s), not one file")
+        elif not selected and not (root / f).is_file():
+            problems.append(f"{f}: neither a file on disk nor an indexed file")
+    return problems
+
+
 def cmd_commit(args: argparse.Namespace) -> int:
     """Commit the turn's FILES CHANGED by literal pathspec with the model's footer."""
     ret = parse_return(pathlib.Path(args.return_file).read_text("utf-8", errors="replace"))
@@ -463,7 +492,9 @@ def cmd_commit(args: argparse.Namespace) -> int:
     if not files or not subject:
         print(json.dumps({"error": "no FILES CHANGED block or COMMIT subject", **ret}))
         return 1
-    problems = check_files_changed(files, args.worktree)
+    problems = check_files_changed(files, args.worktree) or check_index_selection(
+        files, args.worktree
+    )
     if problems:
         print(json.dumps({"error": "FILES CHANGED refused; nothing staged", "problems": problems}))
         return 1

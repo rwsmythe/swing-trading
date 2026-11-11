@@ -440,9 +440,12 @@ def test_turn_passes_on_the_unelevated_identity(tmp_path, monkeypatch, capsys) -
 
 
 # ------------------------------------------- the commit's FILES CHANGED gate (R1-2) --
-def _commit(m, tmp_path, monkeypatch, capsys, entries: list[str]):
+def _commit(m, tmp_path, monkeypatch, capsys, entries: list[str],
+            index: dict[str, str] | None = None):
     """Run ``commit`` on a return file listing ``entries``; git calls are recorded, not run
-    (no real git, so the test stays outside the sandbox's git-family residue)."""
+    (no real git, so the test stays outside the sandbox's git-family residue). ``index``
+    maps an entry to what ``git ls-files -z -- <entry>`` prints (default: the entry itself,
+    one indexed file)."""
     wt = tmp_path / "wt"
     (wt / "sub").mkdir(parents=True)
     ret = tmp_path / "return-1.md"
@@ -451,12 +454,16 @@ def _commit(m, tmp_path, monkeypatch, capsys, entries: list[str]):
     calls: list[list[str]] = []
 
     class _Done:
-        stdout = "abc1234\n"
         returncode = 0
+
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
 
     def fake_run(cmd, *a, **k):
         calls.append(list(cmd))
-        return _Done()
+        if "ls-files" in cmd:
+            return _Done((index or {}).get(cmd[-1], cmd[-1] + "\0"))
+        return _Done("abc1234\n")
 
     monkeypatch.setattr(m.subprocess, "run", fake_run)
     rc = m.main(["commit", "--worktree", str(wt), "--return-file", str(ret)])
@@ -496,12 +503,41 @@ def test_commit_stages_and_commits_with_literal_pathspecs(tmp_path, monkeypatch,
     rc, out, calls = _commit(m, tmp_path, monkeypatch, capsys, ["src/ok.py", "tests/t.py"])
     assert rc == 0
     assert out["files"] == ["src/ok.py", "tests/t.py"]
-    add, commit = calls[0], calls[1]
+    add, commit = [c for c in calls if c[4] in ("add", "commit")]
     for c in (add, commit):
         assert c[:4] == ["git", "-C", str(tmp_path / "wt"), "--literal-pathspecs"]
         assert c[-3:] == ["--", "src/ok.py", "tests/t.py"]
     assert add[4] == "add" and commit[4] == "commit"
     assert m.CODEX_FOOTER in commit
+
+
+@pytest.mark.parametrize(
+    ("entry", "listing"),
+    [("pkg", "pkg/a.py\0pkg/b.py\0"), ("pkg/", "pkg/a.py\0"), ("nowhere.py", "")],
+    ids=["deleted-directory", "deleted-directory-slash", "neither-on-disk-nor-indexed"],
+)
+def test_commit_refuses_an_entry_that_is_gone_unless_it_is_one_indexed_file(
+    tmp_path, monkeypatch, capsys, entry, listing
+) -> None:
+    """Codex R3-1: a DELETED directory is no directory on disk, so ``is_dir`` passed it, and
+    its name still selects every indexed file under it (a directory prefix, literal
+    pathspecs or not). Each entry's index selection is read before anything is staged."""
+    m = _load()
+    rc, out, calls = _commit(
+        m, tmp_path, monkeypatch, capsys, ["src/ok.py", entry], index={entry: listing}
+    )
+    assert rc == 1
+    assert not [c for c in calls if c[4] in ("add", "commit")]
+    assert entry in out["problems"][0]
+
+
+def test_commit_stages_a_deleted_file_that_is_one_indexed_file(tmp_path, monkeypatch, capsys):
+    m = _load()
+    rc, out, calls = _commit(m, tmp_path, monkeypatch, capsys, ["gone.py"])
+    assert rc == 0
+    assert out["files"] == ["gone.py"]
+    reads = [c for c in calls if "ls-files" in c]
+    assert reads and reads[0][:4] == ["git", "-C", str(tmp_path / "wt"), "--literal-pathspecs"]
 
 
 def test_turn_resolves_relative_worktree_and_evidence_paths(tmp_path, monkeypatch, capsys):
