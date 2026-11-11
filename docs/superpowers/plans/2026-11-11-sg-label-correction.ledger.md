@@ -290,6 +290,7 @@ Depth is filled by the orchestrator from `scripts/cell_depth.py --agent <id>`; a
 | 0-fold | rulings folded, NO Codex (continuation cell, `08ee3b57`) | -- | -- | -- | -- | -- | -- | 0 (E1-E4 declared; E3 unsettled) | -- | -- | 0 | 255K (orchestrator, at the fold-ruling relay) |
 | 0-fold-2 | fold rulings folded (E1-E3, R1, E4, the classifier lock), NO Codex | -- | -- | -- | -- | -- | -- | 0 | -- | -- | 0 | |
 | 1 | Codex plan review: a stdin bundle (plan `51a323e3`, the ledger cut, the brief), cwd = worktree, read-only | `fast`: `gpt-6-luna` / `medium` (equal to the profile file) | 0 | present | `NEW_CRITICAL_MAJOR_FOUND` (x2, one distinct; the other token 0) | 0, WEAK (counts: the five assertions pass) | 0 / 2 / 0 | 2 (R1-01 accepted; R1-02 contested, so it counts fail-safe) | 2 NEW / 0 REOPENED | 0 | 37,032 | 313K (orchestrator, at the round-1 gate) |
+| 2 | Codex plan review: a stdin bundle (plan at `04ee3eab`, the ledger cut, the brief) plus the REQUIRED READS prompt section; cwd = worktree, read-only | `fast`: `gpt-6-luna` / `medium` (equal to the profile file) | 0 | present | `NEW_CRITICAL_MAJOR_FOUND` (x2, one distinct; the other token 0) | 4 (not weak) | 0 / 1 / 0 | 1 (R2-01 accepted) | 1 NEW / 0 REOPENED | 0 | 71,825 | |
 
 ## Round 1
 
@@ -306,3 +307,22 @@ Evidence, copied the moment the assertions passed, at `C:/Users/rwsmy/swing-data
   - What I took: steps 7 and 8 read through ONE function for the SAME row in the SAME transaction, and the plan now says so. Step 8 also asserts that `keys.hypothesis_id` equals the walk's match, refusing on inequality.
   - What I declined: the proposed test that changes the registry mid-transaction. It can only be built by monkeypatching the function under test, which would be a vacuous test of an unreachable state.
 - **Observation for the orchestrator (instrument, not a finding).** The round made ZERO repo reads: 37,032 tokens in 45 s. Both findings cite a `file:line` the reviewer never opened; R1-02's citation, `cohort_provenance_correction.py:807-840`, is the snapshot function, which is unrelated to its claim. The round passes all five mechanical assertions, so it COUNTS. For round 2 the prompt REQUIRES opening named files before findings are written. That is a prompt-design change only, with no change to the tier or the rules.
+
+## Round 2
+
+Evidence, copied the moment the assertions passed, at `C:/Users/rwsmy/swing-data/review-transcripts/sg-label/`: `.codex-review-r2.txt` (340,986 bytes), `.codex-prompt-r2.md` (125,109 bytes), and `.copowers-findings.md` (10852 bytes, rounds 1-2). Wall time was 90 s.
+
+- **Assertions.**
+  - The banner reads `gpt-6-luna` / `medium`, equal to the profile file.
+  - `^ERROR` = 0.
+  - `^tokens used` = 1 (71,825).
+  - `^NEW_CRITICAL_MAJOR_FOUND` = 2 (the final message is printed twice) and `^NO_NEW_CRITICAL_MAJOR` = 0.
+  - The process exited 0 and the transcript is non-empty (340,986 bytes).
+  - The repo-reads check passes with **4** batched shell reads, which is NOT weak. They covered 0039 (the DDL, CHECKs and triggers), 0041, `cohort_provenance_correction.py` (the last-word guard, the derivation, the authorize step, the inner writer), and the T2 route, view model, entry and origin surfaces.
+  - No read touched the ledger file, a `.codex`/`.copowers` file, `swing-data`, a database, or git (the exec command lines were grepped).
+- **R2-01. Reviewer: major, task-bearing. Mine: major, TASK-BEARING. ACCEPTED.**
+  - T2.3 validated the chosen id against the CLIENT-SUBMITTED offered set. An altered form could therefore name a same-ticker row in another bucket, or one outside the window. That would defeat F6's origin/bucket/label agreement, which is the server-stamp gotcha.
+  - The fix: the POST re-derives the eligible set through the same `list_decision_nights` that rendered the form. The chosen id must be in it; otherwise the POST returns 400, clears the anchor, and asks for a re-render. The label is the server-derived one, and the submitted label is kept only as the operator's claim for the consistency gate.
+  - Eligibility is judged at POST because `record_entry` derives the origin at POST.
+  - The fix keeps the TOCTOU gotcha intact: the chosen row is validated as the exact anchor, never re-picked.
+  - Test 2d gains the two forged-anchor cases (another bucket; outside the window) and the window-shift case.
