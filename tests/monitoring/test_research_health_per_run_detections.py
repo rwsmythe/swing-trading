@@ -24,6 +24,10 @@ Every seed mirrors the LIVE shape read mode=ro on 2026-11-11:
   - watch rows carry a non-NULL pivot and rs_rank NULL / rs_method fallback_spy;
   - detections key to their run by pattern_detection_events.pipeline_run_id
     (source 'pipeline', detection_date = action session, data_asof = asof).
+Session dates are production-true (Reviewer B B1): a run's action_session_date is
+the NEXT trading day after its data_asof_date, and the rows it writes carry that
+same date as detection_date (see _next_session). A test that needs a session
+MISMATCH seeds it explicitly and says so (test_cover_on_another_session_is_amber).
 The brief quoted run 201 as "20 watch"; the live DB has 20 on run 202 and 12 on
 run 201, so both are seeded at their real values.
 """
@@ -31,7 +35,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -54,6 +58,20 @@ _CLASSES = ("vcp", "flat_base", "cup_with_handle", "high_tight_flag", "double_bo
 _KEY = "per_run_detections"
 
 
+def _next_session(asof: str) -> str:
+    """The production relationship between a run's data_asof_date and its action
+    session: the NEXT trading day (calendar-naive: weekends skipped, no holiday
+    table -- the one holiday case, the live-121 shape, passes its session
+    explicitly). _step_pattern_detect writes detection_date = the evaluation's
+    action_session_date (runner.py, _resolve_eval_run_action_session_date), and
+    pipeline_runs.action_session_date is the same value (the lease's
+    action_session_for_run), so a run and the rows it writes share THIS date."""
+    d = date.fromisoformat(asof) + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d.isoformat()
+
+
 def _conn(tmp_path: Path) -> sqlite3.Connection:
     return ensure_schema(tmp_path / "swing.db")
 
@@ -65,7 +83,7 @@ def _seed_eval(conn, *, eval_id: int, asof: str, watch: int, aplus: int = 0,
         "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, action_session_date,"
         " tickers_evaluated, aplus_count, watch_count, skip_count, excluded_count,"
         " error_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (eval_id, f"{asof}T17:30:00", asof, session or asof,
+        (eval_id, f"{asof}T17:30:00", asof, session or _next_session(asof),
          watch + aplus + skip,
          aplus, watch, skip, 0, 0))
     rows = (
@@ -91,13 +109,14 @@ def _seed_run(conn, *, run_id: int, eval_id: int | None, asof: str,
         " data_asof_date, action_session_date, state, lease_token,"
         " evaluation_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (run_id, started, f"{asof}T17:34:00" if finished else None, "scheduled",
-         asof, session or asof, state, f"tok{run_id}", eval_id))
+         asof, session or _next_session(asof), state, f"tok{run_id}", eval_id))
 
 
 def _seed_detections(conn, *, run_id: int | None, tickers: list[str],
-                     session: str, asof: str,
+                     session: str | None = None, asof: str,
                      classes: tuple[str, ...] = _CLASSES,
                      source: str = "pipeline") -> None:
+    session = session or _next_session(asof)
     for t in tickers:
         for cls in classes:
             conn.execute(
@@ -182,21 +201,39 @@ def test_run_203_shape_110_detections_over_22_watch_is_green(tmp_path):
 
 
 def test_detections_are_counted_for_the_runs_own_id_not_a_neighbour(tmp_path):
-    """Detections written under ANOTHER run id must not satisfy the latest run
-    (a join on asof/date rather than the run's own id would read GREEN)."""
+    """Detections written under ANOTHER run id must not count as the latest
+    run's OWN detections. Production-true dates: run 200 and run 201 share
+    asof 2026-10-27 and therefore the SAME action session (2026-10-28), so run
+    200's rows carry detection_date == run 201's session. Run 200 wrote only a
+    PARTIAL class set (vcp, flat_base) for the whole pool, so it is not a full
+    cover under ruling B and run 201 stays AMBER.
+
+    Fails on: a count keyed on (detection_date / data_asof) with no run id --
+    it would see run 200's 24 rows as run 201's own and read GREEN; and on a
+    ticker-and-date cover, which would also read GREEN. (A FULL 5-class set
+    from run 200 would be a legitimate rerun cover -> GREEN; that case is
+    pinned by the live-121 tests below, not here.)"""
     conn = _conn(tmp_path)
     _seed_eval(conn, eval_id=187, asof="2026-10-27", watch=12)
     _seed_run(conn, run_id=200, eval_id=None, asof="2026-10-27")
     _seed_run(conn, run_id=201, eval_id=187, asof="2026-10-27")
-    # same asof + session, but attributed to run 200
-    _seed_detections(conn, run_id=200, tickers=_watch_tickers(conn, 187),
-                     session="2026-10-28", asof="2026-10-27")
+    pool = _watch_tickers(conn, 187)
+    # same asof AND same session (the production relationship), run 200's id
+    _seed_detections(conn, run_id=200, tickers=pool, asof="2026-10-27",
+                     classes=("vcp", "flat_base"))
     conn.execute("UPDATE pipeline_runs SET finished_ts = '2026-10-27T17:31:00'"
                  " WHERE id = 200")
     conn.commit()
+    assert conn.execute(
+        "SELECT action_session_date FROM pipeline_runs WHERE id = 201"
+    ).fetchone()[0] == conn.execute(
+        "SELECT DISTINCT detection_date FROM pattern_detection_events"
+        " WHERE pipeline_run_id = 200").fetchone()[0]   # the fixture claim, pinned
     c = _only(_check_per_run_detections(conn))
     assert c.status == "yellow"
     assert "run 201" in c.summary
+    assert "0 detections" in c.summary
+    assert f"{pool[0]} missing [cup_with_handle, high_tight_flag,"         " double_bottom_w]" in c.detail
 
 
 def test_aplus_only_pool_with_zero_detections_is_amber(tmp_path):
