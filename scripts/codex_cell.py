@@ -334,6 +334,29 @@ def build_review_command(*, model: str = CLAUDE_MODEL, effort: str = CLAUDE_EFFO
 
 
 # ----------------------------------------------------------------- running --
+# A child started from the dispatcher's Claude session must not inherit that session's
+# identity or role (Codex R3-2): with these set, a child claude starts as the PARENT's
+# session, and the comms hooks register it as the dispatcher's role. The markers are the
+# launcher's own list (scripts/start_directors.ps1 $SessionMarkers; a test reads both and
+# fails on drift); the roles are what the comms hooks read. Other settings pass through
+# (CLAUDE_CODE_GIT_BASH_PATH, which Claude Code needs on Windows, among them).
+SESSION_MARKERS = (
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_EFFORT",
+    "NO_COLOR",
+    "GIT_EDITOR",
+)
+ROLE_VARS = ("HARNESS_ROLE", "SWING_ROLE")
+
+
 def _run_to_file(
     cmd: list[str],
     stdin_path: str,
@@ -344,7 +367,8 @@ def _run_to_file(
     # PATH is inherited unchanged (CHARC D-b): no reorder, because System32\bash.exe
     # is the WSL launcher and must not shadow or be shadowed by Git Bash.
     env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDECODE")}
-    env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+    for name in (*SESSION_MARKERS, *ROLE_VARS):
+        env.pop(name, None)
     env.update(extra_env or {})
     # Resolve the executable (on Windows the npm shim is codex.cmd) and run WITHOUT a shell,
     # so the argv list is passed as is rather than re-parsed by cmd.exe.

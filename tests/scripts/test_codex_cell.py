@@ -25,6 +25,7 @@ import getpass
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1030,6 +1031,48 @@ def test_the_review_process_env_carries_both_settings(tmp_path, monkeypatch, cap
     assert seen["cmd"][:2] == ["claude", "-p"]
     assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert seen["env"]["PYTEST_ADDOPTS"] == "-p no:cacheprovider"
+    assert rc == 0
+
+
+LAUNCHER = REPO_ROOT / "scripts" / "start_directors.ps1"
+
+
+def _launcher_session_markers() -> set[str]:
+    """The launcher's ``$SessionMarkers = @( ... )`` list, read from its source."""
+    text = LAUNCHER.read_text(encoding="utf-8")
+    start = text.index("$SessionMarkers = @(")
+    body = text[start : text.index(")", start)]
+    return set(re.findall(r"'([A-Z_]+)'", body))
+
+
+def test_the_driver_scrubs_every_session_marker_the_launcher_scrubs() -> None:
+    """Codex R3-2: the drift test between the two representations. The launcher's list is
+    the project's record of what makes a child claude inherit its parent's identity."""
+    m = _load()
+    markers = _launcher_session_markers()
+    assert len(markers) >= 10
+    assert markers <= set(m.SESSION_MARKERS)
+
+
+def test_the_reviewer_starts_as_its_own_session_with_no_role(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Codex R3-2: a review launched from the dispatcher's session inherited its messaging
+    identity and its role, so the comms hooks would register the reviewer as that role.
+    Read at the process boundary, over inherited values; a setting that is not a session
+    marker (the Git Bash path Claude Code needs on Windows) passes through."""
+    m = _load()
+    inherited = {name: "parent" for name in _launcher_session_markers()}
+    inherited.update(HARNESS_ROLE="orchestrator", SWING_ROLE="orchestrator")
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("CLAUDE_CODE_GIT_BASH_PATH", r"C:\Program Files\Git\bin\bash.exe")
+    rc, _, seen = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        real_run=True,
+    )
+    assert sorted(set(inherited) & set(seen["env"])) == []
+    assert seen["env"]["CLAUDE_CODE_GIT_BASH_PATH"] == r"C:\Program Files\Git\bin\bash.exe"
     assert rc == 0
 
 
