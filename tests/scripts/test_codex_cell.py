@@ -1181,11 +1181,15 @@ def test_the_review_env_keeps_the_ignored_manifest_stable_across_the_tool_set(tm
             assert proc.returncode == 0, (argv, proc.stdout[-2000:], proc.stderr[-2000:])
             if "pytest" in argv:
                 assert "1 passed" in proc.stdout, (argv, proc.stdout[-2000:])
-        return before, m.worktree_snapshot(str(repo))
+        after = m.worktree_snapshot(str(repo))
+        # Every snapshot must be a reading (SS-1-2, a sibling of R3-3/R3-4): a cache file
+        # whose metadata read fails records None in both snapshots, and None == None.
+        for snap in (before, after):
+            assert snap["ok"], (snap["ignored_unreadable"], snap["status_ignored"][-2000:])
+        return before, after
 
     review_env = {**plain, **m.REVIEW_ENV}
     before, after = run_all(review_env)
-    assert before["ok"] and after["ok"]
     assert after["ignored_files"] == before["ignored_files"] == {}
     before, after = run_all(plain)
     written = {p.split("/")[0] for p in set(after["ignored_files"]) - set(before["ignored_files"])}
