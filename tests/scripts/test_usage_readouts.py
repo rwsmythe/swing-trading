@@ -295,6 +295,20 @@ def test_codex_reads_the_seven_day_window_whichever_slot_holds_it(monkeypatch, c
         assert out["window_mins"] == 10080.0
 
 
+def test_codex_without_a_weekly_window_is_no_reading(monkeypatch, capsys):
+    """Codex R1-7 + CHARC N2: the tiebreak compares WEEKLY pace. With no 10080-minute window
+    the readout used to report the 5-hour window and exit 0; the weekly budget is UNKNOWN,
+    so it is an error reading (the build then goes to the other lane)."""
+    mod = _load("usage_codex")
+    five_hour = {"usedPercent": 1, "windowDurationMins": 300, "resetsAt": 1793080000}
+    for result in (_limits(five_hour, None), {"rateLimits": {"primary": five_hour}}):
+        monkeypatch.setattr(mod, "read_rate_limits", lambda exe, timeout, r=result: r)
+        assert mod.main(["--exe", "codex.exe"]) == 1
+        out = json.loads(capsys.readouterr().out)
+        assert out["lane"] == "codex" and "error" in out
+        assert "pace" not in out
+
+
 def test_codex_without_an_executable_is_no_reading(tmp_path, capsys):
     mod = _load("usage_codex")
     rc = mod.main(["--exe", str(tmp_path / "no-such-codex.exe"), "--timeout", "1"])

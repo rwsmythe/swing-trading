@@ -139,10 +139,14 @@ def main(argv: list[str] | None = None) -> int:
         result = read_rate_limits(args.exe, args.timeout)
         limits = result["rateLimits"]
         # The weekly window is the one whose duration is 7 days; the app-server may report it
-        # as primary or secondary (the other is the 5-hour window).
+        # as primary or secondary (the other is the 5-hour window). With no weekly window the
+        # weekly budget is UNKNOWN: an error reading, never the 5-hour figure (Codex R1-7,
+        # CHARC N2 routes an unknown budget to the other lane).
         windows = [limits[k] for k in ("primary", "secondary") if isinstance(limits.get(k), dict)]
         weekly = [w for w in windows if float(w.get("windowDurationMins", 0)) == 10080]
-        primary = weekly[0] if weekly else limits["primary"]
+        if not weekly:
+            raise ValueError("no 10080-minute (weekly) window in rateLimits")
+        primary = weekly[0]
         used = float(primary["usedPercent"])
         window = float(primary["windowDurationMins"])
         resets = float(primary["resetsAt"])
