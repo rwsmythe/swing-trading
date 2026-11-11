@@ -1137,9 +1137,16 @@ def test_the_review_env_keeps_the_ignored_manifest_stable_across_the_tool_set(tm
     }
 
     def run_all(env: dict[str, str]) -> tuple[dict, dict]:
+        # Every tool must COMPLETE (Codex R3-4): a tool that aborts writes nothing, so a
+        # broken review env would otherwise pass this test as "stable".
         before = m.worktree_snapshot(str(repo))
         for argv in _review_tool_set(sys.executable):
-            subprocess.run(argv, cwd=repo, env=env, capture_output=True)
+            proc = subprocess.run(
+                argv, cwd=repo, env=env, capture_output=True, text=True, errors="replace"
+            )
+            assert proc.returncode == 0, (argv, proc.stdout[-2000:], proc.stderr[-2000:])
+            if "pytest" in argv:
+                assert "1 passed" in proc.stdout, (argv, proc.stdout[-2000:])
         return before, m.worktree_snapshot(str(repo))
 
     review_env = {**plain, **m.REVIEW_ENV}
