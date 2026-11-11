@@ -562,11 +562,17 @@ def worktree_snapshot(worktree: str) -> dict[str, Any]:
         snap["ok"] = snap["ok"] and proc.returncode == 0
         snap[name] = proc.stdout
     snap["ignored_files"] = ignored_manifest(worktree, snap.pop("ignored"))
+    # A listed path whose metadata read failed is a failed read (Codex R3-3).
+    snap["ignored_unreadable"] = sorted(k for k, v in snap["ignored_files"].items() if v is None)
+    snap["ok"] = snap["ok"] and not snap["ignored_unreadable"]
     return snap
 
 
 def ignored_manifest(worktree: str, listing: str) -> dict[str, tuple[int, int] | None]:
     """Each ignored file's ``(size, mtime_ns)``; ``None`` for a path that cannot be read.
+
+    ``lstat``, not ``stat``: the entry itself is read, so a dangling link is a reading and
+    not a failure.
 
     CHARC C1 (20261111T200824Z, on Codex R2-1): ``status --ignored`` names an existing
     ignored file, or a wholly ignored directory, once, so it cannot see a rewrite of the
@@ -577,7 +583,7 @@ def ignored_manifest(worktree: str, listing: str) -> dict[str, tuple[int, int] |
     manifest: dict[str, tuple[int, int] | None] = {}
     for rel in filter(None, listing.split("\0")):
         try:
-            st = (root / rel).stat()
+            st = (root / rel).lstat()
             manifest[rel] = (st.st_size, st.st_mtime_ns)
         except OSError:
             manifest[rel] = None
@@ -679,6 +685,9 @@ def cmd_review(args: argparse.Namespace) -> int:
         "refs_before": before["refs"].splitlines(),
         "refs_after": after["refs"].splitlines(),
         "ignored_changed": ignored_changed,
+        "ignored_unreadable": sorted(
+            set(before["ignored_unreadable"]) | set(after["ignored_unreadable"])
+        ),
     }
     try:
         data = json.loads(result_json.read_text("utf-8", errors="replace"))

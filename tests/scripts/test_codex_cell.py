@@ -992,6 +992,19 @@ def test_review_passes_with_ignored_files_left_alone(tmp_path, monkeypatch, caps
     assert rc == 0
 
 
+def test_review_fails_when_an_ignored_file_cannot_be_read(tmp_path, monkeypatch, capsys) -> None:
+    """Codex R3-3: a listed ignored path whose metadata read fails (here: it is gone in both
+    snapshots) recorded the same ``None`` twice and passed; a failed read is no reading."""
+    m = _load()
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        git={"ls-files": (0, "ghost.txt\0")},
+    )
+    assert out["ignored_unreadable"] == ["ghost.txt"]
+    assert out["snapshot_unchanged"] is False
+    assert rc == 1
+
+
 def test_review_fails_when_the_ignored_listing_fails(tmp_path, monkeypatch, capsys) -> None:
     m = _load()
     rc, out, _ = _review(
