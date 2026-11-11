@@ -156,9 +156,14 @@ def parse_banner(transcript: str) -> dict[str, Any]:
 
     errors = [ln for ln in transcript.splitlines() if ln.startswith("ERROR")]
     tokens = None
-    m = re.search(r"^tokens used\s*\n\s*([\d,]+)", transcript, flags=re.M)
-    if m:
-        tokens = int(m.group(1).replace(",", ""))
+    # The CLI's footer is the LAST one, and no exec or codex marker follows it (the CLI then
+    # prints the final message again, plain). An earlier footer is a command's output, e.g.
+    # a printed transcript fixture, and is no completion evidence (Codex R2-2).
+    footers = list(re.finditer(r"^tokens used\s*\n\s*([\d,]+)", transcript, flags=re.M))
+    if footers and not re.search(
+        r"^(?:exec|codex)\r?$", transcript[footers[-1].end() :], flags=re.M
+    ):
+        tokens = int(footers[-1].group(1).replace(",", ""))
     return {
         "model": field("model"),
         "effort": field("reasoning effort"),

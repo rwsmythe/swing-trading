@@ -140,6 +140,23 @@ class BannerParse(unittest.TestCase):
         self.assertIsNone(b["model"])
         self.assertIsNone(b["tokens_used"])
 
+    # Codex R2-2: a command that printed a transcript fixture (this file, say) puts a
+    # line-initial footer inside an exec block. The genuine footer is the LAST one, and no
+    # exec or codex marker follows it; the CLI then prints the final message again, plain.
+    PRINTED = "exec\ncat tests/x.py in C:\\x\\wt\n succeeded in 5ms:\n" + BANNER
+
+    def test_the_genuine_footer_wins_over_a_printed_fixture(self) -> None:
+        t = BANNER + self.PRINTED + "codex\nReport.\ntokens used\n99,999\nReport.\n"
+        self.assertEqual(self.m.parse_banner(t)["tokens_used"], 99999)
+
+    def test_a_printed_fixture_footer_alone_is_no_footer(self) -> None:
+        t = BANNER.split("tokens used")[0] + self.PRINTED + "codex\nReport.\n"
+        self.assertIsNone(self.m.parse_banner(t)["tokens_used"])
+
+    def test_the_final_message_printed_after_the_footer_keeps_it(self) -> None:
+        t = BANNER.replace("tokens used\n36,182\n", "tokens used\n157,573\ndone\n")
+        self.assertEqual(self.m.parse_banner(t)["tokens_used"], 157573)
+
 
 class DepthReading(unittest.TestCase):
     """``read_depth``: the figure of record is the LAST request's input tokens, not the footer."""
