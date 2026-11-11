@@ -182,9 +182,13 @@ _ONE_HOP_CALLERS: dict[str, list[tuple[str, str, str]]] = {
         ),
         (
             "swing/recommendations/hypothesis_prefill.py",
-            "_, progress_summaries = build_recommendation_progress(",
-            "the DEFINITION of lookup_active_recommendation_label -- its "
-            "own one-hop dependency, not a second call site",
+            "_, summaries = build_recommendation_progress(",
+            "the memoized `_progress_reader` (sg-label T2.1, D102): the ONE "
+            "progress read behind lookup_active_recommendation_label AND "
+            "list_decision_nights, not a second call site. Both raise "
+            "CohortReadRacedError through it exactly as before; "
+            "list_decision_nights' callers (the entry-form GET degrades, the "
+            "POST refuses 400) are classified when T2.2-2.3 lands them",
         ),
     ],
 }
