@@ -113,6 +113,37 @@ def test_4d_record_entry_refuses_compact_t_form(entry_world):
     assert _counts(db) == (0, 0)
 
 
+# --- 4e / 4f: the finite-price refusal ---------------------------------------
+
+def test_4e_record_exit_refuses_inf_price(exit_world):
+    """PRE-FIX: a fill row with price=inf. POST-FIX: ExitPriceRefusedError
+    (a ValueError) naming `finite`; zero fills."""
+    conn, db, tid = exit_world
+    before = _counts(db)
+    with pytest.raises(ValueError) as info:
+        record_exit(conn, _exit_req(tid, price=float("inf")))
+    assert type(info.value).__name__ == "ExitPriceRefusedError"
+    assert "finite" in str(info.value)
+    assert _counts(db) == before
+
+
+@pytest.mark.parametrize("price", [float("inf"), float("-inf"), float("nan"),
+                                   0.0, -1.0],
+                         ids=["inf", "-inf", "nan", "0", "-1"])
+def test_4f_record_entry_refuses_non_finite_or_non_positive_price(
+        entry_world, price):
+    """PRE-FIX: `inf` writes a trade + fill (the NaN case reached an
+    IntegrityError at the NOT NULL; `-inf`/0/-1 hit the stop comparison or a
+    CHECK). POST-FIX: ValueError naming the domain; zero rows."""
+    conn, db = entry_world
+    with pytest.raises(ValueError) as info:
+        record_entry(conn, _entry_req(price=price), soft_warn=4, hard_cap=6,
+                     force=False)
+    assert "entry price must be a finite number > 0" in str(info.value), (
+        str(info.value))
+    assert _counts(db) == (0, 0)
+
+
 # --- 4g: regression keepers ----------------------------------------------------
 
 @pytest.mark.parametrize("raw, stored", [
@@ -155,3 +186,9 @@ def test_4g_tz_aware_still_refused(exit_world, raw):
     conn, db, tid = exit_world
     with pytest.raises(ValueError):
         record_exit(conn, _exit_req(tid, date=raw))
+
+
+def test_4g_finite_exit_price_still_recorded(exit_world):
+    conn, db, tid = exit_world
+    result = record_exit(conn, _exit_req(tid, price=0.01))
+    assert result.exit_id is not None

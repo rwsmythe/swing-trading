@@ -3,7 +3,8 @@ FIRST (AUTHORIZE-THEN-ABORT; A-1 granted: one typed error in `exit.py`).
 
 `ExitPriceRefusedError(ValueError)` is raised beside the `shares <= 0` check,
 before any statement, for `not (price > 0)`: the CHECK's `<= 0` set plus NaN
-(the NOT NULL). `inf` is admitted, as the schema admits it (A6-f, a BOUND pin).
+(the NOT NULL). `inf` was admitted as the schema admits it (A6-f, a BOUND
+pin); D86 inverted that pin -- `inf` is now refused at the service.
 
 A6-d/A6-e run `record_exit` over ONE `FailingVerbsConn` that raises on any
 `INSERT` (the proxy IS the `conn` argument -- there is no patch target to
@@ -12,7 +13,6 @@ proxy counts INSERTs at all, which is what makes A6-d's zero non-vacuous.
 """
 from __future__ import annotations
 
-import math
 import sqlite3
 from pathlib import Path
 
@@ -88,20 +88,17 @@ def test_A6e_control_valid_price_through_the_same_proxy_counts_inserts(
     assert _fresh(db, tid)[0] == before + 1
 
 
-def test_A6f_bound_pin_inf_price_is_recorded_as_the_schema_admits(world):
-    """A6-f -- a BOUND pin, NOT a contract that an infinite price is
-    admissible.  The guard refuses exactly the `fills.price` column's
-    refusal set, and the column admits ``inf`` today, so ``inf`` is
-    recorded on BOTH trees.  22-G is EXPECTED to invert this pin under
-    BANK-4 (the `value="inf"` render); when it does, this test is the one
-    that must change, and it says so here."""
+def test_A6f_bound_pin_inverted_by_d86_inf_price_is_refused(world):
+    """A6-f -- the BOUND pin this docstring said would be inverted.  It was
+    pinned as "the guard refuses exactly the `fills.price` column's refusal
+    set, and the column admits ``inf``"; D86 (sg-label T4.2) widens the
+    service domain to ``math.isfinite(x) and x > 0`` at BOTH record services,
+    so ``inf`` is now an ``ExitPriceRefusedError`` with zero fills written.
+    The column still admits ``inf``; the service is the barrier."""
     conn, db, tid = world
-    result = record_exit(conn, _req(tid, float("inf")))
-    assert result.exit_id is not None
-    c = sqlite3.connect(str(db))
-    try:
-        stored = c.execute("SELECT price FROM fills WHERE action != 'entry' "
-                           "ORDER BY fill_id DESC LIMIT 1").fetchone()[0]
-    finally:
-        c.close()
-    assert math.isinf(stored)
+    before = _fresh(db, tid)
+    with pytest.raises(Exception) as exc:
+        record_exit(conn, _req(tid, float("inf")))
+    assert type(exc.value).__name__ == "ExitPriceRefusedError", repr(exc.value)
+    assert "finite" in str(exc.value)
+    assert _fresh(db, tid) == before

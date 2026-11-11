@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
+import math
 import sqlite3
 import sys
 import unicodedata
@@ -1185,6 +1186,14 @@ def record_entry(
     if missing:
         raise MissingPreTradeFieldsException(missing_fields=missing)
 
+    # D86 (sg-label T4.2): the entry price's domain, before the stop
+    # comparison (which ``inf`` passed, and ``NaN`` passed into an
+    # IntegrityError at the NOT NULL). After the date normalisation, so the
+    # branch order is unchanged for every input the old code accepted.
+    if not (math.isfinite(req.entry_price) and req.entry_price > 0):
+        raise ValueError(
+            f"entry price must be a finite number > 0; got {req.entry_price!r}"
+        )
     if req.initial_stop >= req.entry_price:
         raise ValueError(
             f"stop must be < entry; got entry={req.entry_price}, stop={req.initial_stop}"

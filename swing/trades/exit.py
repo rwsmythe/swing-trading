@@ -22,6 +22,7 @@ through ``_rollback_or_raise`` (the S-D39 template in the D73 shape).
 from __future__ import annotations
 
 import logging
+import math
 import re
 import sqlite3
 from collections.abc import Mapping
@@ -195,7 +196,8 @@ class ExitPriceRefusedError(ValueError):
     Raised by ``check_exit_preconditions`` BEFORE the INSERT (inside
     ``record_exit`` that is under its write lock, after ``BEGIN IMMEDIATE``
     and the trade read -- D79 executing FORK 1), for exactly the column's
-    refusal set -- ``<= 0`` (the CHECK) and NaN (the NOT NULL) -- so the
+    refusal set -- ``<= 0`` (the CHECK) and NaN (the NOT NULL) -- plus
+    ``inf`` (D86: the service domain is finite and > 0), so the
     operator gets a typed refusal instead of an ``IntegrityError`` at the
     INSERT. A ``ValueError`` subclass, so the existing ``except ValueError``
     delivery at the web exit POST and the CLI ``trade exit`` reaches it with
@@ -419,8 +421,8 @@ def check_exit_preconditions(trade: Trade | None, req: ExitRequest) -> None:
     CHARC: A1, the helper pure).
 
     Raises, in this order and with these texts: an invalid reason; shares
-    ``<= 0``; ``ExitPriceRefusedError`` (``<= 0`` or NaN -- the ``fills.price``
-    column's refusal set); the trade not found; the trade not active; the
+    ``<= 0``; ``ExitPriceRefusedError`` (``<= 0``, NaN or infinite -- D86 widened the
+    ``fills.price`` column's refusal set by ``inf``); the trade not found; the trade not active; the
     shares exceeding its remaining ``current_size``. Each is a ``ValueError``,
     so both callers' existing ``except ValueError`` delivery reaches it.
 
@@ -438,6 +440,13 @@ def check_exit_preconditions(trade: Trade | None, req: ExitRequest) -> None:
     if not (req.exit_price > 0):
         raise ExitPriceRefusedError(
             f"exit price must be > 0; got {req.exit_price!r}"
+        )
+    # D86 (sg-label T4.2): the domain is ``math.isfinite(x) and x > 0``. The
+    # two checks are split only so every input the old ``> 0`` guard refused
+    # keeps its pinned text (D79 T7a-iv); ``inf`` is the one new refusal.
+    if not math.isfinite(req.exit_price):
+        raise ExitPriceRefusedError(
+            f"exit price must be a finite number > 0; got {req.exit_price!r}"
         )
     if trade is None:
         raise ValueError(f"trade {req.trade_id} not found")
