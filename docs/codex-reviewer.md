@@ -451,7 +451,10 @@ turn in a git worktree, resumed by session id (`codex exec resume <id>`); the dr
     CHANGED value fails it only for this branch's ref and HEAD, because a worktree shares
     every ref with the main repo and `main`, remotes or another worktree's branch moving
     mid-review are not the reviewer's writes; the full before/after ref lists are in the
-    review's JSON either way. The pass runs with
+    review's JSON either way. **Dispatch note: `codex_cell.py review --out` names a folder
+    OUTSIDE the worktree** (the review's own files there would read as a change); the
+    driver refuses an `--out` at or under the worktree, so the note cannot be forgotten
+    (CHARC 2c). The pass runs with
     `PYTHONDONTWRITEBYTECODE=1` and `PYTEST_ADDOPTS=-p no:cacheprovider`, so a test run
     does not change the ignored files compared. **Limitation: writes OUTSIDE the worktree
     are not caught.** A filesystem sandbox for `claude -p` is BANKED (owner CHARC); its

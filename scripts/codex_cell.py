@@ -525,6 +525,20 @@ def ref_differences(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
 def cmd_review(args: argparse.Namespace) -> int:
     """Run the Claude reviewer pass on the worktree's diff against the base."""
     out = pathlib.Path(args.out)
+    # CHARC 2c: the review's own files inside the worktree would read as the reviewer's
+    # write, so an --out at or under the worktree is refused before anything runs.
+    real_out, real_wt = pathlib.Path(args.out).resolve(), pathlib.Path(args.worktree).resolve()
+    if real_out.is_relative_to(real_wt):
+        print(
+            json.dumps(
+                {
+                    "error": "--out is inside the worktree; put the review's files outside it",
+                    "out": str(real_out),
+                    "worktree": str(real_wt),
+                }
+            )
+        )
+        return 1
     out.mkdir(parents=True, exist_ok=True)
     diff = out / "review-diff.txt"
     with open(diff, "wb") as f:
@@ -643,7 +657,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--worktree", required=True)
     r.add_argument("--base", required=True)
     r.add_argument("--prompt", required=True)
-    r.add_argument("--out", required=True)
+    r.add_argument(
+        "--out",
+        required=True,
+        help="folder for the review's files, OUTSIDE the worktree (a path inside it is refused)",
+    )
     r.add_argument("--model", default=CLAUDE_MODEL)
     r.add_argument("--effort", default=CLAUDE_EFFORT)
     r.set_defaults(fn=cmd_review)

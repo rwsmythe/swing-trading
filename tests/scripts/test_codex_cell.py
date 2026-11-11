@@ -600,16 +600,17 @@ OPUS_USAGE = {"claude-opus-4-7": {"inputTokens": 10}}
 
 
 def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = None,
-            after: dict | None = None, real_run: bool = False):
+            after: dict | None = None, real_run: bool = False, out: str | None = None):
     """Drive ``cmd_review`` with no real git and no real claude.
 
     ``git`` maps a git read (``status``, ``status --ignored``, ``rev-parse``,
     ``rev-parse --symbolic-full-name``, ``for-each-ref``) to ``(returncode, stdout)``;
     ``after`` overrides those answers once the reviewer has run, which is how a write by the
     reviewer is simulated. ``real_run`` keeps the driver's own ``_run_to_file``, so the
-    claude process (faked at ``subprocess.run``) receives the env the driver builds."""
+    claude process (faked at ``subprocess.run``) receives the env the driver builds. ``out``
+    replaces the default ``--out`` (``<tmp>/out``, outside the worktree)."""
     wt = tmp_path / "wt"
-    wt.mkdir()
+    wt.mkdir(exist_ok=True)
     prompt = tmp_path / "p.md"
     prompt.write_text("Review.\n", encoding="utf-8")
     answers = {
@@ -657,7 +658,7 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
     else:
         monkeypatch.setattr(m, "_run_to_file", fake_claude)
     argv = ["review", "--worktree", str(wt), "--base", "abc", "--prompt", str(prompt),
-            "--out", str(tmp_path / "out")]
+            "--out", out if out is not None else str(tmp_path / "out")]
     rc = m.main(argv)
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     return rc, out, seen
@@ -887,6 +888,54 @@ def test_the_review_process_env_carries_both_settings(tmp_path, monkeypatch, cap
     assert seen["cmd"][:2] == ["claude", "-p"]
     assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert seen["env"]["PYTEST_ADDOPTS"] == "-p no:cacheprovider"
+    assert rc == 0
+
+
+# CHARC 2c (2026-11-11T19:36:51Z): the review's own files inside the worktree would read as
+# the reviewer's write, so --out inside the worktree is refused (one realpath comparison).
+@pytest.mark.parametrize(
+    "make_out",
+    [
+        pytest.param(lambda tmp, wt: str(wt / "out"), id="inside"),
+        pytest.param(lambda tmp, wt: str(wt), id="the-worktree"),
+        pytest.param(lambda tmp, wt: "review-out", id="relative-from-inside"),
+        pytest.param(lambda tmp, wt: str(tmp / "elsewhere" / ".." / "wt" / "out"), id="dotdot"),
+        pytest.param(
+            lambda tmp, wt: str(wt).upper() + "\\out",
+            id="case",
+            marks=pytest.mark.skipif(sys.platform != "win32", reason="case-insensitive paths"),
+        ),
+    ],
+)
+def test_review_refuses_an_out_path_inside_the_worktree(
+    tmp_path, monkeypatch, capsys, make_out
+) -> None:
+    """CHARC 2c: refused before anything runs or is written -- no claude process, and
+    nothing created in the worktree."""
+    m = _load()
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    monkeypatch.chdir(wt)
+    rc, out, seen = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        out=make_out(tmp_path, wt),
+    )
+    assert "inside the worktree" in out["error"]
+    assert seen == {}
+    assert list(wt.iterdir()) == []
+    assert rc == 1
+
+
+def test_review_accepts_an_out_path_beside_the_worktree(tmp_path, monkeypatch, capsys) -> None:
+    """CHARC 2c: a sibling folder whose name starts with the worktree's is outside it (the
+    comparison is by path, not by string prefix)."""
+    m = _load()
+    rc, out, seen = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        out=str(tmp_path / "wt-review"),
+    )
+    assert "error" not in out
+    assert seen["cmd"][:2] == ["claude", "-p"]
     assert rc == 0
 
 
