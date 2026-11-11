@@ -104,7 +104,7 @@ Consequences: (a) no measurement damage, because TT7 is not an allowed miss and 
 **Recommendation: GO on stage 2 (`ta_perf_13w30o` → `ta_perf_13w10o`), with the near-high filter settled in the same edit.**
 
 Why go:
-- **Cost is not a constraint.** The 10-19 live count put stage 2 at about +11% rows over stage 1 (109 → 121). Every wall has more than 20x headroom.
+- **Cost is not a constraint** (figure CORRECTED in section 6: stage 2 is 2.1x to 3.7x rows, not +11%; the conclusion survives, the number did not). The observe wall has more than 20x headroom.
 - **It is the only screen lever aimed at the measured binding constraint.** A 13-week performance floor of 30% selects names that are still running, and the pool shows it: tightness fails on roughly nine rows in ten and proximity on more than half. A name that ran and then spent a quarter basing has LOW 13-week performance by construction; the 30% floor screens it out exactly when it becomes interesting. The evaluator's `prior_trend` (≥ 25%, its own longer window) still demands the prior run, and TT1..TT7 still demand the structure, so the gate is unchanged. This is a hypothesis about where A+ candidates are hiding, not a finding; the two-week read after the edit tests it by the one-miss and A+ counts, not by expectancy.
 - **Nothing in stage 1 argues for stopping.** It did no harm and its failure to produce fires is explained by the regime and by filter choice, not by the population being wrong.
 
@@ -127,3 +127,28 @@ See `docs/research-director-context.md`, entry `2026-11-11 — monthly watch rea
 ## 5. Methods
 
 Ages: NYSE sessions via `exchange_calendars` XNYS, detection_date → 2026-11-10. Closed = `exit_reason` set, not `horizon_mtm`, `open_at_horizon=False`; mtm = all triggered rows. CIs normal approximation, mean ± 1.96·SD/√n; Wilson z = 1.96. ETF set = `candidates.industry='Exchange Traded Fund'` (75 tickers). Era key = the detection's `run_id` in `results.csv`. Stage-1 classes: `candidates.close > 100` for the cap; the absolute value parsed from the `TT7_within_52w_high_25pct` criterion row for the off-high distance (an `na` TT7 parses as far-off and is called out where it matters). One-miss = exactly one non-pass criterion excluding `risk_feasibility`. Hypothesis fires = `match_candidate_to_hypotheses` on the persisted candidates of each evaluation, narrow phase only. Walls from `pipeline_step_timings`. The eval-178/179 rows share run 193 (a same-day rerun) and are in the pre baseline as persisted. Not done: no Finviz call was made to confirm the filter token; no live R was computed (no closed trade since read #4).
+
+---
+
+## 6. ADDENDUM 2026-11-11 (same day): the token is CONFIRMED ignored, and a CORRECTION to section 3's cost figure
+
+On the operator's go, eighteen read-only calls to the Finviz export endpoint at about 07:20 HST 2026-11-11 (direct, outside the CLI: no `finviz_api_calls` row, no inbox CSV, tonight's fetch untouched). Row counts, with the four unchanged filters held (`sh_avgvol_o1000`, `sh_price_o5`, `ta_sma20_sa50`, `ta_sma50_pa`):
+
+| 52-week-high token | with `ta_perf_13w30o` | with `ta_perf_13w10o` |
+|---|---|---|
+| none | 74 | 276 |
+| `ta_highlow52w_b0to25h` (the live token) | **74** | — |
+| `ta_highlow52w_b0to10h` | 30 | 153 |
+| `b0to15h`, `b0to20h`, `b0to30h`, `b25h` | 74, 74, 74, 74 | 277, 276 (15, 20) |
+| `b20h` (20% or more BELOW the high) | 23 | — |
+| `b30h` (30% or more below) | 18 | — |
+| `0to25-bhx` (custom-range form) | 45 | — |
+| `-25to0-bhx` | 8 | — |
+
+1. **CONFIRMED: `ta_highlow52w_b0to25h` is silently ignored.** It returns the unfiltered count. So do `b0to15h`, `b0to20h`, `b0to30h` and `b25h`. Finviz answers 200 with a full CSV for an unknown token. Of the "within N% of the high" presets only `b0to10h` (and `b0to5h`: 18) binds.
+2. **There is no clean 25% token.** By subtraction, within 20% = 74 - 23 = 51 and within 30% = 74 - 18 = 56, so within 25% is about 53. The custom-range form `0to25-bhx` returns 45 and `-25to0-bhx` returns 8; 45 + 8 = 53, which reads as the custom range EXCLUDING names sitting exactly at the high. That is an inference from counts, not a documented semantic, and a filter that drops the names at new highs is the wrong filter. Not recommended.
+3. **CORRECTION to section 3.** I wrote that stage 2 adds "about +11% rows (109 -> 121)". That was a misread of the 10-19 counts: 121 was perf-10% on the OLD screen; the same note put all three changes at about 299. Measured today: stage 2 with no near-high filter is **276 rows against 74, 3.7x**; with `b0to10h` it is **153 rows, 2.1x**. The "more than 20x headroom" statement holds for the observe wall only; evaluate scales with rows (about 1.2 to 1.5 s per row, so roughly 5.5 to 7 minutes at 276) and is not trigger-bound.
+4. **The choice this puts to the operator** (section 3's condition 1, now concrete):
+   - **A. No near-high filter: 276 rows.** The screen is never stricter than the gate, which is the rider's ruled intent; TT7 does the whole check. Cost: a run of roughly 8 to 10 minutes and a larger watch pool. `b0to10h` is the known-binding fallback if a wall ever approaches its trigger.
+   - **B. `ta_highlow52w_b0to10h`: 153 rows.** Restores the pre-widening near-high value. Drops the class that produced a 6.7% watch rate and no fire in stage 1.
+   - **RD recommendation: A.** The stage-1 evidence against the off-high class was gathered UNDER the 30% performance floor, where an off-high name is mostly a broken trend. Under a 10% floor the off-high names include the ones basing 10 to 25% below their highs, which is the depth of an ordinary base; B would remove them at the same moment stage 2 admits them. The cost of A is minutes, not a tripwire.
