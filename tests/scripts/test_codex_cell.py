@@ -600,13 +600,14 @@ OPUS_USAGE = {"claude-opus-4-7": {"inputTokens": 10}}
 
 
 def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = None,
-            after: dict | None = None):
+            after: dict | None = None, real_run: bool = False):
     """Drive ``cmd_review`` with no real git and no real claude.
 
     ``git`` maps a git read (``status``, ``status --ignored``, ``rev-parse``,
     ``rev-parse --symbolic-full-name``, ``for-each-ref``) to ``(returncode, stdout)``;
     ``after`` overrides those answers once the reviewer has run, which is how a write by the
-    reviewer is simulated."""
+    reviewer is simulated. ``real_run`` keeps the driver's own ``_run_to_file``, so the
+    claude process (faked at ``subprocess.run``) receives the env the driver builds."""
     wt = tmp_path / "wt"
     wt.mkdir()
     prompt = tmp_path / "p.md"
@@ -627,6 +628,11 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
             self.returncode, self.stdout = rc, out
 
     def fake_git(cmd, *a, **k):
+        if cmd[0] != "git":  # the claude process, reached only with real_run
+            state["ran"] = True
+            seen["cmd"], seen["env"] = cmd, k["env"]
+            k["stdout"].write(json.dumps(result).encode("utf-8"))
+            return _P(0, "")
         sub = cmd[3]
         if sub == "diff":
             k["stdout"].write(b"diff --git a/x b/x\n")
@@ -646,7 +652,10 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
         return 0
 
     monkeypatch.setattr(m.subprocess, "run", fake_git)
-    monkeypatch.setattr(m, "_run_to_file", fake_claude)
+    if real_run:
+        monkeypatch.setattr(m.shutil, "which", lambda name: None)
+    else:
+        monkeypatch.setattr(m, "_run_to_file", fake_claude)
     argv = ["review", "--worktree", str(wt), "--base", "abc", "--prompt", str(prompt),
             "--out", str(tmp_path / "out")]
     rc = m.main(argv)
@@ -861,6 +870,24 @@ def test_review_runs_tests_without_writing_bytecode_or_a_pytest_cache(
     )
     assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert "-p no:cacheprovider" in seen["env"]["PYTEST_ADDOPTS"]
+
+
+def test_the_review_process_env_carries_both_settings(tmp_path, monkeypatch, capsys) -> None:
+    """CHARC 2b (2026-11-11T19:36:51Z): the claude process the review command starts runs
+    with PYTHONDONTWRITEBYTECODE=1 and PYTEST_ADDOPTS=-p no:cacheprovider. Read at the
+    process boundary (the driver's own ``_run_to_file``), over inherited values that
+    disagree, so the settings are the driver's and not the test runner's."""
+    m = _load()
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-x")
+    rc, _, seen = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        real_run=True,
+    )
+    assert seen["cmd"][:2] == ["claude", "-p"]
+    assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert seen["env"]["PYTEST_ADDOPTS"] == "-p no:cacheprovider"
+    assert rc == 0
 
 
 RECIPE = REPO_ROOT / "docs" / "implementer-dispatch-recipe.md"
