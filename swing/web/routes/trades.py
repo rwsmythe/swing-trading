@@ -551,6 +551,24 @@ def _decision_anchor_refusal(raw: str, chosen_raw: str, *, ticker: str,
     return None, chosen, offered
 
 
+def _restore_fresh_auto_fill(vm, fresh):
+    """D86 T4.3: put the rebuilt VM's FRESH auto-fill anchor back over a
+    replayed one, so a recovery form never replays an anchor the identity
+    authority refused (R3-01's meaning of "cleared")."""
+    from dataclasses import replace as dc_replace
+    if vm is None or fresh is None:
+        return vm
+    return dc_replace(
+        vm,
+        auto_fill_schwab_source_value_json=(
+            fresh.auto_fill_schwab_source_value_json),
+        auto_fill_audit_at=fresh.auto_fill_audit_at,
+        auto_fill_fill_origin=fresh.auto_fill_fill_origin,
+        auto_fill_kind=fresh.auto_fill_kind,
+        auto_fill_advisory_text=fresh.auto_fill_advisory_text,
+    )
+
+
 def _with_decision_choice(vm, submitted: str | None):
     """D102 T2.3: re-select the operator's submitted night on a re-render, but
     ONLY if the rebuilt VM's FRESH offer still contains it. Anything else
@@ -920,6 +938,52 @@ def entry_post(
     # layout on each round-trip.
     origin_coerced = _coerce_origin(origin)
 
+    # D86 T4.3, FORM C (RD, FX-1 ruled 2026-11-11). COHORT-GUARD REFUSES:
+    # LABEL. ========== THIS GUARD REFUSES THE **LABEL**, NEVER THE **ENTRY**.
+    #
+    # NO RUNG ON THE ENTRY POST: the exit ladder's raw rung is NOT copied
+    # here. The ONE identity authority judges the RAW anchor string once
+    # (`_exit_raw_anchor_is_refused` IS that call -- `canonical_envelope_
+    # identity`, whose own warnings name the malformation), and a refused
+    # anchor (a duplicate, padded, blank or non-text order or symbol key, or
+    # an undecodable document) changes exactly two things:
+    #   * the request carries `anchor_refused_by_authority=True`, so
+    #     `record_entry` records the entry with honest-unset cohort keys
+    #     (manual_off_pipeline, NULL label, NULL candidate) whether or not
+    #     the anchor was claimed -- the latch binding and the keys are
+    #     refused, the ENTRY is written;
+    #   * every RECOVERY FORM (a 400 re-render) renders the rebuilt VM's
+    #     FRESH auto-fill anchor and never replays the rejected string
+    #     (R3-01's meaning of "cleared").
+    # The soft-warn confirm is not a recovery form: it is the SAME
+    # submission's confirmation, so the anchor round-trips there verbatim and
+    # the force resubmit is refused the label exactly as the first was.
+    # The pre-existing claim-consistency 400 for a CLAIMED UNDECODABLE anchor
+    # below is unchanged (pinned by test_entry_post_audit_columns and the
+    # 22-A ext2 module).
+    anchor_refused_by_authority = bool(
+        schwab_source_value_json.strip()
+    ) and _exit_raw_anchor_is_refused(schwab_source_value_json)
+    if anchor_refused_by_authority:
+        log.warning(
+            "D86: the submitted auto-fill anchor for %s is refused by the "
+            "identity authority; the route refuses the LABEL, not the ENTRY "
+            "(honest-unset cohort keys; the rejected anchor is never "
+            "replayed on a recovery form)", ticker.upper())
+
+    def _anchor_replay() -> dict:
+        """The three auto-fill anchors a recovery form replays: the
+        submitted ones, or None (the fresh fetch) for a refused anchor."""
+        if anchor_refused_by_authority:
+            return {"submitted_schwab_source_value_json": None,
+                    "submitted_auto_fill_audit_at": None,
+                    "submitted_fill_origin_at_form_render": None}
+        return {
+            "submitted_schwab_source_value_json": schwab_source_value_json,
+            "submitted_auto_fill_audit_at": auto_fill_audit_at,
+            "submitted_fill_origin_at_form_render": fill_origin_at_form_render,
+        }
+
     # Tranche B-ops T4: enum-validate the rationale *before* constructing
     # EntryRequest. On failure, re-render the form (preserving user inputs)
     # with an error banner and HTTP 400. Service-layer EntryRequest.rationale
@@ -934,9 +998,7 @@ def entry_post(
             entry_price=entry_price, shares=shares, initial_stop=initial_stop,
             rationale=rationale, notes=notes, error_message=rationale_error,
             origin=origin_coerced,
-            submitted_schwab_source_value_json=schwab_source_value_json,
-            submitted_auto_fill_audit_at=auto_fill_audit_at,
-            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
 
@@ -971,9 +1033,7 @@ def entry_post(
                 f"stop={initial_stop}"
             ),
             origin=origin_coerced,
-            submitted_schwab_source_value_json=schwab_source_value_json,
-            submitted_auto_fill_audit_at=auto_fill_audit_at,
-            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
 
@@ -1003,9 +1063,7 @@ def entry_post(
                 SEAM_MESSAGE if entry_intent == UNINTENDED_EXECUTION
                 else f"invalid entry_intent {entry_intent!r}"),
             origin=origin_coerced,
-            submitted_schwab_source_value_json=schwab_source_value_json,
-            submitted_auto_fill_audit_at=auto_fill_audit_at,
-            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
 
@@ -1044,9 +1102,7 @@ def entry_post(
                 "pipeline run. (V1 cached-only; manual fallback deferred to V2.)"
             ),
             origin=origin_coerced,
-            submitted_schwab_source_value_json=schwab_source_value_json,
-            submitted_auto_fill_audit_at=auto_fill_audit_at,
-            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
 
@@ -1071,9 +1127,7 @@ def entry_post(
                 f"got {cp_algo_value!r}."
             ),
             origin=origin_coerced,
-            submitted_schwab_source_value_json=schwab_source_value_json,
-            submitted_auto_fill_audit_at=auto_fill_audit_at,
-            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
     if cp_anchor_value is not None:
@@ -1118,9 +1172,7 @@ def entry_post(
                     "pipeline_runs row."
                 ),
                 origin=origin_coerced,
-                submitted_schwab_source_value_json=schwab_source_value_json,
-                submitted_auto_fill_audit_at=auto_fill_audit_at,
-                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                **_anchor_replay(),
                 submitted_decision_candidate_id=decision_candidate_id,
             )
         if _cls_row is None:
@@ -1136,9 +1188,7 @@ def entry_post(
                     f"pipeline_runs.id={cp_anchor_value}"
                 ),
                 origin=origin_coerced,
-                submitted_schwab_source_value_json=schwab_source_value_json,
-                submitted_auto_fill_audit_at=auto_fill_audit_at,
-                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                **_anchor_replay(),
                 submitted_decision_candidate_id=decision_candidate_id,
             )
 
@@ -1206,9 +1256,7 @@ def entry_post(
                     "the form to bind a current anchor."
                 ),
                 origin=origin_coerced,
-                submitted_schwab_source_value_json=schwab_source_value_json,
-                submitted_auto_fill_audit_at=auto_fill_audit_at,
-                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                **_anchor_replay(),
                 submitted_decision_candidate_id=decision_candidate_id,
             )
         cached_sector = _cand_row[0] or ""
@@ -1268,9 +1316,7 @@ def entry_post(
                     f"candidate; audit row recorded for review."
                 ),
                 origin=origin_coerced,
-                submitted_schwab_source_value_json=schwab_source_value_json,
-                submitted_auto_fill_audit_at=auto_fill_audit_at,
-                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                **_anchor_replay(),
                 submitted_decision_candidate_id=decision_candidate_id,
             )
 
@@ -1601,9 +1647,7 @@ def entry_post(
                 "Re-render the form to recover."
             ),
             origin=origin_coerced,
-            submitted_schwab_source_value_json=schwab_source_value_json,
-            submitted_auto_fill_audit_at=auto_fill_audit_at,
-            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
 
@@ -1640,9 +1684,7 @@ def entry_post(
             initial_stop=initial_stop, rationale=rationale, notes=notes,
             error_message=error_message,
             origin=origin_coerced,
-            submitted_schwab_source_value_json=schwab_source_value_json,
-            submitted_auto_fill_audit_at=auto_fill_audit_at,
-            submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
 
@@ -1809,9 +1851,7 @@ def entry_post(
                 initial_stop=initial_stop, rationale=rationale, notes=notes,
                 error_message=error_message,
                 origin=origin_coerced,
-                submitted_schwab_source_value_json=schwab_source_value_json,
-                submitted_auto_fill_audit_at=auto_fill_audit_at,
-                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                **_anchor_replay(),
                 submitted_decision_candidate_id=None,
             )
 
@@ -1878,6 +1918,9 @@ def entry_post(
         # anchor-less path, where `record_entry` resolves today's candidate
         # exactly as before; a latched admission overrides it there.
         candidate_id=decision_candidate_value,
+        # D86 T4.3 (form C): a refused anchor refuses the LABEL in
+        # `record_entry` (honest-unset keys); the ENTRY is written.
+        anchor_refused_by_authority=anchor_refused_by_authority,
         chart_pattern_operator=cp_operator_value,
         chart_pattern_algo=cp_algo_value,
         chart_pattern_algo_confidence=cp_conf_value,
@@ -2004,6 +2047,7 @@ def entry_post(
                     "Missing required pre-trade fields: "
                     + ", ".join(exc.missing_fields)
                 )
+                fresh_vm = vm
                 if vm is not None:
                     vm = dc_replace(
                         vm,
@@ -2086,6 +2130,9 @@ def entry_post(
                     )
                     # D102 T2.3: keep the operator's night if still offered.
                     vm = _with_decision_choice(vm, decision_candidate_id)
+                    # D86 T4.3: a refused anchor is never replayed here.
+                    if anchor_refused_by_authority:
+                        vm = _restore_fresh_auto_fill(vm, fresh_vm)
                     return templates.TemplateResponse(
                         request, "partials/trade_entry_form.html.j2",
                         {"vm": vm, "error_message": error_message},
@@ -2294,6 +2341,7 @@ def entry_post(
                     ticker=ticker.upper(), cfg=cfg, cache=cache, executor=executor,
                     origin=origin_coerced,
                 )
+                fresh_vm = vm
                 if vm is not None:
                     vm = dc_replace(
                         vm,
@@ -2342,6 +2390,9 @@ def entry_post(
                     )
                     # D102 T2.3: keep the operator's night if still offered.
                     vm = _with_decision_choice(vm, decision_candidate_id)
+                    # D86 T4.3: a refused anchor is never replayed here.
+                    if anchor_refused_by_authority:
+                        vm = _restore_fresh_auto_fill(vm, fresh_vm)
                     return templates.TemplateResponse(
                         request, "partials/trade_entry_form.html.j2",
                         {"vm": vm, "error_message": str(exc)},
@@ -2395,9 +2446,7 @@ def entry_post(
                         "contact a developer if the form was not manually altered."
                     ),
                     origin=origin_coerced,
-                    submitted_schwab_source_value_json=schwab_source_value_json,
-                    submitted_auto_fill_audit_at=auto_fill_audit_at,
-                    submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                    **_anchor_replay(),
                     submitted_decision_candidate_id=decision_candidate_id,
                 )
             except sqlite3.IntegrityError as exc:
@@ -2447,9 +2496,7 @@ def entry_post(
                         "contact a developer if the form was not manually altered."
                     ),
                     origin=origin_coerced,
-                    submitted_schwab_source_value_json=schwab_source_value_json,
-                    submitted_auto_fill_audit_at=auto_fill_audit_at,
-                    submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                    **_anchor_replay(),
                     submitted_decision_candidate_id=decision_candidate_id,
                 )
         finally:

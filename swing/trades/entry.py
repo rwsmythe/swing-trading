@@ -565,6 +565,12 @@ class EntryRequest:
     # from hypothesis_label here -- record_entry persists it AS-IS
     # (server-stamp / spec §5 SINGLE PREFILL RULE).
     entry_intent: str | None = None
+    # D86 T4.3 (FORM C, RD's FX-1 ruling 2026-11-11): the caller SAW an
+    # auto-fill anchor the identity authority (`canonical_envelope_identity`)
+    # REFUSES. COHORT-GUARD REFUSES: LABEL -- the entry is recorded with
+    # honest-unset cohort keys and is NEVER refused for it. A downgrade-only
+    # flag: True can only remove keys a request would otherwise carry.
+    anchor_refused_by_authority: bool = False
 
     def __post_init__(self) -> None:
         from swing.data.models import (
@@ -2170,8 +2176,37 @@ def _record_entry_inner(
         derived_origin = "manual_off_pipeline"
         resolved_candidate_id = None
         hypothesis_label = None
+    elif getattr(req, "anchor_refused_by_authority", False):
+        # D86 T4.3, FORM C (RD, FX-1 ruled 2026-11-11; the 2026-09-01 ruling
+        # applied to D86's shapes). COHORT-GUARD REFUSES: LABEL.
+        # ========== THIS GUARD REFUSES THE **LABEL** (the latch binding and
+        # ========== the cohort keys), NEVER THE **ENTRY**.
+        #
+        # The caller saw an auto-fill anchor the ONE identity authority
+        # refuses (a duplicate, padded, blank or non-text order or symbol
+        # key, or a document that cannot be decoded). A CLAIMED one already
+        # arrives here as `recognised_but_underivable` through the resolver;
+        # an UNCLAIMED one carries no envelope into this request, so without
+        # this branch it took the ordinary chain and was stamped with
+        # TODAY's candidate and the posted label (the D86 RED). The trade is
+        # real and the fill happened at the broker: a refusal of the entry
+        # would leave a real position unjournaled, which corrupts every
+        # cohort and the cash ledger; an honest-unset row corrupts nothing.
+        # The latch cannot be admitted on this path (a refused envelope is
+        # refused by the resolver before admission, and an unclaimed one is
+        # never reserved), so the branch order is not load-bearing.
+        log.warning(
+            "D86: the submitted auto-fill anchor for %s is one the identity "
+            "authority REFUSES; this guard refuses the LABEL, not the ENTRY "
+            "-- the entry records with honest-unset cohort keys and the "
+            "submitted hypothesis_label %r is discarded. WARRANTS "
+            "INVESTIGATION", req.ticker, req.hypothesis_label)
+        derived_origin = "manual_off_pipeline"
+        resolved_candidate_id = None
+        hypothesis_label = None
 
-    if latched.admitted or latched.recognised_but_underivable:
+    if (latched.admitted or latched.recognised_but_underivable
+            or getattr(req, "anchor_refused_by_authority", False)):
         pass                      # the ordinary chain is not consulted
     elif resolved_candidate_id is None and derived_origin != "manual_off_pipeline":
         _eval_run_for_candidate: int | None = None
