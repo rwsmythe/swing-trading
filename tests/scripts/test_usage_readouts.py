@@ -30,6 +30,8 @@ import urllib.request
 import urllib.response
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
 SETTINGS = REPO_ROOT / ".claude" / "settings.json"
@@ -216,6 +218,38 @@ def test_the_token_is_never_printed_on_any_path(tmp_path, monkeypatch, capsys):
             assert rc == 1, behaviour.__name__
             assert json.loads(out)["lane"] == "claude"
             assert "error" in json.loads(out)
+
+
+class _TruncatedResp(_Resp):
+    """``Content-Length: 20`` with only ``{}`` delivered: ``read()`` raises."""
+
+    def read(self, *a):
+        raise http.client.IncompleteRead(b"{}", 18)
+
+
+def _truncated(req):
+    return _TruncatedResp(b"")
+
+
+def _bad_status_line(req):
+    raise http.client.BadStatusLine("HTTP/9 ???")
+
+
+def _deeply_nested_body(req):
+    return _Resp(b"[" * 100_000)
+
+
+@pytest.mark.parametrize("behaviour", [_truncated, _bad_status_line, _deeply_nested_body])
+def test_a_failed_transfer_or_parse_is_an_error_reading(tmp_path, monkeypatch, capsys, behaviour):
+    """Codex R2-4 and its class: ``http.client.HTTPException`` (a truncated body, a bad status
+    line) is no ``OSError``, and a body nested past the recursion limit raises
+    ``RecursionError`` (a ``RuntimeError``) from ``json.loads``; each escaped the JSON error
+    reading as a traceback."""
+    rc, out, _ = _run_claude(tmp_path, monkeypatch, capsys, behaviour)
+    assert rc == 1
+    assert SENTINEL not in out
+    parsed = json.loads(out)
+    assert parsed["lane"] == "claude" and "error" in parsed
 
 
 def _no_network(monkeypatch) -> None:

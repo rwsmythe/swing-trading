@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import http.client
 import json
 import math
 import pathlib
@@ -175,8 +176,12 @@ def main(argv: list[str] | None = None) -> int:
         KeyError,
         OSError,
         OverflowError,
+        # http.client.HTTPException is no OSError (a truncated body, a bad status line), and
+        # json.loads raises RecursionError, a RuntimeError, on a deeply nested body (R2-4).
+        RuntimeError,
         TypeError,
         ValueError,
+        http.client.HTTPException,
         urllib.error.URLError,
     ) as exc:
         error = redact(f"{type(exc).__name__}: {exc}", token)
