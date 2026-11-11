@@ -442,11 +442,11 @@ def test_turn_passes_on_the_unelevated_identity(tmp_path, monkeypatch, capsys) -
 
 # ------------------------------------------- the commit's FILES CHANGED gate (R1-2) --
 def _commit(m, tmp_path, monkeypatch, capsys, entries: list[str],
-            index: dict[str, str] | None = None):
+            index: dict[str, str] | None = None, dry_run: tuple[int, str] = (0, "")):
     """Run ``commit`` on a return file listing ``entries``; git calls are recorded, not run
     (no real git, so the test stays outside the sandbox's git-family residue). ``index``
     maps an entry to what ``git ls-files -z -- <entry>`` prints (default: the entry itself,
-    one indexed file)."""
+    one indexed file). ``dry_run`` is ``git add --dry-run``'s ``(returncode, stderr)``."""
     wt = tmp_path / "wt"
     (wt / "sub").mkdir(parents=True)
     ret = tmp_path / "return-1.md"
@@ -455,15 +455,15 @@ def _commit(m, tmp_path, monkeypatch, capsys, entries: list[str],
     calls: list[list[str]] = []
 
     class _Done:
-        returncode = 0
-
-        def __init__(self, stdout: str) -> None:
-            self.stdout = stdout
+        def __init__(self, stdout: str, returncode: int = 0, stderr: str = "") -> None:
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
 
     def fake_run(cmd, *a, **k):
         calls.append(list(cmd))
         if "ls-files" in cmd:
             return _Done((index or {}).get(cmd[-1], cmd[-1] + "\0"))
+        if "--dry-run" in cmd:
+            return _Done("", *dry_run)
         return _Done("abc1234\n")
 
     monkeypatch.setattr(m.subprocess, "run", fake_run)
@@ -504,7 +504,7 @@ def test_commit_stages_and_commits_with_literal_pathspecs(tmp_path, monkeypatch,
     rc, out, calls = _commit(m, tmp_path, monkeypatch, capsys, ["src/ok.py", "tests/t.py"])
     assert rc == 0
     assert out["files"] == ["src/ok.py", "tests/t.py"]
-    add, commit = [c for c in calls if c[4] in ("add", "commit")]
+    add, commit = [c for c in calls if c[4] in ("add", "commit") and "--dry-run" not in c]
     for c in (add, commit):
         assert c[:4] == ["git", "-C", str(tmp_path / "wt"), "--literal-pathspecs"]
         assert c[-3:] == ["--", "src/ok.py", "tests/t.py"]
@@ -539,6 +539,28 @@ def test_commit_stages_a_deleted_file_that_is_one_indexed_file(tmp_path, monkeyp
     assert out["files"] == ["gone.py"]
     reads = [c for c in calls if "ls-files" in c]
     assert reads and reads[0][:4] == ["git", "-C", str(tmp_path / "wt"), "--literal-pathspecs"]
+
+
+def test_commit_refuses_a_list_that_git_add_would_refuse_and_stages_nothing(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Codex R4-2: an IGNORED file selects nothing in the index and is a file on disk, so it
+    passed both checks; the real ``git add`` then refused it AFTER staging the good entry
+    beside it (measured with real git: exit 1, the good file left staged) and the driver
+    raised. A dry run of the same add, which stages nothing, must succeed first."""
+    m = _load()
+    refusal = "The following paths are ignored by one of your .gitignore files:\nledger.md\n"
+    rc, out, calls = _commit(
+        m, tmp_path, monkeypatch, capsys, ["src/ok.py", "ledger.md"], dry_run=(1, refusal)
+    )
+    assert rc == 1
+    assert [c for c in calls if c[4] in ("add", "commit") and "--dry-run" not in c] == []
+    dry = [c for c in calls if "--dry-run" in c]
+    assert dry and dry[0][:6] == [
+        "git", "-C", str(tmp_path / "wt"), "--literal-pathspecs", "add", "--dry-run"
+    ]
+    assert dry[0][-3:] == ["--", "src/ok.py", "ledger.md"]
+    assert "ledger.md" in out["problems"][0]
 
 
 def test_turn_resolves_relative_worktree_and_evidence_paths(tmp_path, monkeypatch, capsys):

@@ -43,8 +43,10 @@ This script pins the three operations so no seat improvises the flags:
     return file's ``FILES CHANGED`` block and ``COMMIT`` subject and commits
     exactly those paths by pathspec with the attribution footer naming the
     model (owner-approved form, 2026-10-27). Each entry must be ONE file inside
-    the worktree (``check_files_changed``); one bad entry stages nothing, and git
-    runs with ``--literal-pathspecs`` (Codex R1-2).
+    the worktree (``check_files_changed``) that selects no other indexed path
+    (``check_index_selection``, Codex R3-1), and a dry run of the add must succeed
+    (Codex R4-2); one bad entry stages nothing, and git runs with
+    ``--literal-pathspecs`` (Codex R1-2).
 
 ``review``
     The Claude reviewer pass for the Codex lane (Reviewer A between turns, run
@@ -525,10 +527,23 @@ def cmd_commit(args: argparse.Namespace) -> int:
     problems = check_files_changed(files, args.worktree) or check_index_selection(
         files, args.worktree
     )
+    git = ["git", "-C", args.worktree, "--literal-pathspecs"]
+    if not problems:
+        # Whatever the add itself would refuse (an ignored file, a path git will not store),
+        # refused before staging: git's add refuses AFTER staging the entries beside it
+        # (Codex R4-2). A dry run stages nothing.
+        dry = subprocess.run(
+            [*git, "add", "--dry-run", "--", *files],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if dry.returncode != 0:
+            problems = [f"git add --dry-run refused the list: {dry.stderr.strip()}"]
     if problems:
         print(json.dumps({"error": "FILES CHANGED refused; nothing staged", "problems": problems}))
         return 1
-    git = ["git", "-C", args.worktree, "--literal-pathspecs"]
     subprocess.run([*git, "add", "--", *files], check=True)
     subprocess.run(
         [*git, "commit", "-q", "-m", subject, "-m", args.footer, "--", *files], check=True
