@@ -2298,6 +2298,14 @@ def _check_per_run_detections(
         if None in cover_runs:
             named.append("an unattributed (pruned) run")
         runs_text = ", ".join(named)
+        # Per-ticker (date, class) cover, deterministic: ticker n/N [run ids].
+        per_ticker = "; ".join(
+            f"{t} {len(classes_by_ticker[t] & required)}/{n_classes} ["
+            + ", ".join(str(r) if r is not None else "unattributed"
+                        for r in sorted(runs_by_ticker[t],
+                                        key=lambda r: (r is None, r or 0)))
+            + "]"
+            for t in pool_tickers)
         return [ResearchHealthCheck(
             key=key, status="green",
             summary=(f"run {run_id}: 0 own detections; rerun, pool of {n_pool}"
@@ -2305,7 +2313,7 @@ def _check_per_run_detections(
             detail=(f"{pool_detail}; cover on (ticker, detection_date,"
                     f" pattern_class): {n_pool} of {n_pool} pool ticker(s) x"
                     f" {n_classes}/{n_classes} classes on {session}, from"
-                    f" run(s) {runs_text}"))]
+                    f" run(s) {runs_text}; per ticker: {per_ticker}"))]
 
     shown = ", ".join(uncovered[:_UNCOVERED_NAME_CAP])
     more = (f" (+{len(uncovered) - _UNCOVERED_NAME_CAP} more)"
@@ -2320,19 +2328,6 @@ def _check_per_run_detections(
                 f" {n_classes}-class cover on {session} from other runs:"
                 f" {shown}{more} (a swallowed step failure? read the run's"
                 " log)"))]
-    if detections == 0:
-        return [ResearchHealthCheck(
-            key=key, status="yellow",
-            summary=(f"run {run_id}: 0 detections over a detect pool of"
-                     f" {n_pool}"),
-            detail=(f"{pool_detail}; pattern_detect wrote no"
-                    f" pattern_detection_events for pipeline run {run_id}"
-                    " (a swallowed step failure? read the run's log)"))]
-    return [ResearchHealthCheck(
-        key=key, status="green",
-        summary=(f"run {run_id}: {detections} detection(s) over a detect pool"
-                 f" of {n_pool}"),
-        detail=pool_detail)]
 
 
 # --------------------------------------------------------------------------

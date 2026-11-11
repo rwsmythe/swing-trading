@@ -59,12 +59,14 @@ def _conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def _seed_eval(conn, *, eval_id: int, asof: str, watch: int, aplus: int = 0,
-               skip: int = 0, prefix: str = "W") -> None:
+               skip: int = 0, prefix: str = "W",
+               session: str | None = None) -> None:
     conn.execute(
         "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, action_session_date,"
         " tickers_evaluated, aplus_count, watch_count, skip_count, excluded_count,"
         " error_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (eval_id, f"{asof}T17:30:00", asof, asof, watch + aplus + skip,
+        (eval_id, f"{asof}T17:30:00", asof, session or asof,
+         watch + aplus + skip,
          aplus, watch, skip, 0, 0))
     rows = (
         [("aplus", i) for i in range(aplus)]
@@ -281,7 +283,8 @@ def _seed_live_121_shape(conn, *, cover_118: int = 19, cover_119: int = 2,
     """The live run-121 shape: 21 watch (98 skip), action session 2026-07-06,
     asof 2026-07-02, zero own detections; the pool covered by run 118 (19
     tickers x 5 classes = 95 rows) and run 119 (2 tickers x 5 = 10 rows)."""
-    _seed_eval(conn, eval_id=108, asof=_RERUN_ASOF, watch=21, skip=98)
+    _seed_eval(conn, eval_id=108, asof=_RERUN_ASOF, watch=21, skip=98,
+               session=_RERUN_SESSION)
     pool = _watch_tickers(conn, 108)
     _seed_run(conn, run_id=118, eval_id=None, asof=_RERUN_ASOF,
               session=_RERUN_SESSION)
@@ -307,7 +310,7 @@ def _seed_live_121_shape(conn, *, cover_118: int = 19, cover_119: int = 2,
 
 def test_live_121_rerun_fully_covered_is_green_naming_the_covering_runs(tmp_path):
     conn = _conn(tmp_path)
-    _seed_live_121_shape(conn)
+    pool = _seed_live_121_shape(conn)
     assert conn.execute(
         "SELECT COUNT(*) FROM pattern_detection_events WHERE pipeline_run_id = 121"
     ).fetchone()[0] == 0
@@ -316,9 +319,12 @@ def test_live_121_rerun_fully_covered_is_green_naming_the_covering_runs(tmp_path
     assert "run 121" in c.summary           # the run it judged (RD's condition)
     assert "rerun" in c.summary
     assert "118, 119" in c.summary          # NAMES the covering runs
-    assert "21" in c.summary
+    assert "pool of 21" in c.summary
     assert _RERUN_SESSION in c.detail
-    assert "5/5" in c.detail                # the per-ticker class cover
+    # the per-ticker (date, class) cover, naming each ticker and its run
+    assert f"{pool[0]} 5/5 [118]" in c.detail
+    assert f"{pool[19]} 5/5 [119]" in c.detail
+    assert c.detail.count("5/5 [") == 21
 
 
 def test_rerun_partially_covered_pool_is_amber_naming_the_uncovered(tmp_path):
