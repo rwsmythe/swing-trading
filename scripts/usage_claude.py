@@ -75,12 +75,19 @@ def pace_from(
     stays a standalone stdlib script); 1.0 means on track to use exactly the
     allotment by the reset.
     """
+    # A negative share would win the lane comparison, and a finite share can overflow the
+    # division to inf: neither is a reading (Codex R2-3).
+    if used_percent < 0:
+        raise ValueError("a negative used percent")
     window_s = max(window_mins, 1.0) * 60.0
     remaining = max(0.0, min(window_s, resets_at_epoch - now_epoch))
     elapsed = max(1e-6, min(1.0, 1.0 - remaining / window_s))
+    pace = round((used_percent / 100.0) / elapsed, 3)
+    if not math.isfinite(pace):
+        raise ValueError("the pace is not a finite number")
     return {
         "elapsed_fraction": round(elapsed, 6),
-        "pace": round((used_percent / 100.0) / elapsed, 3),
+        "pace": pace,
     }
 
 
@@ -89,7 +96,8 @@ def parse_usage(body: dict[str, Any], now_epoch: float) -> dict[str, Any]:
 
     Uses ``seven_day.utilization`` (percent) and ``seven_day.resets_at``
     (ISO 8601 with offset). Raises ``KeyError``/``ValueError`` on a body
-    without them, and ``ValueError`` on a non-finite utilization (Codex R1-9).
+    without them, and ``ValueError`` on a non-finite utilization (Codex R1-9) or a
+    negative one, or a pace that is not finite (Codex R2-3).
     """
     week = body["seven_day"]
     used = float(week["utilization"])
@@ -160,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
         token = read_token(pathlib.Path(args.credentials))
         body = fetch(token, args.timeout)
         out = parse_usage(body, now)
+        # Serialized inside the guard and strictly: a non-finite value is no reading.
+        line = json.dumps(out, allow_nan=False)
     except (
         AttributeError,
         KeyError,
@@ -172,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         error = redact(f"{type(exc).__name__}: {exc}", token)
         print(json.dumps({"lane": "claude", "error": error}))
         return 1
-    print(json.dumps(out))
+    print(line)
     return 0
 
 

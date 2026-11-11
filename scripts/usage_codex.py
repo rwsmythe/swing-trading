@@ -60,12 +60,19 @@ def pace_from(
     divided by the elapsed share, so 1.0 means "on track to use exactly the
     allotment by the reset".
     """
+    # A negative share would win the lane comparison, and a finite share can overflow the
+    # division to inf: neither is a reading (Codex R2-3).
+    if used_percent < 0:
+        raise ValueError("a negative used percent")
     window_s = max(window_mins, 1.0) * 60.0
     remaining = max(0.0, min(window_s, resets_at_epoch - now_epoch))
     elapsed = max(1e-6, min(1.0, 1.0 - remaining / window_s))
+    pace = round((used_percent / 100.0) / elapsed, 3)
+    if not math.isfinite(pace):
+        raise ValueError("the pace is not a finite number")
     return {
         "elapsed_fraction": round(elapsed, 6),
-        "pace": round((used_percent / 100.0) / elapsed, 3),
+        "pace": pace,
     }
 
 
@@ -163,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
             "read_at": dt.datetime.fromtimestamp(now, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         out.update(pace_from(used, window, resets, now))
+        # Serialized inside the guard and strictly: a non-finite value is no reading.
+        line = json.dumps(out, allow_nan=False)
     except (
         AttributeError,
         KeyError,
@@ -175,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     ) as exc:
         print(json.dumps({"lane": "codex", "error": f"{type(exc).__name__}: {exc}"}))
         return 1
-    print(json.dumps(out))
+    print(line)
     return 0
 
 
