@@ -33,6 +33,10 @@ This script pins the three operations so no seat improvises the flags:
     event in the session's ``rollout-*-<session id>.jsonl`` under
     ``$CODEX_HOME/sessions`` (default ``~/.codex/sessions``), printed as
     ``depth_input_tokens`` with ``context_window`` (pinned 2026-10-27).
+    The turn exits 0 only when the exit code, the banner pins, the identity
+    witness, the footer, a non-empty return file from THIS run and at least one
+    ``succeeded in`` line all hold. ``^ERROR`` lines are reported, never a gate:
+    a test run inside a tool block prints them (Codex R1-1, CHARC-confirmed).
 
 ``commit``
     The sandbox protects ``.git``, so the cell cannot commit. This reads the
@@ -324,6 +328,9 @@ def cmd_turn(args: argparse.Namespace) -> int:
         writable_roots=roots,
     )
     staged = stage_turn_prompt(args.prompt, ev / f"prompt-{n}.md")
+    # The transcript is rewritten by this run; a return file left by an earlier attempt of
+    # the same turn is removed too, so a return file present afterwards is THIS run's.
+    return_file.unlink(missing_ok=True)
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     rc = _run_to_file(cmd, str(staged), str(transcript), args.worktree)
     text = transcript.read_text("utf-8", errors="replace")
@@ -344,6 +351,14 @@ def cmd_turn(args: argparse.Namespace) -> int:
         "model_ok": banner["model"] == args.model,
         "effort_ok": banner["effort"] == args.effort,
         "sandbox_ok": bool(banner["sandbox"] and banner["sandbox"].startswith("workspace-write")),
+        # Completion evidence (Codex R1-1): the footer is written at completion, the -o
+        # return file is the turn's handoff, and a turn that completed no command is void
+        # (docs/codex-reviewer.md assertion 5). Column-0 ERROR lines are NOT a gate here:
+        # a test run inside a tool block prints them, so ``error_lines`` is reported for
+        # the dispatcher to classify by provenance (assertions 2 and 5).
+        "footer_ok": banner["tokens_used"] is not None,
+        "return_ok": return_file.exists() and return_file.stat().st_size > 0,
+        "executed_ok": banner["succeeded_in"] >= 1,
         **identity,
         **banner,
         **depth,
@@ -356,6 +371,9 @@ def cmd_turn(args: argparse.Namespace) -> int:
         and out["effort_ok"]
         and out["sandbox_ok"]
         and out["identity_ok"]
+        and out["footer_ok"]
+        and out["return_ok"]
+        and out["executed_ok"]
     )
     return 0 if ok else 1
 

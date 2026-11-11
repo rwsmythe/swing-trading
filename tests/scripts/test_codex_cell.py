@@ -355,8 +355,19 @@ def test_no_lane_source_spells_the_elevated_account() -> None:
         assert _ELEVATED not in path.read_text(encoding="utf-8"), path
 
 
-def _run_turn(m, tmp_path, monkeypatch, capsys, transcript: str, session: str | None = None):
-    """Drive ``cmd_turn`` through ``main`` with a fake runner; return (exit, json, stdin)."""
+def _run_turn(
+    m,
+    tmp_path,
+    monkeypatch,
+    capsys,
+    transcript: str,
+    session: str | None = None,
+    return_text: str | None = RETURN,
+):
+    """Drive ``cmd_turn`` through ``main`` with a fake runner; return (exit, json, stdin).
+
+    The fake writes the transcript and, unless ``return_text`` is None, the ``-o`` return
+    file, as a completed codex turn does."""
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codexhome"))
     prompt = tmp_path / "brief.md"
     prompt.write_bytes(b"Do the task.\n")
@@ -365,7 +376,10 @@ def _run_turn(m, tmp_path, monkeypatch, capsys, transcript: str, session: str | 
     def fake_run(cmd, stdin_path, out_path, cwd):
         seen["stdin"] = Path(stdin_path).read_bytes()
         seen["cmd"] = cmd
+        seen["cwd"] = cwd
         Path(out_path).write_bytes(transcript.encode("utf-8"))
+        if return_text is not None:
+            Path(cmd[cmd.index("-o") + 1]).write_text(return_text, encoding="utf-8")
         return 0
 
     monkeypatch.setattr(m, "_run_to_file", fake_run)
@@ -403,6 +417,73 @@ def test_turn_passes_on_the_unelevated_identity(tmp_path, monkeypatch, capsys) -
     text = _turn_transcript(f"sandbox-user: {me}")
     rc, out, _ = _run_turn(m, tmp_path, monkeypatch, capsys, text)
     assert out["identity_ok"] is True
+    assert rc == 0
+
+
+# ---------------------------------------- completion evidence in the exit rule (R1-1) --
+def test_turn_aborted_after_the_witness_fails(tmp_path, monkeypatch, capsys) -> None:
+    """Codex R1-1: banner and identity right, then an abort -- no footer. The footer is
+    the line written at completion, so its absence fails the turn whatever else passed."""
+    m = _load()
+    me = getpass.getuser()
+    text = _turn_transcript(f"sandbox-user: {me}").replace(
+        "tokens used\n9,367\n", "ERROR: aborted after witness\n"
+    )
+    assert "tokens used" not in text
+    rc, out, _ = _run_turn(m, tmp_path, monkeypatch, capsys, text)
+    assert out["identity_ok"] and out["model_ok"] and out["effort_ok"] and out["sandbox_ok"]
+    assert out["footer_ok"] is False
+    assert rc == 1
+
+
+def test_turn_without_a_return_file_from_this_run_fails(tmp_path, monkeypatch, capsys) -> None:
+    """Codex R1-1: the -o return file is the turn's handoff. A turn that wrote none fails,
+    and a return-N.md left by an earlier attempt of the same turn is not this run's."""
+    m = _load()
+    me = getpass.getuser()
+    stale = tmp_path / "ev" / "return-1.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(RETURN, encoding="utf-8")
+    text = _turn_transcript(f"sandbox-user: {me}")
+    rc, out, _ = _run_turn(m, tmp_path, monkeypatch, capsys, text, return_text=None)
+    assert out["footer_ok"] is True
+    assert out["return_ok"] is False
+    assert rc == 1
+
+
+def test_turn_with_an_empty_return_file_fails(tmp_path, monkeypatch, capsys) -> None:
+    m = _load()
+    me = getpass.getuser()
+    text = _turn_transcript(f"sandbox-user: {me}")
+    rc, out, _ = _run_turn(m, tmp_path, monkeypatch, capsys, text, return_text="")
+    assert out["return_ok"] is False
+    assert rc == 1
+
+
+def test_turn_in_which_no_command_succeeded_fails(tmp_path, monkeypatch, capsys) -> None:
+    """The positive control (docs/codex-reviewer.md assertion 5): a turn that completed no
+    command is void, even when its transcript carries a right identity line."""
+    m = _load()
+    me = getpass.getuser()
+    text = _turn_transcript(f"sandbox-user: {me}").replace(" succeeded in 512ms:\n", "")
+    assert "succeeded in" not in text
+    rc, out, _ = _run_turn(m, tmp_path, monkeypatch, capsys, text)
+    assert out["identity_ok"] is True
+    assert out["executed_ok"] is False
+    assert rc == 1
+
+
+def test_a_column_zero_error_line_alone_does_not_fail_a_turn(tmp_path, monkeypatch, capsys):
+    """The DECLINED half of R1-1, pinned: a test run inside a tool block prints line-initial
+    ERROR lines, so the token alone does not fail the turn (docs/codex-reviewer.md
+    assertions 2 and 5); the lines are reported in ``error_lines`` for the dispatcher."""
+    m = _load()
+    me = getpass.getuser()
+    text = _turn_transcript(f"sandbox-user: {me}").replace(
+        "\ncodex\ndone\n", "\nERROR tests/test_x.py::test_y - boom\ncodex\ndone\n"
+    )
+    rc, out, _ = _run_turn(m, tmp_path, monkeypatch, capsys, text)
+    assert out["error_lines"] == ["ERROR tests/test_x.py::test_y - boom"]
     assert rc == 0
 
 
