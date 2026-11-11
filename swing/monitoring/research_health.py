@@ -2198,7 +2198,15 @@ def _check_per_run_detections(
     _DETECT_PATTERN_CLASSES under another run id -- the cover is compared on the
     step's own skip key, never on the ticker alone and never on run-id
     adjacency. That GREEN names the covering runs and the per-ticker class
-    cover; otherwise YELLOW naming the uncovered tickers.
+    cover; otherwise YELLOW naming each uncovered ticker with the classes it is
+    missing, in registry order (`TICKER missing [c1, c2]`, or `missing all 5`).
+
+    Measured basis for the per-class cover: live `pattern_detect` writes
+    exactly 5 rows per (pipeline run, pool ticker) -- 1754 of 1754 pairs,
+    measured 2026-11-11 -- one per class in _DETECT_PATTERN_CLASSES. A detector
+    added to the registry is therefore caught by the drift test
+    (test_detect_class_mirror_matches_the_detector_registry), not by a silent
+    YELLOW on every rerun.
 
     Stated limitations. The nightly artifact is ONE RUN BEHIND: the nightly step
     runs inside the run, before it is complete, so it judges the PREVIOUS
