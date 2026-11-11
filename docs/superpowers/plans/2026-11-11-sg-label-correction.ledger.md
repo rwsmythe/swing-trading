@@ -387,3 +387,78 @@ Method: grep and targeted reads, not a reread end to end.
 - Then the gates: full fast suite to `C:\Users\rwsmy\swing-data\review-transcripts\sg-label\exec-branch-suite.txt` (foreground), ruff, migrate-twice, drift test both kinds, Reviewer A `strong` to convergence (transcripts under `...\sg-label\exec\`, round ledger in the worktree's `.copowers-findings.md` with a depth column the orchestrator fills).
 
 **Open questions:** none. The scratch copy of the full D86 test file used to split the T4.1/T4.2 commits sits in the departing cell's session scratchpad and is not needed (the committed file is complete).
+
+## Executing -- handoff 2 (seat roll; written for a FRESH executing cell)
+
+**Head at this handoff:** `b70ef5e0` plus this ledger commit, on branch `sg-label`. NOTHING new under `swing/` or `tests/` is committed. The worktree is clean. Base of the executing diff for Reviewer A is still `b120a6eb`.
+
+**Why there is no T4.3 or T1.1 commit.** T4.3 hit a premise conflict that needs a ruling (fork FX-1 below). T1.1 is written and its own 34 tests are green, but the schema bump fans out to 171 failures and 10 errors in `tests/data` alone (the full suite has not been run). This cell's context ran long before that fan-out could be closed into a green commit. The work is preserved OUTSIDE the worktree, not committed red.
+
+**Preserved work (durable path `C:\Users\rwsmy\swing-data\review-transcripts\sg-label\exec\`):**
+
+| File | What it is |
+|---|---|
+| `t1.1-wip.patch` (238,353 bytes) | The whole T1.1 working tree vs `b70ef5e0`, made with `git diff --cached --binary`. Verified to apply: `git apply --check` passed on the clean tree. Apply it with `git apply <path>` from the worktree root. |
+| `t1.1-wip.stat.txt` | Its stat: 8 files, +3771/-21. |
+| `t1.1-wip-tests-data-run.txt` | The `tests/data` run with the patch applied (`-n 8`): 171 failed, 3469 passed, 1 skipped, 10 errors in 298.92 s. |
+| `gen0042.py`, `header0042.sql` | The generator that wrote migration 0042 from the 0039 and 0041 source statements. Every edit is an exact substring replacement, asserted to occur exactly once. To regenerate: `python gen0042.py <worktree> <out.sql> header0042.sql`. |
+| `t43-parked-route.diff`, `t43-parked-test_d86_entry_raw_rung.py` | The parked T4.3 implementation and test 4h (see FX-1). |
+
+**What the T1.1 patch contains (each item read and run, not inferred):**
+- `swing/data/migrations/0042_provenance_corrections_watch_fire_relabel.sql`: the rebuild, 2,504 lines. The header carries the reversibility text, the edits list, the seven re-created objects, the gate row, the D51 expectation and the reverse rule. The table edits are T1.1 and T1.3. The update trigger is 0041's text with three `IS` and the kind line. The citation trigger is 0039's text with edits 0-3 and the RAISE sentence. The RENAME uses 0040's `legacy_alter_table` bracket.
+- `swing/data/db.py`: `EXPECTED_SCHEMA_VERSION = 42`, `PHASE22_SG_LABEL_PRE_MIGRATION_EXPECTED_TABLES` (the v41 floor, equal to v40's because 0041 created no table), the gate row `BackupGateSpec(41, "sg-label", ..., "_sg_label_backup_gate", "pre-sg-label")`, and the wrapper binding `_sg_label_backup_gate = _bind_gate_wrapper(41)`.
+- `swing/data/models.py`: the T1.5 constants. `PROVENANCE_ADMISSION_TIERS` now has four values. The new constants are `PROVENANCE_CORRECTION_KIND_*`, `PROVENANCE_CORRECTION_KINDS`, `PROVENANCE_ADMISSION_TIERS_BY_KIND`, `PROVENANCE_WATCH_FIRE_CORRECTED_FIELDS`, `PROVENANCE_WATCH_FIRE_ORIGIN` and `PROVENANCE_WATCH_FIRE_ENTRY_INTENT`, the last asserted at import to be in `ENTRY_INTENTS_ASSERTABLE`. `ProvenanceCorrection` has the three recommendation fields `| None` and `correction_kind` as the last defaulted field. Its `__post_init__` checks kind membership, the tier coupling, the recommendation presence by kind, the corrected fields by kind, `_require_value_envelope(kind=...)` with the kind-2 rules, the snapshot bucket by kind, and the recommendation snapshot only for kind 1 (split into `_validate_recommendation_snapshot` and `_validate_remaining_snapshots`).
+- `swing/data/repos/provenance_corrections.py`: `"correction_kind"` appended to `_COLUMNS`.
+- `tests/data/schema_manifest_head.tsv` regenerated. Its diff is EXACTLY four changed line pairs (`# schema_version`, `table provenance_corrections`, the two changed triggers) and ZERO deletions, which matches the D51 expectation in the header.
+- `tests/data/test_backup_gate_table.py`: `POST_BASE_ROSTER` gains the 41 row (test 1l).
+- `tests/trades/_cohort_provenance_fixtures.py`: `build_sg_case` and `watch_fire_payload`. The SG fixture is seeded from the LIVE shape, read `mode=ro` 2026-11-11:
+  - evals 192/193/194 and pipelines 206/207/208 with their live ids and stamps;
+  - candidates 15811/15901/15980 with live columns, and all 18 live `candidate_criteria` rows each, VERBATIM in rowid order;
+  - trade 29 and fill 60 with live values and the live envelope, plus the FEI row written through the production `record_identity`;
+  - the live registry: H3 `closed-target-met`, and `hypothesis_status_history` rows 1-8 verbatim, written through the 22-I guard seam (kind 4). Row 7's 233-char `change_reason` is ABBREVIATED; it is not derivation-bearing.
+  - `watch_fire_payload` builds the kind-2 row from `derive_cohort_keys_for_fire` and the production snapshot helpers. On the fixture it derives label `'Near-A+ defensible: extension test (watch); failed: proximity_20ma'`, hypothesis 2, history row 6, pipeline 207, `cited_run_ts_utc 2026-11-05T03:30:04`, upper `2026-11-05T03:34:17`. That is the brief's exact label, from the AS-OF registry.
+- `tests/data/test_migration_0042_watch_fire_relabel.py`: 34 tests, all green with the patch applied. They cover 1b-1m and 1v, 1f over three verbs plus ON CONFLICT, 1g's two halves plus both siblings, 1i guarded and unguarded, and the fixture check.
+  - RED evidence: before any implementation the module failed collection with `ImportError: PROVENANCE_ADMISSION_TIERS_BY_KIND`.
+  - Three test defects were fixed on the way to green. (a) The HEAD-statement helper cannot find a table created under a scratch name, so the test reads 0042's statement itself. (b) The bare-form sibling needs the FK-null branch TRUE in the same statement, as in 0041's census. (c) The drift test's kind-literal scan is now scoped to the two `CASE NEW.correction_kind` blocks; a whole-trigger scan also caught `WHEN 'latch_ladder'`.
+
+**The fan-out the successor must close before the T1.1 commit, by class** (from `t1.1-wip-tests-data-run.txt`; each class is SAMPLED, not read failure by failure):
+1. **A HEAD payload into an OLD-version world.** This is the dominant class: about 100 parametrized `test_migration_0041_pc_update.py` cases plus `test_migration_0041_fi6_pins.py`, `test_migration_0041_census.py::test_f2[provenance_corrections]`, `test_migration_0040_*` and `test_migration_0039_*` (a2_12..a2_17, a2_31). Error: `table provenance_corrections has no column named correction_kind`. Builders that read the HEAD row through `PRAGMA table_info`/`SELECT *` (e.g. `tests/_tier2_world_22a2.py:base_last_word_payload`) now carry `correction_kind`, which a v40/v41 world lacks. Fix the BUILDERS, not each test, by dropping `correction_kind` when the target version is below 42. 0039's SS-1 is the precedent for planting a HEAD row's older-column subset.
+2. **HEAD-tracking version mirrors** `== 41` (about 35 `test_expected_schema_version_is_head` / `_row_is_head` / `_advances_schema_version` tests). Move them to 42. Do NOT rename tests (the version-mirror gotcha: naming is a separate change).
+3. **0039 HEAD-pinned DDL tests** (`a2_10`, `a2_11`, `a2_23`, `a2_24`, `a2_25`, `test_the_head_citation_trigger_keeps_every_fei_consumer_marked`). Re-point them to `target_version=39` where they are about 0039's own text. Where they are about HEAD (`a2_23`'s `len == 3`, `a2_24`'s `_COLUMNS[-1]`, `a2_25`'s tier regex and `assert path == M0039`), update them per the plan's 1m row.
+4. **Census and inventory tests that enumerate literal sites**: `test_entry_intent_drift.py::test_each_member_greps_separately_b22_33[hypothesis_test_by_design]` (0042 and models.py are new sites), `test_22a_task3_epoch_reader.py::test_the_epoch_is_read_in_exactly_one_place`, `test_22f_inv_model_roster.py::test_raising_validator_set_equals_roster_union_unreached` (the new `ProvenanceCorrection` raises), and `test_no_schema_change_v3.py` (a pinned migration roster).
+5. **`test_22f_d39_apply_migration.py`, 10 ERRORS at setup**: NOT yet diagnosed.
+6. `test_migration_0041_header.py::test_the_22i_gate_row_is_the_canonical_clause`, `test_phase13_t3_sb1_prerequisite.py::test_sqlite_connect_smoke` and `test_v20_migration.py::test_v20_migration_lands_all_tables`: not diagnosed. They are probably classes 2 and 4.
+
+After `tests/data`, run the FULL fast suite once with the patch applied, to find the fan-out outside `tests/data` (trades, web and cli fixtures that construct `ProvenanceCorrection` or compare tier sets).
+
+**FX-1 -- T4.3 is PARKED. It is a fork for a ruling (RD, CHARC), routed through the orchestrator.**
+- **The plan's letter:** the entry POST gets the exit ladder's raw rung. Any anchor the ONE authority (`canonical_envelope_identity`) refuses gets a 400 before `json.loads`, and the rung is not gated on the claim.
+- **What the code says:** RD ruled the opposite on 2026-09-01 for the entry path, and 16 tests in `tests/web/test_routes/test_22a_task10_entry_route_ext2.py` pin that ruling.
+  - `test_a_malformed_order_id_refuses_the_latch_binding_not_the_entry` (seven shapes: empty, whitespace, int, float, bool, list, dict) asserts "PRE-FIX: 400 ... POST-FIX: the route decides nothing about the ENTRY, the service is reached", and the trade is recorded honest-unset.
+  - `test_the_ROUTE_reaches_the_service_for_EVERY_recognised_envelope` (Codex 22A-FIX-R2-10) does the same.
+  - The section comment there reads: "A malformed `schwab_order_id` REFUSES THE LATCH BINDING, never the ENTRY ... a malformed cohort key blocked a MONEY-BEARING ENTRY, which is RD's governing principle".
+  - The authority refuses exactly those seven shapes, so the plan's rung RE-INTRODUCES the pre-fix 400. Measured with the rung in place: those 15 tests (seven plus eight parametrizations) plus `test_a_malformed_order_id_records_the_entry_honest_unset_case_rd` FAIL, and every other entry and anchor route test passes (259 passed).
+- **The four branches, each executable from the parked files:**
+  - **A.** The rung as planned. This reverses RD 2026-09-01, so it needs RD and the operator, and those 16 tests are inverted.
+  - **B.** The rung only for a document the authority refuses for a reason OTHER than a malformed order or symbol VALUE: undecodable or a duplicated key. It needs a predicate that splits the authority's refusal set, i.e. a second spelling of the authority, which the ONE-authority rule forbids. Not recommended.
+  - **C.** No entry rung. D86's entry half is already met, because the SERVICE refuses the LATCH BINDING on an authority-refused envelope and records the entry honest-unset. Test 4h is rewritten to pin that: a duplicate-key anchor records the trade with `trade_origin` honest-unset and a warning, and no latch citation. The ledger records why the entry ladder deliberately differs from the exit ladder.
+  - **D.** The rung, but refusing the LATCH BINDING rather than the entry. That is already what the service does, so D collapses into C.
+  - **Recommend C**, subject to RD.
+  - A second, smaller deviation applies to any rung form. The parked implementation fires only on a document that DECODED, to keep `test_entry_post_audit_columns.py::test_c_malformed_anchor_with_claim_rejects_with_400` (its "malformed/unparseable" text) and `::test_c_malformed_anchor_without_claim_falls_back` (the bare-cURL `operator_typed` fallback) green.
+  - Also, the plan's 4h says an empty fetch leaves `value=""`. The template OMITS the hidden input when there is no anchor (`trade_entry_form.html.j2:74-81`), so the parked test asserts that the input is absent.
+
+**Mirror closure -- STARTED, NOT CLOSED (file sets by a per-member grep over `swing/`; a grep bounds the family from below, the closure needs a READ per site):**
+- `PROVENANCE_ADMISSION_TIERS`: `models.py` and `latched_origin.py:44-47,103-106`. The second is a re-export, and nothing in `swing/` or `tests/` imports the tier set from `latched_origin` (grep `from swing.trades.latched_origin import` filtered for `ADMISSION_TIER`: zero hits), so the re-export is value-agnostic.
+- `last_word` / `latch_ladder`: `cli.py`, `models.py`, `cohort_provenance_correction.py`, `latched_origin.py`, and `frozen_value_evidence.py` (`latch_ladder` only). **Live site for T1.3:** `cli.py:3606-3608` is `tier = getattr(view, "admission_tier", "last_word")`, then `if tier == "last_word": ... else <latch printing>`, so a `last_fire` row would print as a LATCH row. It must branch.
+- `cited_daily_recommendation_id` / `cited_recommendation_action_session_date`: `cli.py:3793,3871,3887,3939-3940` (preview, result and list printing; kind 2 renders `(none: watch-fire relabel)` in T1.3), plus `models.py`, the repo (value-agnostic tuple) and the service.
+- `PROVENANCE_CORRECTED_FIELDS`: `cli.py:44,3587` (`COHORT_FIELD_ORDER`), `models.py`, and the service (`COHORT_CORRECTED_FIELDS`).
+- `corrected_fields_json`: also `entry_intent_assignment.py`, read as a set, which the plan names value-agnostic. That is NOT yet re-read this seat.
+- `fill_unset_provenance` / `watch_fire_relabel` / `last_fire`: only `db.py` (the version comment) and `models.py` in `swing/`, plus the 0042 SQL.
+- NOT yet read: the service sites the plan names (`:878`, `:1097`, `:1106`, `:2125`, `:3359-3369`, `:3405-3408`), `frozen_value_evidence.py:1305-1311/1393-1397`, `entry_intent_assignment.py:307-316`, `trg_eia_audit_trail`, and each member grepped separately in `tests/`.
+
+**What remains, in order:** apply the patch; close the fan-out to green; commit T1.1 (pathspec, the plan's subject); T1.2 (the service and tests 1a, 1n-1p, 1r, 1u); T1.3 (the CLI and 1q); T2.1-T2.4; T4.3 per the FX-1 ruling. Then the gates (full suite to `exec-branch-suite.txt`, ruff, migrate-twice (1k already pins it), the drift test (1m already pins both kinds)) and Reviewer A `strong`.
+
+**Deviations recorded this seat (beyond FX-1):**
+5. Test 1k migrates the CADL `last_word` shape only. The tier-2 (row-2) shape is covered at v41 and v42 by 1v. Reason: the tier-2 world is built through `build_pre_barrier_world`, whose HEAD payload carries the new column (class 1 above), so a byte-equality migrate test on it needs that builder fix first.
+6. Test 1d asserts the post-dating refusal twice. On the full DB, the BEFORE INSERT trigger's run-anchor leg refuses FIRST, because the frozen session differs from the run's own. A separate test runs the CHECK alone on a trigger-free scratch table, so the CHECK itself is pinned.
+7. Test 1e's mutation is on the TABLE CHECK's kind-2 applied arm, in a trigger-free scratch table: the bare form ACCEPTS a row missing the label key. The trigger's kind-2 arm cannot be mutated discriminatingly, because every conjunct in it is `IS NULL` or `EXISTS`, so its COALESCE is a belt and cannot go NULL (the plan says so at T1.4.1).
