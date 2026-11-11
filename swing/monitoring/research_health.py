@@ -2,11 +2,12 @@
 
 Read-only, aggregating monitor over EXISTING research data-collection signals --
 the temporal-log finiteness, the engine funnel manifest, observation coverage +
-structural integrity, the drumbeat liveness, candidate completeness, and the
-yfinance fetch-transport indicator. Aggregates; instruments nothing. Returns the
-CHARC-owned §3 status envelope (monitor="research_measurement",
-overall=worst_of(checks), a fresh aware-UTC generated_ts) that 18-F's research
-stoplight consumes at the shared artifact path. stdlib only in this module's own
+structural integrity, the drumbeat liveness, candidate completeness, the
+yfinance fetch-transport indicator, and the per-run detection count (D101).
+Aggregates; instruments nothing. Returns the CHARC-owned §3 status envelope
+(monitor="research_measurement", overall=worst_of(checks), a fresh aware-UTC
+generated_ts) that 18-F's research stoplight consumes at the shared artifact
+path. stdlib only in this module's own
 code; NO pandas; ASCII only; never writes the DB.
 
 The session-arithmetic + repo readers + finiteness predicate + engine manifest
@@ -2151,6 +2152,104 @@ def _check_fetch_transport_health(
 
 
 # --------------------------------------------------------------------------
+# Per-run detection count (D101). The cumulative detection_count (19-B) cannot
+# see ONE night that wrote nothing: runs 201 + 202 (2026-10-27/28 HST) raised in
+# pattern_detect, step_guard swallowed it, ZERO pattern_detection_events were
+# written over non-empty watch pools, and the monitor read GREEN. Zero-vs-non-
+# zero only -- no count threshold (baseline run 203: 110 over 22 watch).
+# --------------------------------------------------------------------------
+
+
+def _check_per_run_detections(
+    conn: sqlite3.Connection,
+) -> list[ResearchHealthCheck]:
+    """YELLOW (the topbar's amber) when the latest COMPLETE pipeline run has a
+    non-empty aplus|watch pool in its OWN evaluation and wrote ZERO
+    pattern_detection_events under its OWN run id; GREEN otherwise.
+
+    Joins by the run's own ids, as the schema defines them:
+      - the pool: pipeline_runs.evaluation_run_id -> candidates.evaluation_run_id,
+        buckets aplus|watch (the pattern_detect pool predicate, runner.py
+        _step_pattern_detect);
+      - the detections: pattern_detection_events.pipeline_run_id (the step writes
+        lease.run_id there, NOT the evaluation id).
+    "Latest complete" is the most recent state='complete' row by finished_ts
+    (the two-read pattern's completed half); a running / failed / force-cleared
+    newer row is never read, so it cannot mask the completed reading. Read inside
+    the nightly step, the run that is executing is not yet complete, so the
+    nightly artifact reports the PREVIOUS run (the script reports the latest).
+
+    Empty pool -> GREEN with the pool counts in the detail (gotcha #27: the
+    empty night is reported, never silent). A complete run with NO linked
+    evaluation (legacy pre-binding rows only) cannot have its pool read ->
+    YELLOW naming the run; it never skips back to an older linked run. No
+    complete run -> GREEN n/a. Missing table/column -> YELLOW schema-unavailable.
+    """
+    key = "per_run_detections"
+    try:
+        row = conn.execute(
+            "SELECT id, evaluation_run_id FROM pipeline_runs"
+            " WHERE state = 'complete' AND finished_ts IS NOT NULL"
+            " ORDER BY finished_ts DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return [ResearchHealthCheck(
+                key=key, status="green",
+                summary="n/a (no complete pipeline run yet)")]
+        run_id, eval_id = row
+        if eval_id is None:
+            return [ResearchHealthCheck(
+                key=key, status="yellow",
+                summary=f"run {run_id}: no linked evaluation; pool unreadable",
+                detail="pipeline_runs.evaluation_run_id is NULL on the latest"
+                       " complete run; cannot tell whether detections were"
+                       " expected")]
+        pool = dict(conn.execute(
+            "SELECT bucket, COUNT(*) FROM candidates"
+            " WHERE evaluation_run_id = ? AND bucket IN ('aplus','watch')"
+            " GROUP BY bucket",
+            (eval_id,),
+        ).fetchall())
+        detections = conn.execute(
+            "SELECT COUNT(*) FROM pattern_detection_events"
+            " WHERE pipeline_run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+    except sqlite3.OperationalError as exc:
+        if _schema_unavailable(exc):
+            return [ResearchHealthCheck(
+                key=key, status="yellow",
+                summary="per-run detection schema unavailable",
+                detail="pipeline_runs/candidates/pattern_detection_events"
+                       " missing; run swing db-migrate")]
+        raise
+
+    n_aplus = int(pool.get("aplus", 0))
+    n_watch = int(pool.get("watch", 0))
+    n_pool = n_aplus + n_watch
+    pool_detail = (f"evaluation {eval_id}: {n_aplus} aplus + {n_watch} watch"
+                   f" = {n_pool} in the detect pool")
+    if n_pool == 0:
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary=f"run {run_id}: empty detect pool; no detections expected",
+            detail=pool_detail)]
+    if detections == 0:
+        return [ResearchHealthCheck(
+            key=key, status="yellow",
+            summary=(f"run {run_id}: 0 detections over a detect pool of"
+                     f" {n_pool}"),
+            detail=(f"{pool_detail}; pattern_detect wrote no"
+                    f" pattern_detection_events for pipeline run {run_id}"
+                    " (a swallowed step failure? read the run's log)"))]
+    return [ResearchHealthCheck(
+        key=key, status="green",
+        summary=(f"run {run_id}: {detections} detection(s) over a detect pool"
+                 f" of {n_pool}"),
+        detail=pool_detail)]
+
+
+# --------------------------------------------------------------------------
 # Aggregator
 # --------------------------------------------------------------------------
 
@@ -2184,7 +2283,7 @@ def compute_research_health(
     now: datetime | None = None,
     live_run: tuple[str, list[dict]] | None = None,
 ) -> ResearchHealthStatus:
-    """Read-only roll-up of the 7 research data-collection-integrity checks into
+    """Read-only roll-up of the 8 research data-collection-integrity checks into
     the §3 status envelope (monitor="research_measurement", overall=worst_of,
     aware-UTC generated_ts). Never writes the DB. The bare call
     compute_research_health(conn) stays valid; `cfg` is accepted for
@@ -2211,6 +2310,7 @@ def compute_research_health(
     checks += _check_drumbeat_liveness(exports_root=manifest_root, now=now)
     checks += _check_candidate_completeness(conn)
     checks += _check_fetch_transport_health(conn)
+    checks += _check_per_run_detections(conn)
     overall = worst_of([c.status for c in checks])
     # Codex R1 MAJOR #1: stamp generated_ts AWARE-UTC so the 18-F staleness gate
     # is host-tz-independent (the deliberate divergence from 18-E's naive stamp).
