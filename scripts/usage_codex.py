@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import queue
 import subprocess
@@ -150,17 +151,30 @@ def main(argv: list[str] | None = None) -> int:
         used = float(primary["usedPercent"])
         window = float(primary["windowDurationMins"])
         resets = float(primary["resetsAt"])
-    except (OSError, KeyError, TypeError, ValueError, RuntimeError, TimeoutError) as exc:
+        # The reading is built INSIDE the guard, and a non-finite number is no reading
+        # (Codex R1-9): a malformed body prints the JSON error, never a traceback or NaN.
+        if not all(math.isfinite(x) for x in (used, window, resets)):
+            raise ValueError("a non-finite number in the weekly window")
+        out = {
+            "lane": "codex",
+            "used_percent": used,
+            "window_mins": window,
+            "resets_at": dt.datetime.fromtimestamp(resets, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "read_at": dt.datetime.fromtimestamp(now, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        out.update(pace_from(used, window, resets, now))
+    except (
+        AttributeError,
+        KeyError,
+        OSError,
+        OverflowError,
+        RuntimeError,
+        TimeoutError,
+        TypeError,
+        ValueError,
+    ) as exc:
         print(json.dumps({"lane": "codex", "error": f"{type(exc).__name__}: {exc}"}))
         return 1
-    out = {
-        "lane": "codex",
-        "used_percent": used,
-        "window_mins": window,
-        "resets_at": dt.datetime.fromtimestamp(resets, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "read_at": dt.datetime.fromtimestamp(now, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
-    out.update(pace_from(used, window, resets, now))
     print(json.dumps(out))
     return 0
 

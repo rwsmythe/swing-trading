@@ -309,6 +309,42 @@ def test_codex_without_a_weekly_window_is_no_reading(monkeypatch, capsys):
         assert "pace" not in out
 
 
+def _weekly(**over) -> dict:
+    return {"usedPercent": 22, "windowDurationMins": 10080, "resetsAt": 1793606580, **over}
+
+
+def test_a_malformed_codex_response_is_an_error_reading(monkeypatch, capsys):
+    """Codex R1-9: a malformed body used to escape the JSON error contract (an uncaught
+    AttributeError, an OverflowError raised outside the guard) or print a NaN reading."""
+    mod = _load("usage_codex")
+    cases = (
+        {"rateLimits": []},
+        {"rateLimits": None},
+        _limits(_weekly(resetsAt=1e300), None),
+        _limits(_weekly(usedPercent="NaN"), None),
+        _limits(_weekly(usedPercent=float("inf")), None),
+    )
+    for result in cases:
+        monkeypatch.setattr(mod, "read_rate_limits", lambda exe, timeout, r=result: r)
+        assert mod.main(["--exe", "codex.exe"]) == 1, result
+        out = capsys.readouterr().out
+        assert "NaN" not in out and "Infinity" not in out, result
+        parsed = json.loads(out)
+        assert parsed["lane"] == "codex" and "error" in parsed and "pace" not in parsed
+
+
+def test_a_malformed_claude_body_is_an_error_reading(tmp_path, monkeypatch, capsys):
+    """Codex R1-9: ``utilization: "NaN"`` printed a NaN reading with exit 0."""
+    for util in ("NaN", "inf", float("nan")):
+        def body(req, u=util):
+            b = {"seven_day": {"utilization": u, "resets_at": "2026-11-02T10:00:00+00:00"}}
+            return _Resp(json.dumps(b).encode("utf-8"))
+
+        rc, out, _ = _run_claude(tmp_path, monkeypatch, capsys, body)
+        assert rc == 1, util
+        assert "pace" not in out and "error" in json.loads(out), util
+
+
 def test_codex_without_an_executable_is_no_reading(tmp_path, capsys):
     mod = _load("usage_codex")
     rc = mod.main(["--exe", str(tmp_path / "no-such-codex.exe"), "--timeout", "1"])

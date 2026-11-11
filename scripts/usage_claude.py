@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import pathlib
 import re
 import sys
@@ -88,10 +89,12 @@ def parse_usage(body: dict[str, Any], now_epoch: float) -> dict[str, Any]:
 
     Uses ``seven_day.utilization`` (percent) and ``seven_day.resets_at``
     (ISO 8601 with offset). Raises ``KeyError``/``ValueError`` on a body
-    without them.
+    without them, and ``ValueError`` on a non-finite utilization (Codex R1-9).
     """
     week = body["seven_day"]
     used = float(week["utilization"])
+    if not math.isfinite(used):
+        raise ValueError("a non-finite utilization in seven_day")
     resets_iso = str(week["resets_at"])
     resets = dt.datetime.fromisoformat(resets_iso).timestamp()
     out = {
@@ -157,7 +160,15 @@ def main(argv: list[str] | None = None) -> int:
         token = read_token(pathlib.Path(args.credentials))
         body = fetch(token, args.timeout)
         out = parse_usage(body, now)
-    except (OSError, KeyError, TypeError, ValueError, urllib.error.URLError) as exc:
+    except (
+        AttributeError,
+        KeyError,
+        OSError,
+        OverflowError,
+        TypeError,
+        ValueError,
+        urllib.error.URLError,
+    ) as exc:
         error = redact(f"{type(exc).__name__}: {exc}", token)
         print(json.dumps({"lane": "claude", "error": error}))
         return 1
