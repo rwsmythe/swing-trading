@@ -406,3 +406,58 @@ def test_every_turn_prompt_carries_the_witness_act(tmp_path, monkeypatch, capsys
     assert "CodexSandboxOffline" not in stdin
     assert m.identity_witness(stdin, me)["identity_line_present"] is False
     assert ("resume" in seen["cmd"]) is bool(session)
+
+
+# ------------------------------------------- the cell's agent file (P3, the preamble) --
+AGENT_FILE = REPO_ROOT / ".claude" / "agents" / "implementer-codex-sol-high.md"
+
+# The five sandbox-only residue tests that are NOT in the git family (build ledger, P0).
+NON_GIT_RESIDUE = (
+    "tests/pipeline/test_runner_chart_targets.py::test_step_charts_records_too_few_bars",
+    "tests/pipeline/test_runner_chart_targets.py::"
+    "test_step_charts_writes_chart_targets_with_ok_status",
+    "tests/pipeline/test_step_charts_classification.py::"
+    "test_step_charts_classifier_exception_persists_null_pattern_with_error",
+    "tests/pipeline/test_step_charts_classification.py::"
+    "test_step_charts_too_few_bars_persists_pattern_none",
+    "tests/research/test_l2_lock_sys_modules_isolation_regression.py::"
+    "test_research_l2lock_del_does_not_break_web_route_exception_identity",
+)
+
+
+def test_agent_file_frontmatter_names_the_lane() -> None:
+    text = AGENT_FILE.read_text(encoding="utf-8")
+    head = text.split("---")[1]
+    assert "name: implementer-codex-sol-high" in head
+    assert "model: codex/gpt-6.1-sol" in head
+    assert "effort: high" in head
+
+
+def test_the_staged_preamble_cannot_decide_the_identity_witness() -> None:
+    """The agent file is piped into every first turn, and the transcript echoes it: a
+    literal elevated marker would fail EVERY turn, a satisfying line would pass any."""
+    m = _load()
+    text = AGENT_FILE.read_text(encoding="utf-8")
+    w = m.identity_witness(text, getpass.getuser())
+    assert w["elevated_marker_present"] is False
+    assert w["identity_line_present"] is False
+
+
+def test_agent_file_quotes_the_driver_test_command_verbatim() -> None:
+    m = _load()
+    assert m.CELL_TEST_COMMAND in AGENT_FILE.read_text(encoding="utf-8")
+
+
+def test_agent_file_points_at_the_main_repo_recipe() -> None:
+    text = AGENT_FILE.read_text(encoding="utf-8")
+    assert "C:/Users/rwsmy/swing-trading/docs/implementer-dispatch-recipe.md" in text
+
+
+def test_agent_file_names_the_residue_and_each_name_is_a_real_test() -> None:
+    text = AGENT_FILE.read_text(encoding="utf-8")
+    for node in NON_GIT_RESIDUE:
+        assert node in text, node
+        path, name = node.split("::")
+        assert f"def {name}(" in (REPO_ROOT / path).read_text(encoding="utf-8"), node
+    assert "GitWorld" in text
+    assert "class GitWorld" in (REPO_ROOT / "tests/trades/_git_world.py").read_text("utf-8")
