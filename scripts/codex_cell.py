@@ -237,8 +237,10 @@ def read_depth(session_id: str | None, root: pathlib.Path | None = None) -> dict
         except (ValueError, AttributeError):
             continue
         last = info.get("last_token_usage") or {}
-        if isinstance(last.get("input_tokens"), int):
-            out["depth_input_tokens"] = last["input_tokens"]
+        tokens = last.get("input_tokens")
+        # bool is an int in Python; a boolean count is no reading (the class of Codex R4-4).
+        if isinstance(tokens, int) and not isinstance(tokens, bool):
+            out["depth_input_tokens"] = tokens
             out["context_window"] = info.get("model_context_window")
     return out
 

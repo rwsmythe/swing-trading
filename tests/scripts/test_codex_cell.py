@@ -201,6 +201,21 @@ class DepthReading(unittest.TestCase):
         self.assertEqual(d["depth_input_tokens"], 284234)
         self.assertEqual(d["context_window"], 475000)
 
+    def test_a_boolean_input_count_is_no_reading(self) -> None:
+        """The class of Codex R4-4 in the driver: Python's ``bool`` is an ``int``, so a
+        token_count event whose input count is ``true`` read as a depth of 1 (printed
+        ``true``) and displaced the last real reading."""
+        m = _load()
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / f"rollout-2026-10-26T20-39-53-{self.SID}.jsonl"
+            bad = json.loads(self._event(9, 0, 0))
+            bad["payload"]["info"]["last_token_usage"]["input_tokens"] = True
+            lines = [self._event(5, 279776, 13000000), json.dumps(bad)]
+            f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            d = m.read_depth(self.SID, Path(td))
+        self.assertIs(type(d["depth_input_tokens"]), int)
+        self.assertEqual(d["depth_input_tokens"], 279776)
+
     def test_missing_session_is_none(self) -> None:
         m = _load()
         with tempfile.TemporaryDirectory() as td:
