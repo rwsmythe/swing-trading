@@ -570,6 +570,113 @@ def test_every_turn_prompt_carries_the_witness_act(tmp_path, monkeypatch, capsys
     assert ("resume" in seen["cmd"]) is bool(session)
 
 
+# ------------------------------------------------- the review pass's exit (R1-4, R1-3) --
+OPUS_USAGE = {"claude-opus-4-7": {"inputTokens": 10}}
+
+
+def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = None,
+            after: dict | None = None):
+    """Drive ``cmd_review`` with no real git and no real claude.
+
+    ``git`` maps a git read (``status``, ``status --ignored``, ``rev-parse``,
+    ``for-each-ref``) to ``(returncode, stdout)``; ``after`` overrides those answers once the
+    reviewer has run, which is how a write by the reviewer is simulated."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    prompt = tmp_path / "p.md"
+    prompt.write_text("Review.\n", encoding="utf-8")
+    answers = {
+        "status": (0, ""),
+        "status --ignored": (0, "!! .pytest_cache/\n"),
+        "rev-parse": (0, "abc1234\n"),
+        "for-each-ref": (0, "refs/heads/lane abc1234\n"),
+    }
+    answers.update(git or {})
+    state = {"ran": False}
+    seen: dict = {}
+
+    class _P:
+        def __init__(self, rc: int, out: str) -> None:
+            self.returncode, self.stdout = rc, out
+
+    def fake_git(cmd, *a, **k):
+        sub = cmd[3]
+        if sub == "diff":
+            k["stdout"].write(b"diff --git a/x b/x\n")
+            return _P(0, "")
+        key = "status --ignored" if sub == "status" and "--ignored" in cmd else sub
+        table = {**answers, **(after or {})} if state["ran"] else answers
+        return _P(*table[key])
+
+    def fake_claude(cmd, stdin_path, out_path, cwd, extra_env=None):
+        state["ran"] = True
+        seen["cmd"], seen["env"] = cmd, extra_env
+        Path(out_path).write_text(json.dumps(result), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(m.subprocess, "run", fake_git)
+    monkeypatch.setattr(m, "_run_to_file", fake_claude)
+    argv = ["review", "--worktree", str(wt), "--base", "abc", "--prompt", str(prompt),
+            "--out", str(tmp_path / "out")]
+    rc = m.main(argv)
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    return rc, out, seen
+
+
+def _result(text: str, *, is_error: bool = False) -> dict:
+    return {"result": text, "is_error": is_error, "modelUsage": OPUS_USAGE, "num_turns": 3,
+            "permission_denials": []}
+
+
+@pytest.mark.parametrize("token", ["NO_NEW_CRITICAL_MAJOR", "NEW_CRITICAL_MAJOR_FOUND"])
+def test_review_with_one_verdict_token_exits_0(tmp_path, monkeypatch, capsys, token) -> None:
+    """Exit 0 means the review COMPLETED with a readable verdict; the verdict itself is
+    printed for the dispatcher (a findings-found review is a completed review)."""
+    m = _load()
+    rc, out, _ = _review(m, tmp_path, monkeypatch, capsys, _result(f"Notes.\nVERDICT: {token}\n"))
+    assert out["verdict"] == token
+    assert rc == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "VERDICT: INCONCLUSIVE\n",
+        "VERDICT: NO_NEW_CRITICAL_MAJOR\nVERDICT: NEW_CRITICAL_MAJOR_FOUND\n",
+        "VERDICT: NO_NEW_CRITICAL_MAJOR\nVERDICT: INCONCLUSIVE\n",
+        "VERDICT: NO_NEW_CRITICAL_MAJOR_PENDING\n",
+        "no verdict at all\n",
+    ],
+)
+def test_review_without_exactly_one_known_verdict_fails(tmp_path, monkeypatch, capsys, text):
+    """Codex R1-4 (a): any ``VERDICT:`` line used to pass. Only exactly one distinct token
+    of the two, on an anchored ``VERDICT: <token>`` line (CHARC B1), is a verdict."""
+    m = _load()
+    rc, out, _ = _review(m, tmp_path, monkeypatch, capsys, _result(text))
+    assert out["verdict"] is None
+    assert rc == 1
+
+
+def test_review_whose_result_is_an_error_fails(tmp_path, monkeypatch, capsys) -> None:
+    """Codex R1-4 (c): ``is_error: true`` with exit 0 used to pass."""
+    m = _load()
+    text = "VERDICT: NO_NEW_CRITICAL_MAJOR\n"
+    rc, out, _ = _review(m, tmp_path, monkeypatch, capsys, _result(text, is_error=True))
+    assert out["is_error"] is True
+    assert rc == 1
+
+
+def test_review_with_a_failed_status_read_fails(tmp_path, monkeypatch, capsys) -> None:
+    """Codex R1-4 (c): a failed ``git status`` (rc 128, empty stdout) read as a clean tree."""
+    m = _load()
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        after={"status": (128, "")},
+    )
+    assert out["worktree_clean_after"] is False
+    assert rc == 1
+
+
 # ------------------------------------------- the cell's agent file (P3, the preamble) --
 AGENT_FILE = REPO_ROOT / ".claude" / "agents" / "implementer-codex-sol-high.md"
 

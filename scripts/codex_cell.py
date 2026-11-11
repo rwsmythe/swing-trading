@@ -51,7 +51,9 @@ This script pins the three operations so no seat improvises the flags:
     by the driver; Reviewer B at the orchestrator's seat): the pre-generated
     diff against the base plus the staged prompt piped into ``claude -p`` with
     a read-only tool policy and JSON output. Asserts the model from the result's
-    ``modelUsage`` and that the worktree is clean afterwards.
+    ``modelUsage``, a result that is not an error, exactly one verdict token on an
+    anchored ``VERDICT: <token>`` line (``review_verdict``), and a clean worktree
+    afterwards, read by a status command that itself succeeded (Codex R1-4).
 
 Nothing here names the application; the pinned values are substrate facts.
 """
@@ -214,6 +216,22 @@ def read_depth(session_id: str | None, root: pathlib.Path | None = None) -> dict
             out["depth_input_tokens"] = last["input_tokens"]
             out["context_window"] = info.get("model_context_window")
     return out
+
+
+VERDICT_TOKENS = ("NO_NEW_CRITICAL_MAJOR", "NEW_CRITICAL_MAJOR_FOUND")
+
+
+def review_verdict(text: str) -> str | None:
+    """The Claude review pass's verdict, or None (Codex R1-4 (a); CHARC B1).
+
+    The pass prints an anchored ``VERDICT: <token>`` line. The verdict is the token only
+    when exactly ONE distinct token appears on such lines and it is one of
+    :data:`VERDICT_TOKENS`; an unknown token, both tokens, or none is no verdict.
+    """
+    found = {m.group(1) for m in re.finditer(r"^VERDICT:[ \t]*(\S+)[ \t]*$", text, flags=re.M)}
+    if len(found) == 1 and found <= set(VERDICT_TOKENS):
+        return found.pop()
+    return None
 
 
 def parse_return(text: str) -> dict[str, Any]:
@@ -473,6 +491,7 @@ def cmd_review(args: argparse.Namespace) -> int:
                 "is_error": data.get("is_error"),
                 "permission_denials": len(data.get("permission_denials", [])),
                 "verdict_lines": re.findall(r"^VERDICT:.*$", text, flags=re.M),
+                "verdict": review_verdict(text),
                 "review_txt": str(out / "review.txt"),
             }
         )
@@ -484,14 +503,17 @@ def cmd_review(args: argparse.Namespace) -> int:
         text=True,
         encoding="utf-8",
         errors="replace",
-    ).stdout
-    summary["worktree_clean_after"] = status.strip() == ""
+    )
+    # A failed status read (e.g. rc 128) has empty stdout; it is no evidence of a clean
+    # tree (Codex R1-4 (c)).
+    summary["worktree_clean_after"] = status.returncode == 0 and status.stdout.strip() == ""
     print(json.dumps(summary))
     ok = (
         rc == 0
         and summary.get("model_ok")
+        and summary.get("is_error") is False
         and summary["worktree_clean_after"]
-        and summary.get("verdict_lines")
+        and summary.get("verdict") is not None
     )
     return 0 if ok else 1
 
