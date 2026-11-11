@@ -290,7 +290,9 @@ Depth is filled by the orchestrator from `scripts/cell_depth.py --agent <id>`; a
 | 0-fold | rulings folded, NO Codex (continuation cell, `08ee3b57`) | -- | -- | -- | -- | -- | -- | 0 (E1-E4 declared; E3 unsettled) | -- | -- | 0 | 255K (orchestrator, at the fold-ruling relay) |
 | 0-fold-2 | fold rulings folded (E1-E3, R1, E4, the classifier lock), NO Codex | -- | -- | -- | -- | -- | -- | 0 | -- | -- | 0 | |
 | 1 | Codex plan review: a stdin bundle (plan `51a323e3`, the ledger cut, the brief), cwd = worktree, read-only | `fast`: `gpt-6-luna` / `medium` (equal to the profile file) | 0 | present | `NEW_CRITICAL_MAJOR_FOUND` (x2, one distinct; the other token 0) | 0, WEAK (counts: the five assertions pass) | 0 / 2 / 0 | 2 (R1-01 accepted; R1-02 contested, so it counts fail-safe) | 2 NEW / 0 REOPENED | 0 | 37,032 | 313K (orchestrator, at the round-1 gate) |
-| 2 | Codex plan review: a stdin bundle (plan at `04ee3eab`, the ledger cut, the brief) plus the REQUIRED READS prompt section; cwd = worktree, read-only | `fast`: `gpt-6-luna` / `medium` (equal to the profile file) | 0 | present | `NEW_CRITICAL_MAJOR_FOUND` (x2, one distinct; the other token 0) | 4 (not weak) | 0 / 1 / 0 | 1 (R2-01 accepted) | 1 NEW / 0 REOPENED | 0 | 71,825 | |
+| 2 | Codex plan review: a stdin bundle (plan at `04ee3eab`, the ledger cut, the brief) plus the REQUIRED READS prompt section; cwd = worktree, read-only | `fast`: `gpt-6-luna` / `medium` (equal to the profile file) | 0 | present | `NEW_CRITICAL_MAJOR_FOUND` (x2, one distinct; the other token 0) | 4 (not weak) | 0 / 1 / 0 | 1 (R2-01 accepted) | 1 NEW / 0 REOPENED | 0 | 71,825 | 331K (orchestrator, at the round-2 gate) |
+| 3 | Codex plan review, the FINAL counted round: a stdin bundle (plan at `e2cb6ac2`, the ledger cut, the brief) plus REQUIRED READS; cwd = worktree, read-only | `fast`: `gpt-6-luna` / `medium` (equal to the profile file) | 0 | present | `NEW_CRITICAL_MAJOR_FOUND` (x2, one distinct; the other token 0) | 8 (not weak) | 0 / 1 / 0 | 1 (R3-01 accepted, with my fix in place of the reviewer's) | 1 NEW / 0 REOPENED | 0 | 100,988 | |
+| SS | self-sweep, UNCOUNTED, no Codex (grep plus targeted reads) | -- | -- | -- | -- | -- | -- | 1 (SS-1, a residue of R2-01) | -- | 0 | 0 | |
 
 ## Round 1
 
@@ -310,7 +312,7 @@ Evidence, copied the moment the assertions passed, at `C:/Users/rwsmy/swing-data
 
 ## Round 2
 
-Evidence, copied the moment the assertions passed, at `C:/Users/rwsmy/swing-data/review-transcripts/sg-label/`: `.codex-review-r2.txt` (340,986 bytes), `.codex-prompt-r2.md` (125,109 bytes), and `.copowers-findings.md` (10852 bytes, rounds 1-2). Wall time was 90 s.
+Evidence, copied the moment the assertions passed, at `C:/Users/rwsmy/swing-data/review-transcripts/sg-label/`: `.codex-review-r2.txt` (340,986 bytes), `.codex-prompt-r2.md` (125,110 bytes; corrected from 125,109, which counted characters instead of bytes), and `.copowers-findings.md` (10852 bytes, rounds 1-2). Wall time was 90 s.
 
 - **Assertions.**
   - The banner reads `gpt-6-luna` / `medium`, equal to the profile file.
@@ -326,3 +328,34 @@ Evidence, copied the moment the assertions passed, at `C:/Users/rwsmy/swing-data
   - Eligibility is judged at POST because `record_entry` derives the origin at POST.
   - The fix keeps the TOCTOU gotcha intact: the chosen row is validated as the exact anchor, never re-picked.
   - Test 2d gains the two forged-anchor cases (another bucket; outside the window) and the window-shift case.
+
+## Round 3 and the self-sweep
+
+Evidence, copied the moment the assertions passed, at `C:/Users/rwsmy/swing-data/review-transcripts/sg-label/`: `.codex-review-r3.txt` (641,993 bytes), `.codex-prompt-r3.md` (126783 bytes), and `.copowers-findings.md` (15149 bytes, rounds 1-3 plus the self-sweep). Wall time was 90 s.
+
+Loop status: the three counted rounds are spent and the self-sweep is done. Round 3 was NOT clean (one task-bearing finding, fixed), so the loop ENDED BY THE CAP, not by a clean verdict. A fourth counted round needs the orchestrator's written authorization naming a task-bearing finding; none is open. Total counted spend: 209,845 tokens (37,032 + 71,825 + 100,988).
+
+- **Assertions.**
+  - The banner reads `gpt-6-luna` / `medium`, equal to the profile file.
+  - `^ERROR` = 0.
+  - `^tokens used` = 1 (100,988).
+  - `^NEW_CRITICAL_MAJOR_FOUND` = 2 (the final message is printed twice) and `^NO_NEW_CRITICAL_MAJOR` = 0.
+  - The process exited 0 and the transcript is non-empty (641,993 bytes).
+  - The repo-reads check passes with **8** shell reads, which is NOT weak. None touched the ledger, a `.codex`/`.copowers` file, `swing-data`, a database, or git.
+- **R3-01. Reviewer: major, task-bearing. Mine: major, TASK-BEARING. ACCEPTED on the defect; its proposed fix is DECLINED.**
+  - Re-read at the code: `_rerender_entry_form_with_error` (`routes/trades.py:505-545`) rebuilds the view model, and it overrides the anchor ONLY when `submitted_schwab_source_value_json is not None` (`:528`).
+  - The entry POST's existing `_reject_anchor` (`:1246-1261`) passes `None` BY DESIGN. Its comment at `:1255-1257` reads "use the rebuilt VM's fresh auto-fill anchor".
+  - So test 4h's claim that the hidden anchor is EMPTY was false whenever the fresh fetch repopulates it. The reviewer is right about that.
+  - The reviewer's fix was to force an empty string. That would change the established semantics of every entry rung and diverge from the four existing rungs, so I declined it.
+  - The fix taken: T4.3 calls the EXISTING entry `_reject_anchor` with the new text, so all entry rungs share one rejection path. "Cleared" is defined as "the rejected string is never replayed". Test 4h asserts that the rejected string is absent from the page under two fresh-fetch stubs: a different populated envelope, which the input then carries, and an empty fetch, which leaves `value=""`.
+
+### Self-sweep (uncounted; SS-N ids; no effect on convergence)
+
+Method: grep and targeted reads, not a reread end to end.
+- Superseded-idiom greps found zero residues each: `--to`, `three edits`, `THREE clauses`, `1,540`, `` RAISE(ABORT)`/CHECK ``, `ledger flags`, `UNSETTLED`, `disclosed`, `CALLED UNCHANGED`, `hidden anchor is EMPTY`, `edits 1-3`, an untagged or unruled `[F#]`, `recommended`, `DRAFT`, `H2/H4`.
+- A script cross-checked the test ids: every referenced id is defined. The defined set is 1a-1r, 1u, 1v, 2a-2k and 4a-4h. 1s and 1t were never defined and are not referenced.
+- The names are consistent: `_as_of_narrow_matches`, `PROVENANCE_WATCH_FIRE_ENTRY_INTENT`, `WATCH_FIRE_WINDOW_ROWS`, `list_decision_nights`, `label_for_candidate`, `_ENTRY_RAW_ANCHOR_UNREADABLE_TEXT`, `correct_watch_fire_label`, `preview_watch_fire_label`.
+- Every section-0 cross-reference resolves.
+- The R1-02 equality check reads a real field: `_FireKeys.hypothesis_id` exists (`cohort_provenance_correction.py:1438`).
+
+- **SS-1 (task-bearing; a residue of the R2-01 fix).** R2-01 moved `list_decision_nights` onto the POST path. On a raced cohort read, that function raises `CohortReadRacedError`. The GET degrades on it, but the POST has no stated behaviour. FIXED: the POST refuses with 400, clears the anchor and asks for a re-render; it never persists and never returns 500. Test 2d gains the raced-read case.
