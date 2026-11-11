@@ -2315,8 +2315,15 @@ def _check_per_run_detections(
                     f" {n_classes}/{n_classes} classes on {session}, from"
                     f" run(s) {runs_text}; per ticker: {per_ticker}"))]
 
-    shown = ", ".join(uncovered[:_UNCOVERED_NAME_CAP])
-    more = (f" (+{len(uncovered) - _UNCOVERED_NAME_CAP} more)"
+    def _missing_text(ticker: str) -> str:
+        have = classes_by_ticker.get(ticker, set())
+        miss = [c for c in _DETECT_PATTERN_CLASSES if c not in have]
+        if len(miss) == n_classes:
+            return f"{ticker} missing all {n_classes}"
+        return f"{ticker} missing [{', '.join(miss)}]"
+
+    shown = "; ".join(_missing_text(t) for t in uncovered[:_UNCOVERED_NAME_CAP])
+    more =(f" (+{len(uncovered) - _UNCOVERED_NAME_CAP} more)"
             if len(uncovered) > _UNCOVERED_NAME_CAP else "")
     return [ResearchHealthCheck(
         key=key, status="yellow",

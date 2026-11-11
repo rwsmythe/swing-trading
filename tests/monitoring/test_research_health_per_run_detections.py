@@ -369,6 +369,75 @@ def test_cover_from_a_non_pipeline_source_is_amber(tmp_path):
     assert "19 of 21" in c.detail
 
 
+def test_amber_names_each_uncovered_tickers_missing_classes_in_registry_order(
+        tmp_path):
+    """CHARC condition 2: the YELLOW names the MISSING classes per ticker, in
+    _DETECT_PATTERN_CLASSES order (NOT alphabetical, NOT insertion order). The 19
+    run-118 tickers carry only flat_base + double_bottom_w, seeded in REVERSE
+    registry order, so the missing set is exactly vcp, cup_with_handle and
+    high_tight_flag."""
+    conn = _conn(tmp_path)
+    pool = _seed_live_121_shape(
+        conn, classes_118=("double_bottom_w", "flat_base"))
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    missing = "missing [vcp, cup_with_handle, high_tight_flag]"
+    assert f"{pool[0]} {missing}" in c.detail
+    assert f"{pool[9]} {missing}" in c.detail     # the last name under the cap
+    assert c.detail.count("missing [") == 10      # the cap; the covered 2 never
+    assert "(+9 more)" in c.detail
+    assert pool[19] not in c.detail and pool[20] not in c.detail
+
+
+def test_amber_partial_cover_unions_classes_across_other_runs(tmp_path):
+    """A ticker covered in part by run 118 and in part by run 119 is missing
+    only what NEITHER wrote -- the class cover is a union over other runs."""
+    conn = _conn(tmp_path)
+    pool = _seed_live_121_shape(conn, classes_118=("vcp",), cover_119=0)
+    _seed_detections(conn, run_id=119, tickers=pool[:1],
+                     session=_RERUN_SESSION, asof=_RERUN_ASOF,
+                     classes=("cup_with_handle", "double_bottom_w"))
+    conn.commit()
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    assert f"{pool[0]} missing [flat_base, high_tight_flag]" in c.detail
+    assert f"{pool[1]} missing [flat_base, cup_with_handle, high_tight_flag,"\
+        " double_bottom_w]" in c.detail
+
+
+def test_amber_zero_cover_ticker_reads_missing_all_five(tmp_path):
+    """A ticker with no cover at all reads `missing all 5` (the run-201 shape:
+    every pool ticker is uncovered)."""
+    conn = _conn(tmp_path)
+    _seed_eval(conn, eval_id=187, asof="2026-10-27", watch=3, skip=5)
+    _seed_run(conn, run_id=201, eval_id=187, asof="2026-10-27")
+    conn.commit()
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    for t in _watch_tickers(conn, 187):
+        assert f"{t} missing all 5" in c.detail
+    assert "missing [" not in c.detail
+
+
+def test_amber_missing_class_names_keep_the_cap_and_more_tail(tmp_path):
+    """Truncation is unchanged: at most _UNCOVERED_NAME_CAP tickers are named,
+    in ticker order, then `(+N more)`."""
+    from swing.monitoring.research_health import _UNCOVERED_NAME_CAP
+
+    conn = _conn(tmp_path)
+    n = _UNCOVERED_NAME_CAP + 2
+    _seed_eval(conn, eval_id=187, asof="2026-10-27", watch=n, skip=5)
+    _seed_run(conn, run_id=201, eval_id=187, asof="2026-10-27")
+    conn.commit()
+    pool = _watch_tickers(conn, 187)
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    assert c.detail.count("missing all 5") == _UNCOVERED_NAME_CAP
+    assert f"{pool[_UNCOVERED_NAME_CAP - 1]} missing all 5" in c.detail
+    assert pool[_UNCOVERED_NAME_CAP] not in c.detail
+    assert "(+2 more)" in c.detail
+
+
 def test_detect_class_mirror_matches_the_detector_registry():
     """The drift comparator for the monitor's class mirror: the classes a full
     cover requires must be the classes the detect step writes."""
