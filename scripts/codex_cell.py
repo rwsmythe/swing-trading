@@ -251,9 +251,12 @@ def review_verdict(text: str) -> str | None:
 
     The pass prints an anchored ``VERDICT: <token>`` line. The verdict is the token only
     when exactly ONE distinct token appears on such lines and it is one of
-    :data:`VERDICT_TOKENS`; an unknown token, both tokens, or none is no verdict.
+    :data:`VERDICT_TOKENS`; an unknown token, both tokens, or none is no verdict. A line
+    may end in CRLF (Codex R4-3).
     """
-    found = {m.group(1) for m in re.finditer(r"^VERDICT:[ \t]*(\S+)[ \t]*$", text, flags=re.M)}
+    found = {
+        m.group(1) for m in re.finditer(r"^VERDICT:[ \t]*(\S+)[ \t]*\r?$", text, flags=re.M)
+    }
     if len(found) == 1 and found <= set(VERDICT_TOKENS):
         return found.pop()
     return None

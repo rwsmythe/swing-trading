@@ -783,6 +783,18 @@ def test_review_without_exactly_one_known_verdict_fails(tmp_path, monkeypatch, c
     assert rc == 1
 
 
+@pytest.mark.parametrize("token", ["NO_NEW_CRITICAL_MAJOR", "NEW_CRITICAL_MAJOR_FOUND"])
+def test_a_crlf_verdict_line_is_a_verdict(tmp_path, monkeypatch, capsys, token) -> None:
+    """Codex R4-3: the anchored line ending in CRLF (a carriage return kept inside the JSON
+    result string) read as no verdict, which failed a completed review."""
+    m = _load()
+    text = f"Notes.\r\nVERDICT: {token}\r\n"
+    assert m.review_verdict(text) == token
+    rc, out, _ = _review(m, tmp_path, monkeypatch, capsys, _result(text))
+    assert out["verdict"] == token
+    assert rc == 0
+
+
 def test_review_whose_result_is_an_error_fails(tmp_path, monkeypatch, capsys) -> None:
     """Codex R1-4 (c): ``is_error: true`` with exit 0 used to pass."""
     m = _load()
