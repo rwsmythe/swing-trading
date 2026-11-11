@@ -2184,6 +2184,13 @@ def _check_per_run_detections(
     evaluation (legacy pre-binding rows only) cannot have its pool read ->
     YELLOW naming the run; it never skips back to an older linked run. No
     complete run -> GREEN n/a. Missing table/column -> YELLOW schema-unavailable.
+
+    Known false YELLOW: pattern_detect skips a detection whose (source, ticker,
+    detection_date, pattern_class) already exists, so a same-session RERUN over
+    a pool an earlier run already detected writes zero rows under its own id
+    and reads YELLOW here (live: runs 103, 120, 121, 123, 124, each fully
+    covered by earlier runs of the same session). Zero-vs-non-zero is the
+    brief's contract; telling a rerun from a failure is an open item.
     """
     key = "per_run_detections"
     try:

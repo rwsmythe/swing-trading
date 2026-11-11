@@ -32,6 +32,11 @@ from swing.monitoring.research_health import (
     write_research_health_artifact,
 )
 
+# Frozen clock anchored to the real wall clock (the aggregate-test convention):
+# "yesterday noon" Hawaii-local, so the artifact is never future-dated and never
+# stale for the reader's real-clock gate (generated_ts <= 7d).
+_NOW = (datetime.now(ZoneInfo("Pacific/Honolulu")).replace(tzinfo=None)
+        - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
 _CLASSES = ("vcp", "flat_base", "cup_with_handle", "high_tight_flag", "double_bottom_w")
 _KEY = "per_run_detections"
 
@@ -176,6 +181,77 @@ def test_detections_are_counted_for_the_runs_own_id_not_a_neighbour(tmp_path):
     assert "run 201" in c.summary
 
 
+def test_aplus_only_pool_with_zero_detections_is_amber(tmp_path):
+    """The pool is aplus|watch (the production detect predicate); a watch-only
+    count would read this aplus-only night as an empty pool -> GREEN."""
+    conn = _conn(tmp_path)
+    _seed_eval(conn, eval_id=187, asof="2026-10-27", watch=0, aplus=3, skip=10)
+    _seed_run(conn, run_id=201, eval_id=187, asof="2026-10-27")
+    conn.commit()
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    assert "3 aplus + 0 watch" in c.detail
+
+
+def test_a_single_detection_is_green(tmp_path):
+    """Zero-vs-non-zero, no threshold: ONE detection over the run-201 pool is
+    GREEN (a per-ticker or five-class threshold would read it as zero)."""
+    conn = _conn(tmp_path)
+    _seed_eval(conn, eval_id=187, asof="2026-10-27", watch=12, skip=32)
+    _seed_run(conn, run_id=201, eval_id=187, asof="2026-10-27")
+    conn.execute(
+        "INSERT INTO pattern_detection_events (ticker, detection_date,"
+        " data_asof_date, pattern_class, structural_anchors_json,"
+        " composite_score, detector_version, source,"
+        " per_pattern_metadata_json, pipeline_run_id, created_at)"
+        " VALUES ('WW000', '2026-10-28', '2026-10-27', 'vcp', '{}', 0.5, 'v',"
+        " 'pipeline', '{}', 201, '2026-10-27T17:33:00')")
+    conn.commit()
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "green"
+    assert "1 detection(s)" in c.summary
+
+
+def test_latest_is_by_completion_not_by_id(tmp_path):
+    """The most recent COMPLETED row by finished_ts. Here the higher id (and the
+    later start) finished EARLIER; ordering by id or started_ts would read
+    run 202 (healthy) and report GREEN."""
+    conn = _conn(tmp_path)
+    _seed_eval(conn, eval_id=187, asof="2026-10-27", watch=12)
+    _seed_run(conn, run_id=201, eval_id=187, asof="2026-10-27")
+    _seed_eval(conn, eval_id=188, asof="2026-10-27", watch=5, prefix="N")
+    _seed_run(conn, run_id=202, eval_id=188, asof="2026-10-27")
+    _seed_detections(conn, run_id=202, tickers=_watch_tickers(conn, 188),
+                     session="2026-10-28", asof="2026-10-27")
+    conn.execute("UPDATE pipeline_runs SET started_ts = '2026-10-27T17:00:00',"
+                 " finished_ts = '2026-10-27T19:00:00' WHERE id = 201")
+    conn.execute("UPDATE pipeline_runs SET started_ts = '2026-10-27T17:10:00',"
+                 " finished_ts = '2026-10-27T18:00:00' WHERE id = 202")
+    conn.commit()
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    assert "run 201" in c.summary
+
+
+def test_completion_tie_breaks_to_the_higher_id(tmp_path):
+    conn = _conn(tmp_path)
+    _seed_eval(conn, eval_id=188, asof="2026-10-27", watch=5, prefix="N")
+    _seed_run(conn, run_id=201, eval_id=188, asof="2026-10-27")
+    _seed_detections(conn, run_id=201, tickers=_watch_tickers(conn, 188),
+                     session="2026-10-28", asof="2026-10-27")
+    _seed_eval(conn, eval_id=187, asof="2026-10-27", watch=12)
+    _seed_run(conn, run_id=202, eval_id=187, asof="2026-10-27")
+    conn.commit()
+    (fin201,) = conn.execute(
+        "SELECT finished_ts FROM pipeline_runs WHERE id = 201").fetchone()
+    (fin202,) = conn.execute(
+        "SELECT finished_ts FROM pipeline_runs WHERE id = 202").fetchone()
+    assert fin201 == fin202  # a genuine tie
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    assert "run 202" in c.summary
+
+
 # ---------------------------------------------------------------- (3) empty pool
 
 
@@ -258,7 +334,8 @@ def test_check_is_in_the_aggregate(tmp_path):
 def _fresh_manifest_root(root: Path) -> Path:
     """A fresh shadow-expectancy-* dir + an attributed, zero-unattributed
     manifest -> drumbeat + excluded checks green."""
-    ts = datetime.now(ZoneInfo("UTC")) - timedelta(hours=2)
+    ts = (_NOW.replace(tzinfo=ZoneInfo("Pacific/Honolulu"))
+          .astimezone(ZoneInfo("UTC")) - timedelta(days=1))
     run_dir = root / ("shadow-expectancy-" + ts.strftime("%Y%m%dT%H%M%S") + "Z")
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "manifest.json").write_text(json.dumps({"funnel": {
@@ -292,7 +369,7 @@ def test_amber_reaches_the_topbar_through_the_context_processor(tmp_path, monkey
         _seed_run(conn, run_id=201, eval_id=187, asof="2026-10-27")
         conn.commit()
         exports_root = _fresh_manifest_root(cfg.paths.exports_dir / "research")
-        status = compute_research_health(conn, exports_root=exports_root)
+        status = compute_research_health(conn, exports_root=exports_root, now=_NOW)
     finally:
         conn.close()
     by_key = {c.key: c.status for c in status.checks}
