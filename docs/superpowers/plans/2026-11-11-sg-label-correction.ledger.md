@@ -705,6 +705,16 @@ The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 17
 >
 > No change to the H2 read rule or to my witness.
 
+### Point 2 of FX-2 -- SUPERSEDED by RD's re-ruling (below, "FX-2 re-ruling"); the block quote above is left as delivered
+
+**Old point 2 (SUPERSEDED, kept, never deleted):**
+
+> ~~2. The harm FX-1 exists to prevent is not present. The 400 re-renders the form with every typed value preserved and a FRESH anchor (_reject_anchor passes the three submitted_* as None), so the entry is one resubmit away, with a good claim or with none. Nothing is left unjournaled by construction; on 09-01 the blocked value was a cohort key the operator had no way to repair from the form.~~
+
+**Corrected point 2 (RD, the FX-2 re-ruling, verbatim, binding):**
+
+> "The harm FX-1 exists to prevent is not present. The 400 re-renders the form with a FRESH anchor and the six core values (ticker, date, price, shares, stop, rationale/notes); the thirteen pre-trade answers are NOT preserved at this rung and must be re-entered. The entry remains recordable from the recovery form: a resubmit with the answers re-entered writes the trade. The cost of this 400 is retyping, not an unjournaled position."
+
 ## Executing -- cell 6: FX-2's condition -- the round trip FAILS (stopped, returned to RD)
 
 **Existing test searched first.** No test performs the round trip. Search: every test module containing `fill_origin_at_form_render` AND `400` was grepped for `resubmit|recovery|replay|re-post`, and every `def test_` under `tests/web` and `tests/integration` matching `round_trip|roundtrip|resubmit|recover` was read by name. The hits are soft-warn confirm round trips (200 -> `force=true`), D79 exit replays, and the 4h "never replayed" checks (`test_d86_entry_raw_rung.py:224`, which asserts the 400 and the fresh anchor but never resubmits). The two pins of the claimed-undecodable 400 (`test_entry_post_audit_columns.py::test_c_malformed_anchor_with_claim_rejects_with_400`, ext2 `::test_a_deeply_nested_envelope_does_not_500_the_ENTRY_route`) stop at the 400.
@@ -718,3 +728,29 @@ The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 17
 **So RD's point 2, as worded ("re-renders the form with every typed value preserved"), does not hold at this rung:** the anchor is fresh and the six core values survive, but the pre-trade answers do not. The trade is one resubmit away only after the operator retypes 13 answers. The same helper serves every pre-service validation 400 that calls it, so the loss is pre-existing and not specific to the claim ladder; it is NOT this arc's change. No behaviour was changed, per the ruling's stop clause.
 
 **Evidence (durable, outside the repo):** `C:\Users\rwsmy\swing-data\review-transcripts\sg-label\fx2-condition\` -- `test_fx2_claimed_undecodable_round_trip.py` (the test, uncommitted because it is red), `fx2-round-trip-run-at-72e90f7a.txt` (the failing run, 503 lines), `fx2-sent-vs-recovery-field-diff.txt`, `fx2_diag_test.py` (the diff harness). Reviewer A NOT started: it waits on RD's answer to the failed condition.
+
+## FX-2 re-ruling (verbatim, binding)
+
+**Ruling seat:** RD, `20261111T23xx` (timestamp as relayed), "RE-RULING FX-2: Y stands, point 2 corrected; option (b)". **Courier:** the orchestrator, relaying to executing cell 6 "the parts that bind you" verbatim; the text below is that relay, not a copy taken from RD's mailbox. It answers cell 6's failed condition (above). The corrected point 2 also sits beside the FX-2 block quote, with the old text struck.
+
+> FX-2 RE-RULED = Y STANDS, point 2 CORRECTED. Option (b). Option (a) is refused for this arc.
+>
+> MY ERROR, recorded: point 2 of the FX-2 ruling said the 400 "re-renders the form with every typed value preserved". That was false. I read _reject_anchor's keyword arguments and inferred the rest; I did not read what _rerender_entry_form_with_error keeps. Confirmed by my own read on sg-label @ b8f1b5cb: the helper (trades.py:588) takes no draft_* parameter, and fifteen call sites share it. The condition did its job.
+>
+> POINT 2, AS IT NOW READS (replace the old text beside the FX-2 block quote; keep the old text struck or quoted, never deleted):
+>
+> "The harm FX-1 exists to prevent is not present. The 400 re-renders the form with a FRESH anchor and the six core values (ticker, date, price, shares, stop, rationale/notes); the thirteen pre-trade answers are NOT preserved at this rung and must be re-entered. The entry remains recordable from the recovery form: a resubmit with the answers re-entered writes the trade. The cost of this 400 is retyping, not an unjournaled position."
+>
+> WHY Y SURVIVES THE CORRECTION. FX-1's test is whether a guard leaves a real position unjournaled. It does not: the operator can still record the trade from the form in front of him. Retyping thirteen answers is a real cost, but it is paid only on a shape no server-rendered form produces (tamper or a defect), and points 1, 3 and 4 are untouched: X would still silently rewrite an explicit fill-origin claim with no instrument to restore it, and would still invert earlier arcs' pins inside a labelling arc.
+>
+> THE TEST (replaces the failed one; same file, same first POST):
+>   1. claimed undecodable anchor, every pre-trade field filled -> 400; the recovery form carries the fresh anchor, not the rejected one (as now).
+>   2. PIN THE LOSS AS A KNOWN LIMITATION: the recovery form's thirteen pre-trade fields render empty. Name the banked item in the assertion message, so the test goes red and points at itself the day the helper is fixed.
+>   3. resubmit built from the 400's own form WITH the thirteen answers re-entered -> the success response and the trade written, with the fill-origin and cohort keys the fresh anchor earns.
+> If step 3 fails, stop and return to me again.
+>
+> WHY (a) IS REFUSED HERE. The helper serves fifteen early 400s. Changing what all of them preserve is a behaviour change to the entry form's whole validation surface, outside this arc's planned surface, landing in front of a live migration. It is also not mine to scope: it is a tool defect, not a measurement question.
+>
+> BANKED, as its own pre-arc item, CHARC to register and prioritise: "_rerender_entry_form_with_error drops the thirteen pre-trade answers on every early-validation 400 that calls it; only the missing-field re-render (trades.py:2028-2080) keeps them."
+>
+> Reviewer A may open once the reworked test is green and committed. No change to the H2 read rule or to my witness.
