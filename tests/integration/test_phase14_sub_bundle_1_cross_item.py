@@ -7,6 +7,10 @@ primary verification surface for S3+S4+S5a/b/c coexistence. This module
 ships the cumulative ASCII discipline sweep (gotcha #32) which IS a
 required closer artifact + a programmatic sub-bundle file enumeration
 audit.
+
+The branch Co-Authored-By trailer pin that also lived here was retired on
+2026-11-11 by the Codex-lane arc (P6): the operator retired the trailer
+prohibition on 2026-11-03.
 """
 
 from __future__ import annotations
@@ -57,31 +61,3 @@ def test_cumulative_ascii_discipline_across_subbundle_1_surface() -> None:
         except UnicodeEncodeError as exc:
             failures.append(f"{rel}: {exc}")
     assert not failures, "ASCII discipline violations:\n" + "\n".join(failures)
-
-
-def test_sub_bundle_1_branch_has_no_co_authored_by_trailers() -> None:
-    """Project invariant: ZERO ``Co-Authored-By:`` footer trailers on
-    any Sub-bundle 1 branch commit. ~599+ cumulative ZERO trailer drift
-    streak preserved.
-    """
-    import subprocess
-
-    result = subprocess.run(
-        ["git", "log", "--pretty=%(trailers)", "main..HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        # main may not exist as a ref under some checkout states; skip
-        # in that case rather than fail spuriously.
-        import pytest
-
-        pytest.skip(f"git log against main..HEAD failed: {result.stderr!r}")
-    trailers_output = result.stdout.strip()
-    assert "Co-Authored-By" not in trailers_output, (
-        "Co-Authored-By trailer detected on Sub-bundle 1 branch:\n"
-        f"{trailers_output}\n"
-        "Project invariant: ZERO Co-Authored-By trailers per CLAUDE.md "
-        "Conventions + ~599+ cumulative streak."
-    )

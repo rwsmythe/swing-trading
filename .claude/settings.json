@@ -48,7 +48,9 @@
   "allow": [
     "Bash(powershell -NoProfile -File scripts/start_directors.ps1 -Role *)",
     "PowerShell(powershell -NoProfile -File scripts/start_directors.ps1 -Role *)",
-    "PowerShell(.\\scripts\\start_directors.ps1 -Role *)"
-    ]
+    "PowerShell(.\\scripts\\start_directors.ps1 -Role *)",
+    "Bash(python scripts/usage_claude.py)"
+    ],
+  "_comment_usage": "Standing permission rule (the operator's grant, given by commissioning the Codex-lane arc 2026-11-03 and re-confirmed 2026-11-11): the orchestrator and director sessions may run scripts/usage_claude.py, which reads the Claude Code OAuth token once from ~/.claude/.credentials.json and sends it only to api.anthropic.com to fetch this account's weekly usage window for the two-lane dispatch tiebreak. The allow rule is exact, with no wildcard. No other credential access is granted."
   }
 }
