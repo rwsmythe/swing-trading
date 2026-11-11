@@ -30,6 +30,7 @@ import argparse
 import datetime as dt
 import json
 import pathlib
+import re
 import sys
 import time
 import urllib.error
@@ -38,6 +39,30 @@ from typing import Any
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 WEEK_MINS = 7 * 24 * 60
+# A bearer token's characters (RFC 6750 b64token). A stored value outside this shape is
+# refused when read, by a message that does not show it (Codex R1-6).
+TOKEN_SHAPE = re.compile(r"[A-Za-z0-9._~+/-]+=*")
+TOKEN_PIECE = re.compile(r"[A-Za-z0-9._~+/=-]{4,}")
+
+
+def read_token(credentials: pathlib.Path) -> str:
+    """The stored OAuth access token; ``ValueError`` (value not shown) on a bad shape."""
+    cred = json.loads(credentials.read_text("utf-8"))
+    token = cred["claudeAiOauth"]["accessToken"]
+    if not isinstance(token, str) or not TOKEN_SHAPE.fullmatch(token):
+        raise ValueError("the stored access token has an invalid shape (its value is not shown)")
+    return token
+
+
+def redact(text: str, token: str | None) -> str:
+    """``text`` with every 4+ character run of ``token`` replaced (Codex R1-6, second belt).
+
+    A library error can quote a header value through ``repr``, which escapes control
+    characters, so the token is matched piece by piece rather than whole.
+    """
+    for piece in TOKEN_PIECE.findall(token or ""):
+        text = text.replace(piece, "<redacted>")
+    return text
 
 
 def pace_from(
@@ -127,12 +152,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=float, default=20.0)
     args = ap.parse_args(argv)
     now = time.time()
+    token = None
     try:
-        cred = json.loads(pathlib.Path(args.credentials).read_text("utf-8"))
-        body = fetch(cred["claudeAiOauth"]["accessToken"], args.timeout)
+        token = read_token(pathlib.Path(args.credentials))
+        body = fetch(token, args.timeout)
         out = parse_usage(body, now)
     except (OSError, KeyError, TypeError, ValueError, urllib.error.URLError) as exc:
-        print(json.dumps({"lane": "claude", "error": f"{type(exc).__name__}: {exc}"}))
+        error = redact(f"{type(exc).__name__}: {exc}", token)
+        print(json.dumps({"lane": "claude", "error": error}))
         return 1
     print(json.dumps(out))
     return 0

@@ -217,6 +217,58 @@ def test_the_token_is_never_printed_on_any_path(tmp_path, monkeypatch, capsys):
             assert "error" in json.loads(out)
 
 
+def _no_network(monkeypatch) -> None:
+    def refuse(self):
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(http.client.HTTPSConnection, "connect", refuse)
+
+
+def _bad_credentials(tmp_path: Path) -> Path:
+    cred = tmp_path / "bad.json"
+    payload = {"claudeAiOauth": {"accessToken": SENTINEL + "\nX"}}
+    cred.write_text(json.dumps(payload), encoding="utf-8")
+    return cred
+
+
+def test_the_real_header_failure_carries_the_token(tmp_path, monkeypatch):
+    """Positive control for R1-6: http.client rejects a header value with a line break,
+    BEFORE any connect, with a ValueError whose text holds the whole value."""
+    mod = _load("usage_claude")
+    _no_network(monkeypatch)
+    try:
+        mod.fetch(SENTINEL + "\nX", 1)
+    except ValueError as exc:
+        assert SENTINEL in str(exc)
+    else:
+        raise AssertionError("the header validation did not fire")
+
+
+def test_a_malformed_token_is_refused_before_any_request(tmp_path, monkeypatch, capsys):
+    """Codex R1-6, first belt: a token that is empty or carries whitespace or a control
+    character is refused when it is read, by a message that does not show it."""
+    mod = _load("usage_claude")
+    _no_network(monkeypatch)
+    rc = mod.main(["--credentials", str(_bad_credentials(tmp_path)), "--timeout", "1"])
+    cap = capsys.readouterr()
+    assert rc == 1
+    assert SENTINEL not in cap.out + cap.err and "Bearer" not in cap.out + cap.err
+    assert "error" in json.loads(cap.out)
+
+
+def test_every_error_text_is_redacted_of_the_token(tmp_path, monkeypatch, capsys):
+    """Codex R1-6, second belt: with the shape check bypassed, the REAL header-validation
+    ValueError reaches main, and main prints it with the token removed."""
+    mod = _load("usage_claude")
+    _no_network(monkeypatch)
+    monkeypatch.setattr(mod, "read_token", lambda path: SENTINEL + "\nX")
+    rc = mod.main(["--credentials", str(_bad_credentials(tmp_path)), "--timeout", "1"])
+    cap = capsys.readouterr()
+    assert rc == 1
+    assert SENTINEL not in cap.out + cap.err
+    assert json.loads(cap.out)["error"].startswith("ValueError")
+
+
 def test_an_unreadable_credentials_file_is_no_reading(tmp_path, capsys):
     mod = _load("usage_claude")
     rc = mod.main(["--credentials", str(tmp_path / "absent.json"), "--timeout", "1"])
