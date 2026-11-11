@@ -273,3 +273,38 @@ def test_entry_pre_fill_when_no_pipeline_run_yet(tmp_path: Path):
     ])
     assert result.exit_code == 0, result.output
     assert "Pre-filled --hypothesis" not in result.output
+
+
+def test_t24_the_prefill_line_names_the_night_it_used(tmp_path: Path):
+    """D102 T2.4 (F7 = A): `swing trade entry` keeps the LATEST night and
+    the prefill line now NAMES it -- `eval <id>, session <date>` -- so the
+    operator can see which night's suggestion he is accepting."""
+    import tomllib
+
+    runner, cfg = _setup(tmp_path)
+    _seed_aplus_pipeline(cfg, ticker="AAPL")
+    db_path = Path(tomllib.loads(cfg.read_text())["paths"]["db_path"])
+    conn = connect(db_path)
+    try:
+        eval_id = conn.execute(
+            "SELECT id FROM evaluation_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    result = runner.invoke(main, [
+        "--config", str(cfg), "trade", "entry",
+        "--ticker", "AAPL", "--entry-date", "2026-04-15",
+        "--entry-price", "180.0", "--shares", "5",
+        "--initial-stop", "170.0", "--rationale", "aplus-setup",
+        *cli_entry_pre_trade_args(),
+    ])
+    assert result.exit_code == 0, result.output
+    line = [ln for ln in result.output.splitlines()
+            if "Pre-filled --hypothesis" in ln]
+    assert len(line) == 1, result.output
+    label = _read_hypothesis_label(cfg, "AAPL")
+    assert line[0] == (
+        f"Pre-filled --hypothesis: {label} "
+        f"(eval {eval_id}, session 2026-04-20)")
+    line[0].encode("ascii")

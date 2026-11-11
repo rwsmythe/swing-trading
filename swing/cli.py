@@ -977,7 +977,20 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 else:
                     if prefilled is not None:
                         hypothesis = prefilled
-                        click.echo(f"Pre-filled --hypothesis: {prefilled}")
+                        # D102 T2.4 (F7 = A): the CLI keeps the LATEST night
+                        # (no chooser; banked) and NAMES it on the line --
+                        # the same run the lookup reads.
+                        from swing.web.view_models.dashboard import (
+                            latest_evaluation_run_id as _latest_eval,
+                        )
+                        _night_eval = _latest_eval(conn)
+                        _night_row = conn.execute(
+                            "SELECT action_session_date FROM evaluation_runs"
+                            " WHERE id = ?", (_night_eval,)).fetchone()
+                        click.echo(
+                            f"Pre-filled --hypothesis: {prefilled} "
+                            f"(eval {_night_eval}, session "
+                            f"{_night_row[0] if _night_row else 'unknown'})")
 
             # NEW (Task 7): sector/industry candidate-row lookup via the canonical
             # helper, mirroring the entry-form VM (Task 6) for cross-surface
