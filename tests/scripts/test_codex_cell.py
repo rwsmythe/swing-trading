@@ -1089,6 +1089,40 @@ def test_the_reviewer_starts_as_its_own_session_with_no_role(
     assert rc == 0
 
 
+# The set Claude Code itself writes into every shell it runs a command in, read from the
+# CLI build of 2026-11-11 (2.1.322; the function that builds a command's environment).
+# Three of these are not on the launcher's list: the attended-session flag (which a child
+# claude reads at startup), the agent tag and the trace context (which codex reads).
+CLI_SHELL_MARKERS = (
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_PID",
+    "AI_AGENT",
+    "CLAUDE_EFFORT",
+    "TRACEPARENT",
+)
+
+
+def test_the_child_env_drops_every_marker_the_cli_writes_into_its_shells(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """SS-1-1 (a sibling of Codex R3-2): the launcher's list is the project's record, but
+    the dispatcher's shell also carries markers the CLI added after that list was taken
+    (measured in a cell's shell: the attended flag and the agent tag). Read at the process
+    boundary, over inherited values."""
+    m = _load()
+    for name in CLI_SHELL_MARKERS:
+        monkeypatch.setenv(name, "parent")
+    rc, _, seen = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        real_run=True,
+    )
+    assert sorted(set(CLI_SHELL_MARKERS) & set(seen["env"])) == []
+    assert rc == 0
+
+
 def _review_tool_set(py: str) -> list[list[str]]:
     """Each tool the reviewer's allowance admits, in the form a reviewer would run it here.
 
