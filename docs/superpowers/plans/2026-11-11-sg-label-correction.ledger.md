@@ -289,3 +289,20 @@ Depth is filled by the orchestrator from `scripts/cell_depth.py --agent <id>`; a
 | 0 | premise + fork census, NO Codex (`bafddb6a`) | -- | -- | -- | -- | -- | 10 forks routed (F0-F9) | -- | -- | 0 | |
 | 0-fold | rulings folded, NO Codex (continuation cell, `08ee3b57`) | -- | -- | -- | -- | -- | 0 (E1-E4 declared; E3 unsettled) | -- | -- | 0 | 255K (orchestrator, at the fold-ruling relay) |
 | 0-fold-2 | fold rulings folded (E1-E3, R1, E4, the classifier lock), NO Codex | -- | -- | -- | -- | -- | 0 | -- | -- | 0 | |
+| 1 | Codex plan review: a stdin bundle (plan `51a323e3`, the ledger cut, the brief), cwd = worktree, read-only | `fast`: `gpt-6-luna` / `medium` (equal to the profile file) | 0 | present | `NEW_CRITICAL_MAJOR_FOUND` (x2, one distinct; the other token 0) | 0 / 2 / 0 | 2 (R1-01 accepted; R1-02 contested, so it counts fail-safe) | 2 NEW / 0 REOPENED | 0 | 37,032 | |
+
+## Round 1
+
+Evidence, copied the moment the assertions passed, at `C:/Users/rwsmy/swing-data/review-transcripts/sg-label/`: `.codex-review-r1.txt` (127,656 bytes), `.codex-prompt-r1.md` (122,941 bytes), and `.copowers-findings.md` (7,435 bytes: the verbatim response plus this adjudication). Wall time was 45 s, and the reviewer made zero repo reads. The plan fixes landed in `f434a276`. That commit message also claims "ledger row", but the ledger write FAILED there (a quoting error in my own script), so the row and this section land in the next commit. The message defect is RECORDED here and not rewritten.
+
+- **R1-01. Reviewer: major, task-bearing. Mine: minor, TASK-BEARING (it changes test 1i's assertion). ACCEPTED, with the premise corrected.**
+  - The reviewer's mechanism is wrong. It says the table CHECKs "can reject the malformed value before the trigger". A BEFORE INSERT trigger runs BEFORE the row's CHECKs (SQLite semantics; the plan's T1.4.1 note and 22A-R3-12 rest on this), so the trigger fires first.
+  - The remedy stands anyway. 1i said "`RAISE(ABORT)`/CHECK", which would pass on either path.
+  - The fix: 1i now asserts the citation trigger's OWN kind-2 message, with no CHECK message and no `OperationalError`. It covers both JSON columns. A guard-removed variant raises `OperationalError`, which proves the `json_valid` guard is load-bearing.
+- **R1-02. Reviewer: major, task-bearing. Mine: the premise is prevented by the service, so not a major; the classification is CONTESTED, which counts task-bearing (fail-safe). PARTLY ACCEPTED.**
+  - The premise is "the registry changes between the walk and the label derivation". The service's own transaction prevents it. The outer function owns `BEGIN IMMEDIATE` (T1.6; the shape of `correct_cohort_provenance`), so no other writer can change `hypothesis_registry` or `hypothesis_status_history` between two reads of the same transaction.
+  - The mechanism is SQLite's lock, not a census of writers. `BEGIN IMMEDIATE` takes the RESERVED lock at BEGIN, so no other connection can COMMIT a write until this transaction ends.
+  - Every read inside the transaction therefore sees one database state. This holds whoever the writer is, which is why no writer enumeration is offered or needed.
+  - What I took: steps 7 and 8 read through ONE function for the SAME row in the SAME transaction, and the plan now says so. Step 8 also asserts that `keys.hypothesis_id` equals the walk's match, refusing on inequality.
+  - What I declined: the proposed test that changes the registry mid-transaction. It can only be built by monkeypatching the function under test, which would be a vacuous test of an unreachable state.
+- **Observation for the orchestrator (instrument, not a finding).** The round made ZERO repo reads: 37,032 tokens in 45 s. Both findings cite a `file:line` the reviewer never opened; R1-02's citation, `cohort_provenance_correction.py:807-840`, is the snapshot function, which is unrelated to its claim. The round passes all five mechanical assertions, so it COUNTS. For round 2 the prompt REQUIRES opening named files before findings are written. That is a prompt-design change only, with no change to the tier or the rules.
