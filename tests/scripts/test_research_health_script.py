@@ -136,7 +136,7 @@ def test_script_json_flag(tmp_path, monkeypatch, capsys) -> None:
     assert parsed["monitor"] == "research_measurement"
     assert parsed["overall"] in {"green", "yellow", "red"}
     assert isinstance(parsed["checks"], list)
-    assert len(parsed["checks"]) == 7
+    assert len(parsed["checks"]) == 8
     assert rc == 0  # --json always exits 0 even when red
 
 
