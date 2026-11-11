@@ -468,13 +468,16 @@ def cmd_commit(args: argparse.Namespace) -> int:
 
 
 def worktree_snapshot(worktree: str) -> dict[str, Any]:
-    """HEAD, every ref and the status INCLUDING ignored files (CHARC R1-3, A1 amended).
+    """HEAD, its branch, every ref and the status INCLUDING ignored files (CHARC R1-3).
 
-    Compared before and after the review pass: a difference, or a read that failed
-    (``ok`` false), FAILS the review. Writes OUTSIDE the worktree are not seen.
+    Compared before and after the review pass (``ref_differences`` for the refs, CHARC
+    2a): a failing difference, or a read that failed (``ok`` false), FAILS the review.
+    Writes OUTSIDE the worktree are not seen.
     """
     reads = {
         "head": ["rev-parse", "HEAD"],
+        # The ref HEAD names ("HEAD" itself when detached): this branch's ref for CHARC 2a.
+        "branch": ["rev-parse", "--symbolic-full-name", "HEAD"],
         "refs": ["for-each-ref", "--format=%(refname) %(objectname)"],
         "status_ignored": ["status", "--porcelain", "--ignored"],
     }
@@ -490,6 +493,33 @@ def worktree_snapshot(worktree: str) -> dict[str, Any]:
         snap["ok"] = snap["ok"] and proc.returncode == 0
         snap[name] = proc.stdout
     return snap
+
+
+def ref_differences(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """The refs added, deleted and moved between two snapshots, and whether they FAIL.
+
+    CHARC 2a (2026-11-11): a worktree shares every ref with the main repo, so a ref that
+    other seats move mid-review (main, remotes, another worktree's branch) is not the
+    reviewer's write. Any ref ADDED or DELETED fails the review; a CHANGED value fails it
+    only for this branch's ref, the one HEAD named BEFORE the pass (HEAD itself is
+    compared separately). The moved refs are reported either way.
+    """
+
+    def table(text: str) -> dict[str, str]:
+        pairs = (line.rpartition(" ") for line in text.splitlines() if line.strip())
+        return {name: oid for name, _, oid in pairs}
+
+    b, a = table(before["refs"]), table(after["refs"])
+    added = sorted(a.keys() - b.keys())
+    deleted = sorted(b.keys() - a.keys())
+    moved = sorted(k for k in b.keys() & a.keys() if b[k] != a[k])
+    own = before["branch"].strip()
+    return {
+        "refs_added": added,
+        "refs_deleted": deleted,
+        "refs_moved": moved,
+        "fail": bool(added or deleted or own in moved),
+    }
 
 
 def cmd_review(args: argparse.Namespace) -> int:
@@ -525,13 +555,20 @@ def cmd_review(args: argparse.Namespace) -> int:
         extra_env=REVIEW_ENV,
     )
     after = worktree_snapshot(args.worktree)
-    changed = [k for k in ("head", "refs", "status_ignored") if before[k] != after[k]]
+    refs = ref_differences(before, after)
+    changed = [k for k in ("head", "branch") if before[k] != after[k]]
+    changed += ["refs"] if refs.pop("fail") else []
+    changed += ["status_ignored"] if before["status_ignored"] != after["status_ignored"] else []
     summary: dict[str, Any] = {
         "exit": rc,
         "diff": str(diff),
         "json": str(result_json),
         "snapshot_unchanged": before["ok"] and after["ok"] and not changed,
         "snapshot_changed": changed,
+        **refs,
+        # The full lists (CHARC 2a), so a moved ref is visible even when it does not fail.
+        "refs_before": before["refs"].splitlines(),
+        "refs_after": after["refs"].splitlines(),
     }
     try:
         data = json.loads(result_json.read_text("utf-8", errors="replace"))

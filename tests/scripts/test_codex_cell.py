@@ -604,8 +604,9 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
     """Drive ``cmd_review`` with no real git and no real claude.
 
     ``git`` maps a git read (``status``, ``status --ignored``, ``rev-parse``,
-    ``for-each-ref``) to ``(returncode, stdout)``; ``after`` overrides those answers once the
-    reviewer has run, which is how a write by the reviewer is simulated."""
+    ``rev-parse --symbolic-full-name``, ``for-each-ref``) to ``(returncode, stdout)``;
+    ``after`` overrides those answers once the reviewer has run, which is how a write by the
+    reviewer is simulated."""
     wt = tmp_path / "wt"
     wt.mkdir()
     prompt = tmp_path / "p.md"
@@ -614,6 +615,7 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
         "status": (0, ""),
         "status --ignored": (0, "!! .pytest_cache/\n"),
         "rev-parse": (0, "abc1234\n"),
+        "rev-parse --symbolic-full-name": (0, "refs/heads/lane\n"),
         "for-each-ref": (0, "refs/heads/lane abc1234\n"),
     }
     answers.update(git or {})
@@ -629,7 +631,11 @@ def _review(m, tmp_path, monkeypatch, capsys, result: dict, git: dict | None = N
         if sub == "diff":
             k["stdout"].write(b"diff --git a/x b/x\n")
             return _P(0, "")
-        key = "status --ignored" if sub == "status" and "--ignored" in cmd else sub
+        key = sub
+        if sub == "status" and "--ignored" in cmd:
+            key = "status --ignored"
+        elif sub == "rev-parse" and "--symbolic-full-name" in cmd:
+            key = "rev-parse --symbolic-full-name"
         table = {**answers, **(after or {})} if state["ran"] else answers
         return _P(*table[key])
 
@@ -756,6 +762,91 @@ def test_review_with_an_unchanged_snapshot_passes(tmp_path, monkeypatch, capsys)
     assert out["snapshot_unchanged"] is True
     assert out["snapshot_changed"] == []
     assert rc == 0
+
+
+# CHARC 2a (2026-11-11T19:36:51Z): a worktree shares every ref with the main repo, so the
+# ref comparison is narrowed. An ADDED or DELETED ref fails the review; a CHANGED value
+# fails it only for this branch's ref (and HEAD); every ref list is recorded.
+SHARED_REFS = (
+    "refs/heads/lane abc1234\nrefs/heads/main 1111111\n"
+    "refs/heads/other-wt 3333333\nrefs/remotes/origin/main 1111111\n"
+)
+SHARED_REFS_MOVED = (
+    "refs/heads/lane abc1234\nrefs/heads/main 2222222\n"
+    "refs/heads/other-wt 4444444\nrefs/remotes/origin/main 2222222\n"
+)
+
+
+def test_review_passes_when_only_refs_other_than_its_branch_moved(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """CHARC 2a: main, a remote-tracking ref and another worktree's branch moving mid-review
+    are not the reviewer's writes and do not fail it; the moved refs are still reported."""
+    m = _load()
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        git={"for-each-ref": (0, SHARED_REFS)}, after={"for-each-ref": (0, SHARED_REFS_MOVED)},
+    )
+    assert out["snapshot_changed"] == []
+    assert out["snapshot_unchanged"] is True
+    assert out["refs_moved"] == [
+        "refs/heads/main", "refs/heads/other-wt", "refs/remotes/origin/main"
+    ]
+    assert out["refs_added"] == [] and out["refs_deleted"] == []
+    assert rc == 0
+
+
+@pytest.mark.parametrize(
+    ("after_refs", "field", "ref"),
+    [
+        (SHARED_REFS + "refs/heads/made abc1234\n", "refs_added", "refs/heads/made"),
+        (SHARED_REFS.replace("refs/heads/other-wt 3333333\n", ""), "refs_deleted",
+         "refs/heads/other-wt"),
+        (SHARED_REFS.replace("refs/heads/lane abc1234", "refs/heads/lane def5678"), "refs_moved",
+         "refs/heads/lane"),
+    ],
+    ids=["added", "deleted", "own-branch-moved"],
+)
+def test_review_fails_on_an_added_or_deleted_ref_or_its_own_branch_moving(
+    tmp_path, monkeypatch, capsys, after_refs, field, ref
+) -> None:
+    """CHARC 2a: any ref ADDED or DELETED fails the review, and so does a changed value for
+    this branch's own ref (``refs/heads/lane``, read from the symbolic HEAD before the pass)."""
+    m = _load()
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        git={"for-each-ref": (0, SHARED_REFS)}, after={"for-each-ref": (0, after_refs)},
+    )
+    assert out[field] == [ref]
+    assert out["snapshot_changed"] == ["refs"]
+    assert out["snapshot_unchanged"] is False
+    assert rc == 1
+
+
+def test_review_fails_when_head_points_at_another_branch(tmp_path, monkeypatch, capsys) -> None:
+    """CHARC 2a keeps HEAD failing on any change: HEAD switched to another branch at the same
+    commit leaves ``rev-parse HEAD`` and every ref value as they were."""
+    m = _load()
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        after={"rev-parse --symbolic-full-name": (0, "refs/heads/other\n")},
+    )
+    assert out["snapshot_changed"] == ["branch"]
+    assert rc == 1
+
+
+def test_review_records_the_full_ref_lists_before_and_after(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """CHARC 2a: the full before/after ref lists are in the review's JSON, so a moved ref is
+    visible even when it does not fail the review."""
+    m = _load()
+    _, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        git={"for-each-ref": (0, SHARED_REFS)}, after={"for-each-ref": (0, SHARED_REFS_MOVED)},
+    )
+    assert out["refs_before"] == SHARED_REFS.splitlines()
+    assert out["refs_after"] == SHARED_REFS_MOVED.splitlines()
 
 
 def test_review_runs_tests_without_writing_bytecode_or_a_pytest_cache(

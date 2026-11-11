@@ -444,9 +444,14 @@ turn in a git worktree, resumed by session id (`codex exec resume <id>`); the dr
     ruling A1 amended, on Codex review round 1 finding R1-3). `Bash(python:*)` stays,
     because the reviewer must run the project's tests; `Bash(git branch:*)` is dropped (it
     mutates) and `Bash(git rev-parse:*)` reads the branch and HEAD. The enforcement is the
-    driver's post-check: `git status --porcelain --ignored`, `git rev-parse HEAD` and
-    `git for-each-ref` are read before and after the pass, and a difference, or a read that
-    failed, FAILS the review (the review did not count). The pass runs with
+    driver's post-check: `git status --porcelain --ignored`, `git rev-parse HEAD` (and the
+    branch HEAD names) and `git for-each-ref` are read before and after the pass, and a
+    difference, or a read that failed, FAILS the review (the review did not count). The
+    refs are narrowed (CHARC 2a, 20261111T193651Z): a ref ADDED or DELETED fails it, a
+    CHANGED value fails it only for this branch's ref and HEAD, because a worktree shares
+    every ref with the main repo and `main`, remotes or another worktree's branch moving
+    mid-review are not the reviewer's writes; the full before/after ref lists are in the
+    review's JSON either way. The pass runs with
     `PYTHONDONTWRITEBYTECODE=1` and `PYTEST_ADDOPTS=-p no:cacheprovider`, so a test run
     does not change the ignored files compared. **Limitation: writes OUTSIDE the worktree
     are not caught.** A filesystem sandbox for `claude -p` is BANKED (owner CHARC); its
