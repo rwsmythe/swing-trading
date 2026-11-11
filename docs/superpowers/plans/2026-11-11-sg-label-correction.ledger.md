@@ -462,3 +462,22 @@ After `tests/data`, run the FULL fast suite once with the patch applied, to find
 5. Test 1k migrates the CADL `last_word` shape only. The tier-2 (row-2) shape is covered at v41 and v42 by 1v. Reason: the tier-2 world is built through `build_pre_barrier_world`, whose HEAD payload carries the new column (class 1 above), so a byte-equality migrate test on it needs that builder fix first.
 6. Test 1d asserts the post-dating refusal twice. On the full DB, the BEFORE INSERT trigger's run-anchor leg refuses FIRST, because the frozen session differs from the run's own. A separate test runs the CHECK alone on a trigger-free scratch table, so the CHECK itself is pinned.
 7. Test 1e's mutation is on the TABLE CHECK's kind-2 applied arm, in a trigger-free scratch table: the bare form ACCEPTS a row missing the label key. The trigger's kind-2 arm cannot be mutated discriminatingly, because every conjunct in it is `IS NULL` or `EXISTS`, so its COALESCE is a belt and cannot go NULL (the plan says so at T1.4.1).
+
+## FX-1 ruling (verbatim, binding)
+
+**Ruling seat:** RD, `20261111T201903Z`. **Courier:** the orchestrator (relayed to executing cell 3). CHARC was CC and offered no dissent.
+
+> FX-1 = C. NO ENTRY RUNG. The 2026-09-01 ruling stands unchanged and applies to D86's shapes exactly as it applied to the malformed schwab_order_id: a malformed, duplicate-key or otherwise refused anchor REFUSES THE LABEL (the latch binding and the cohort keys), NEVER THE ENTRY. The trade is real, the fill happened at the broker, and a 400 on the entry POST leaves a real position unjournaled, which is the worse measurement outcome every time: an unrecorded trade corrupts every cohort and the cash ledger, an honest-unset one corrupts nothing. A is refused: it would be the fifth instance of the class named on 09-01 (a guard added to protect the cohort keys defaulting to blocking the entry), and it would need the operator to reverse a ruling he has not been asked to reverse. B is refused: a second spelling of the authority.
+>
+> 4h RESTATED -- CONFIRMED, with the discriminating shape from the 09-01 text carried over. For each D86 anchor shape (the duplicate-key anchor and the others canonical_envelope_identity refuses):
+>  (i) the trade IS written (a 400 fails the test);
+>  (ii) the cohort keys land honest-unset: trade_origin manual_off_pipeline, hypothesis_label NULL, candidate_id NULL (admitting the anchor and stamping keys fails the test too);
+>  (iii) a warning names the malformation;
+>  (iv) the rejected anchor string is never replayed on the recovery form (R3-01's fix, kept).
+> The RED evidence the cell found (a duplicate-key anchor without a claim got a 200 AND was recorded WITH keys on the old code) is the defect D86 exists to close; (ii) is what closes it.
+>
+> ONE CONSEQUENCE FOR THE NEW INSTRUMENT, stated so the plan and I agree: an entry recorded honest-unset this way is manual_off_pipeline with a NULL label, which is kind 1's shape (fill_unset_provenance), not kind 2's. It is NOT eligible for a watch_fire_relabel and should not be: kind 2 requires pipeline_watch_manual with a non-null label. If such a trade was in truth an H2 fire, no instrument today relabels it; that gap is real, it is rare, and it is BANKED by me, not this arc's.
+>
+> The site comment requirement of the class rule applies: the guard states at its site that it refuses the LABEL and not the ENTRY.
+
+**Orchestrator's encoding instruction (relayed with the ruling):** T4.3 is UNPARKED in form C -- no rung on the entry POST; the D86 shapes refuse the LABEL where the service refuses the latch binding / cohort keys, with the site comment; test 4h asserts (i)-(iv) per D86 shape, discriminating against both a 400 and an admit-with-keys implementation; the 16 tests in `test_22a_task10_entry_route_ext2.py` stay green. Order: after T1-T2, then the gates, then return before Reviewer A.
