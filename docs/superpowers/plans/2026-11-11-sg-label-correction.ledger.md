@@ -482,6 +482,16 @@ After `tests/data`, run the FULL fast suite once with the patch applied, to find
 
 **Orchestrator's encoding instruction (relayed with the ruling):** T4.3 is UNPARKED in form C -- no rung on the entry POST; the D86 shapes refuse the LABEL where the service refuses the latch binding / cohort keys, with the site comment; test 4h asserts (i)-(iv) per D86 shape, discriminating against both a 400 and an admit-with-keys implementation; the 16 tests in `test_22a_task10_entry_route_ext2.py` stay green. Order: after T1-T2, then the gates, then return before Reviewer A.
 
+### The boundary of FX-1 (verbatim, binding)
+
+**Ruling seat:** RD, `20261111T232918Z` (the FX-2 ruling; full text below under "FX-2 ruling"). **Courier:** the orchestrator (relayed to executing cell 6). Recorded here, beside the FX-1 block quote, at RD's request.
+
+> THE BOUNDARY OF FX-1 (record this beside the FX-1 block quote, verbatim):
+>
+> FX-1 and the 2026-09-01 ruling govern guards that protect the COHORT KEYS (origin, hypothesis label, candidate_id, the latch binding). In FX-1 a "refused anchor" is an anchor refused by the identity authority (canonical_envelope_identity) in its role as the source of those keys. Such a refusal removes the label and never the entry.
+>
+> The claim-consistency ladder is a different guard over a different assertion. It refuses the operator's explicit FILL-ORIGIN CLAIM (fill_origin_at_form_render says the date, price and shares came from the selected Schwab order) when the anchor that would evidence the claim is empty, undecodable, not an object, missing a required key, or carries invalid values. It predates the cohort keys, it is the standing 400-and-clear ladder, and it is not a cohort-bookkeeping guard. FX-1 does not reach it.
+
 ## Executing -- cell 3: the T1.1 fan-out, class by class (how each was closed)
 
 The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 171 failed / 10 errors (as handoff 2 recorded). Closed as follows (each class READ at its failing sites, not sampled):
@@ -667,3 +677,30 @@ The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 17
 - Drift, both kinds: `exec-branch-drift.txt`, 1m's two tests plus the 0037 admission-tier comparator, 3 passed, exit `0`.
 
 **Not done here, routed separately (per the dispatch):** the a2_77 and `v40` renames, the plan-text correction from cell 4's deviation 4, the T5 runbook `--reason`. Reviewer A is not started; the orchestrator opens the rounds. Base of the executing diff for Reviewer A is still `b120a6eb`.
+
+## FX-2 ruling (verbatim, binding)
+
+**Ruling seat:** RD, `20261111T232918Z`. **Courier:** the orchestrator (relayed to executing cell 6). Answers cell 5's FLAGGED FOR RD item (a CLAIMED anchor that cannot be decoded still gets the pre-existing claim-consistency 400). Its BOUNDARY paragraph is also recorded beside the FX-1 block quote, as RD asked.
+
+> FX-2 = Y. OUT OF SCOPE. The 400 stays; the two pins stay as they are; the cell changes nothing in the claim-consistency ladder.
+>
+> Premise read by me on sg-label @ 95e7ab58, swing/web/routes/trades.py:1368-1511 and :1632-1652, not taken from the query.
+>
+> THE BOUNDARY OF FX-1 (record this beside the FX-1 block quote, verbatim):
+>
+> FX-1 and the 2026-09-01 ruling govern guards that protect the COHORT KEYS (origin, hypothesis label, candidate_id, the latch binding). In FX-1 a "refused anchor" is an anchor refused by the identity authority (canonical_envelope_identity) in its role as the source of those keys. Such a refusal removes the label and never the entry.
+>
+> The claim-consistency ladder is a different guard over a different assertion. It refuses the operator's explicit FILL-ORIGIN CLAIM (fill_origin_at_form_render says the date, price and shares came from the selected Schwab order) when the anchor that would evidence the claim is empty, undecodable, not an object, missing a required key, or carries invalid values. It predates the cohort keys, it is the standing 400-and-clear ladder, and it is not a cohort-bookkeeping guard. FX-1 does not reach it.
+>
+> WHY Y AND NOT X:
+>
+> 1. X does not only stop refusing; it REWRITES an assertion. It would record a fill as not schwab_auto when the operator said it was, silently, on the strength of a document nobody can read. A dropped label is honest-unset and recoverable by a correction kind. A silently downgraded fill-origin is a changed claim with no instrument to restore it (the entry_date correction surface reads this envelope as authorization evidence, trades.py:1445-1456).
+> 2. The harm FX-1 exists to prevent is not present. The 400 re-renders the form with every typed value preserved and a FRESH anchor (_reject_anchor passes the three submitted_* as None), so the entry is one resubmit away, with a good claim or with none. Nothing is left unjournaled by construction; on 09-01 the blocked value was a cohort key the operator had no way to repair from the form.
+> 3. No server-rendered form produces this shape. A claimed undecodable anchor is tamper or a defect, and for that case a loud refusal that regenerates the evidence is the better measurement outcome than a quiet write.
+> 4. X would invert pins owned by earlier arcs inside a labelling arc. That is scope the operator has not been asked for.
+>
+> ONE CONDITION (a test, not a behaviour change). Point 2 carries the ruling, so it must be pinned and not asserted: one round-trip test in which a CLAIMED UNDECODABLE anchor gets the 400, the recovery form's own rendered anchor and values are resubmitted, and that resubmit returns the success response with the trade written. If such a test already exists, cite it in the ledger by name and add nothing. If the round trip FAILS, stop and return to me: Y rests on it.
+>
+> Your two notes, read: the confirm round-trip refusing the label on the force resubmit is correct under FX-1. The two-connection window is banked as a known limitation for the merge gate's read list; I ask nothing on it.
+>
+> No change to the H2 read rule or to my witness.
