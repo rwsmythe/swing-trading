@@ -2156,16 +2156,29 @@ def _check_fetch_transport_health(
 # see ONE night that wrote nothing: runs 201 + 202 (2026-10-27/28 HST) raised in
 # pattern_detect, step_guard swallowed it, ZERO pattern_detection_events were
 # written over non-empty watch pools, and the monitor read GREEN. Zero-vs-non-
-# zero only -- no count threshold (baseline run 203: 110 over 22 watch).
+# zero, made rerun-aware (CHARC ruling B, 2026-11-11, with RD's keying); no
+# count threshold (baseline run 203: 110 over 22 watch).
 # --------------------------------------------------------------------------
+
+# The pattern classes pattern_detect writes per pool ticker, in registry order
+# (runner.py _pattern_detect_registry). A MIRROR, not an import: the registry
+# imports the detectors (pandas) and this monitor stays stdlib-only. The drift
+# comparator is tests/monitoring/test_research_health_per_run_detections.py
+# test_detect_class_mirror_matches_the_detector_registry.
+_DETECT_PATTERN_CLASSES = (
+    "vcp", "flat_base", "cup_with_handle", "high_tight_flag", "double_bottom_w",
+)
+_UNCOVERED_NAME_CAP = 10  # name at most this many uncovered tickers in a detail
 
 
 def _check_per_run_detections(
     conn: sqlite3.Connection,
 ) -> list[ResearchHealthCheck]:
     """YELLOW (the topbar's amber) when the latest COMPLETE pipeline run has a
-    non-empty aplus|watch pool in its OWN evaluation and wrote ZERO
-    pattern_detection_events under its OWN run id; GREEN otherwise.
+    non-empty aplus|watch pool in its OWN evaluation, wrote ZERO
+    pattern_detection_events under its OWN run id, and that pool is NOT already
+    fully detected for the run's action_session_date by other runs; GREEN
+    otherwise. Every summary names the run it judged.
 
     Joins by the run's own ids, as the schema defines them:
       - the pool: pipeline_runs.evaluation_run_id -> candidates.evaluation_run_id,
@@ -2175,27 +2188,34 @@ def _check_per_run_detections(
         lease.run_id there, NOT the evaluation id).
     "Latest complete" is the most recent state='complete' row by finished_ts
     (the two-read pattern's completed half); a running / failed / force-cleared
-    newer row is never read, so it cannot mask the completed reading. Read inside
-    the nightly step, the run that is executing is not yet complete, so the
-    nightly artifact reports the PREVIOUS run (the script reports the latest).
+    newer row is never read, so it cannot mask the completed reading.
+
+    Rerun-aware (ruling B): pattern_detect skips any detection whose (source,
+    ticker, detection_date, pattern_class) already exists, so a healthy
+    same-session RERUN writes zero rows under its own id (live: runs 103 and
+    120-124). Such a run reads GREEN iff EVERY pool ticker already carries a
+    source='pipeline' row on the run's action_session_date for EVERY class in
+    _DETECT_PATTERN_CLASSES under another run id -- the cover is compared on the
+    step's own skip key, never on the ticker alone and never on run-id
+    adjacency. That GREEN names the covering runs and the per-ticker class
+    cover; otherwise YELLOW naming the uncovered tickers.
+
+    Stated limitations. The nightly artifact is ONE RUN BEHIND: the nightly step
+    runs inside the run, before it is complete, so it judges the PREVIOUS
+    complete run (named in the summary); the script after a pipeline is the
+    same-night surface. A run that writes SOME rows and then raises is non-zero
+    and GREEN here -- a partial-detect check is a different instrument.
 
     Empty pool -> GREEN with the pool counts in the detail (gotcha #27: the
     empty night is reported, never silent). A complete run with NO linked
     evaluation (legacy pre-binding rows only) cannot have its pool read ->
     YELLOW naming the run; it never skips back to an older linked run. No
     complete run -> GREEN n/a. Missing table/column -> YELLOW schema-unavailable.
-
-    Known false YELLOW: pattern_detect skips a detection whose (source, ticker,
-    detection_date, pattern_class) already exists, so a same-session RERUN over
-    a pool an earlier run already detected writes zero rows under its own id
-    and reads YELLOW here (live: runs 103, 120, 121, 123, 124, each fully
-    covered by earlier runs of the same session). Zero-vs-non-zero is the
-    brief's contract; telling a rerun from a failure is an open item.
     """
     key = "per_run_detections"
     try:
         row = conn.execute(
-            "SELECT id, evaluation_run_id FROM pipeline_runs"
+            "SELECT id, evaluation_run_id, action_session_date FROM pipeline_runs"
             " WHERE state = 'complete' AND finished_ts IS NOT NULL"
             " ORDER BY finished_ts DESC, id DESC LIMIT 1"
         ).fetchone()
@@ -2203,7 +2223,7 @@ def _check_per_run_detections(
             return [ResearchHealthCheck(
                 key=key, status="green",
                 summary="n/a (no complete pipeline run yet)")]
-        run_id, eval_id = row
+        run_id, eval_id, session = row
         if eval_id is None:
             return [ResearchHealthCheck(
                 key=key, status="yellow",
@@ -2211,17 +2231,30 @@ def _check_per_run_detections(
                 detail="pipeline_runs.evaluation_run_id is NULL on the latest"
                        " complete run; cannot tell whether detections were"
                        " expected")]
-        pool = dict(conn.execute(
-            "SELECT bucket, COUNT(*) FROM candidates"
-            " WHERE evaluation_run_id = ? AND bucket IN ('aplus','watch')"
-            " GROUP BY bucket",
+        pool_rows = conn.execute(
+            "SELECT ticker, bucket FROM candidates"
+            " WHERE evaluation_run_id = ? AND bucket IN ('aplus','watch')",
             (eval_id,),
-        ).fetchall())
+        ).fetchall()
         detections = conn.execute(
             "SELECT COUNT(*) FROM pattern_detection_events"
             " WHERE pipeline_run_id = ?",
             (run_id,),
         ).fetchone()[0]
+        cover_rows = []
+        if pool_rows and detections == 0:
+            # Other runs' rows for THIS run's pool on THIS run's session, on the
+            # detect step's skip key. `IS NOT ?` keeps a NULL (pruned-run) id.
+            cover_rows = conn.execute(
+                "SELECT d.ticker, d.pattern_class, d.pipeline_run_id"
+                " FROM pattern_detection_events d"
+                " WHERE d.source = 'pipeline' AND d.detection_date = ?"
+                " AND d.pipeline_run_id IS NOT ?"
+                " AND d.ticker IN (SELECT c.ticker FROM candidates c"
+                "   WHERE c.evaluation_run_id = ?"
+                "   AND c.bucket IN ('aplus','watch'))",
+                (session, run_id, eval_id),
+            ).fetchall()
     except sqlite3.OperationalError as exc:
         if _schema_unavailable(exc):
             return [ResearchHealthCheck(
@@ -2231,8 +2264,8 @@ def _check_per_run_detections(
                        " missing; run swing db-migrate")]
         raise
 
-    n_aplus = int(pool.get("aplus", 0))
-    n_watch = int(pool.get("watch", 0))
+    n_aplus = sum(1 for _t, b in pool_rows if b == "aplus")
+    n_watch = sum(1 for _t, b in pool_rows if b == "watch")
     n_pool = n_aplus + n_watch
     pool_detail = (f"evaluation {eval_id}: {n_aplus} aplus + {n_watch} watch"
                    f" = {n_pool} in the detect pool")
@@ -2241,6 +2274,52 @@ def _check_per_run_detections(
             key=key, status="green",
             summary=f"run {run_id}: empty detect pool; no detections expected",
             detail=pool_detail)]
+    if detections > 0:
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary=(f"run {run_id}: {detections} detection(s) over a detect"
+                     f" pool of {n_pool}"),
+            detail=pool_detail)]
+
+    required = set(_DETECT_PATTERN_CLASSES)
+    n_classes = len(required)
+    classes_by_ticker: dict[str, set[str]] = {}
+    runs_by_ticker: dict[str, set] = {}
+    for ticker, pattern_class, cover_run in cover_rows:
+        classes_by_ticker.setdefault(ticker, set()).add(pattern_class)
+        runs_by_ticker.setdefault(ticker, set()).add(cover_run)
+    pool_tickers = sorted({t for t, _b in pool_rows})
+    uncovered = [t for t in pool_tickers
+                 if not required <= classes_by_ticker.get(t, set())]
+
+    if not uncovered:
+        cover_runs = set().union(*(runs_by_ticker[t] for t in pool_tickers))
+        named = [str(r) for r in sorted(r for r in cover_runs if r is not None)]
+        if None in cover_runs:
+            named.append("an unattributed (pruned) run")
+        runs_text = ", ".join(named)
+        return [ResearchHealthCheck(
+            key=key, status="green",
+            summary=(f"run {run_id}: 0 own detections; rerun, pool of {n_pool}"
+                     f" already detected for {session} by run(s) {runs_text}"),
+            detail=(f"{pool_detail}; cover on (ticker, detection_date,"
+                    f" pattern_class): {n_pool} of {n_pool} pool ticker(s) x"
+                    f" {n_classes}/{n_classes} classes on {session}, from"
+                    f" run(s) {runs_text}"))]
+
+    shown = ", ".join(uncovered[:_UNCOVERED_NAME_CAP])
+    more = (f" (+{len(uncovered) - _UNCOVERED_NAME_CAP} more)"
+            if len(uncovered) > _UNCOVERED_NAME_CAP else "")
+    return [ResearchHealthCheck(
+        key=key, status="yellow",
+        summary=(f"run {run_id}: 0 detections over a detect pool of"
+                 f" {n_pool}"),
+        detail=(f"{pool_detail}; pattern_detect wrote no"
+                f" pattern_detection_events for pipeline run {run_id}, and"
+                f" {len(uncovered)} of {n_pool} pool ticker(s) lack a full"
+                f" {n_classes}-class cover on {session} from other runs:"
+                f" {shown}{more} (a swallowed step failure? read the run's"
+                " log)"))]
     if detections == 0:
         return [ResearchHealthCheck(
             key=key, status="yellow",

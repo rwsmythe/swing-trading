@@ -2,7 +2,20 @@
 
 AMBER (the monitor's `yellow`) when the latest COMPLETE pipeline run whose
 evaluation has a non-empty aplus|watch pool wrote ZERO pattern_detection_events
-for that run; GREEN otherwise; an empty pool is GREEN with its reason.
+for that run AND the pool is not already fully detected for that run's
+action_session_date by other runs; GREEN otherwise; an empty pool is GREEN with
+its reason. (CHARC ruling B, 2026-11-11, with RD's keying: the cover is compared
+on the detect step's own skip key (ticker, detection_date, pattern_class).)
+
+Measured basis for the rerun-aware rule (live, mode=ro, 2026-11-11): since
+detection logging began (first pipeline_run_id 89) the complete runs with a
+non-empty pool and zero own detections are
+  - 103, 120, 121, 123, 124: same-session reruns, every pool ticker already
+    detected for the run's action_session_date by earlier runs (101/102,
+    118/119) -> FALSE alarms under plain zero-vs-non-zero;
+  - 201, 202: no pool ticker covered -> the real failures.
+Every (run, ticker) group on live carries exactly 5 rows (1754 of 1754), one
+per detector class, so a full cover is all 5 classes per ticker.
 
 Every seed mirrors the LIVE shape read mode=ro on 2026-11-11:
   - run 201 (eval 187): 12 watch, 0 aplus, 0 detections (the cap episode);
@@ -68,27 +81,30 @@ def _seed_eval(conn, *, eval_id: int, asof: str, watch: int, aplus: int = 0,
 
 
 def _seed_run(conn, *, run_id: int, eval_id: int | None, asof: str,
-              state: str = "complete", finished: bool = True) -> None:
+              state: str = "complete", finished: bool = True,
+              session: str | None = None) -> None:
     started = f"{asof}T17:30:04"
     conn.execute(
         "INSERT INTO pipeline_runs (id, started_ts, finished_ts, trigger,"
         " data_asof_date, action_session_date, state, lease_token,"
         " evaluation_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (run_id, started, f"{asof}T17:34:00" if finished else None, "scheduled",
-         asof, asof, state, f"tok{run_id}", eval_id))
+         asof, session or asof, state, f"tok{run_id}", eval_id))
 
 
-def _seed_detections(conn, *, run_id: int, tickers: list[str], session: str,
-                     asof: str) -> None:
+def _seed_detections(conn, *, run_id: int | None, tickers: list[str],
+                     session: str, asof: str,
+                     classes: tuple[str, ...] = _CLASSES,
+                     source: str = "pipeline") -> None:
     for t in tickers:
-        for cls in _CLASSES:
+        for cls in classes:
             conn.execute(
                 "INSERT INTO pattern_detection_events (ticker, detection_date,"
                 " data_asof_date, pattern_class, structural_anchors_json,"
                 " composite_score, detector_version, source,"
                 " per_pattern_metadata_json, pipeline_run_id, created_at)"
-                " VALUES (?, ?, ?, ?, '{}', 0.5, 'v', 'pipeline', '{}', ?, ?)",
-                (t, session, asof, cls, run_id, f"{asof}T17:33:00"))
+                " VALUES (?, ?, ?, ?, '{}', 0.5, 'v', ?, '{}', ?, ?)",
+                (t, session, asof, cls, source, run_id, f"{asof}T17:33:00"))
 
 
 def _watch_tickers(conn, eval_id: int) -> list[str]:
@@ -250,6 +266,111 @@ def test_completion_tie_breaks_to_the_higher_id(tmp_path):
     c = _only(_check_per_run_detections(conn))
     assert c.status == "yellow"
     assert "run 202" in c.summary
+
+
+# ---------------------------------------------------------------- rerun-aware (B)
+
+_RERUN_SESSION = "2026-07-06"
+_RERUN_ASOF = "2026-07-02"
+
+
+def _seed_live_121_shape(conn, *, cover_118: int = 19, cover_119: int = 2,
+                         classes_118: tuple[str, ...] = _CLASSES,
+                         session_118: str = _RERUN_SESSION,
+                         source_118: str = "pipeline") -> list[str]:
+    """The live run-121 shape: 21 watch (98 skip), action session 2026-07-06,
+    asof 2026-07-02, zero own detections; the pool covered by run 118 (19
+    tickers x 5 classes = 95 rows) and run 119 (2 tickers x 5 = 10 rows)."""
+    _seed_eval(conn, eval_id=108, asof=_RERUN_ASOF, watch=21, skip=98)
+    pool = _watch_tickers(conn, 108)
+    _seed_run(conn, run_id=118, eval_id=None, asof=_RERUN_ASOF,
+              session=_RERUN_SESSION)
+    _seed_run(conn, run_id=119, eval_id=None, asof=_RERUN_ASOF,
+              session=_RERUN_SESSION)
+    _seed_run(conn, run_id=121, eval_id=108, asof=_RERUN_ASOF,
+              session=_RERUN_SESSION)
+    conn.execute("UPDATE pipeline_runs SET finished_ts = '2026-07-02T16:09:50'"
+                 " WHERE id = 118")
+    conn.execute("UPDATE pipeline_runs SET finished_ts = '2026-07-03T18:00:00'"
+                 " WHERE id = 119")
+    conn.execute("UPDATE pipeline_runs SET finished_ts = '2026-07-03T21:56:17'"
+                 " WHERE id = 121")
+    _seed_detections(conn, run_id=118, tickers=pool[:cover_118],
+                     session=session_118, asof=_RERUN_ASOF,
+                     classes=classes_118, source=source_118)
+    _seed_detections(conn, run_id=119,
+                     tickers=pool[cover_118:cover_118 + cover_119],
+                     session=_RERUN_SESSION, asof=_RERUN_ASOF)
+    conn.commit()
+    return pool
+
+
+def test_live_121_rerun_fully_covered_is_green_naming_the_covering_runs(tmp_path):
+    conn = _conn(tmp_path)
+    _seed_live_121_shape(conn)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM pattern_detection_events WHERE pipeline_run_id = 121"
+    ).fetchone()[0] == 0
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "green"
+    assert "run 121" in c.summary           # the run it judged (RD's condition)
+    assert "rerun" in c.summary
+    assert "118, 119" in c.summary          # NAMES the covering runs
+    assert "21" in c.summary
+    assert _RERUN_SESSION in c.detail
+    assert "5/5" in c.detail                # the per-ticker class cover
+
+
+def test_rerun_partially_covered_pool_is_amber_naming_the_uncovered(tmp_path):
+    conn = _conn(tmp_path)
+    pool = _seed_live_121_shape(conn, cover_119=1)   # 20 of 21 covered
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    assert "run 121" in c.summary
+    assert pool[-1] in c.detail             # the one uncovered ticker is named
+    assert "1 of 21" in c.detail
+
+
+def test_cover_on_ticker_and_date_but_not_class_is_amber(tmp_path):
+    """RD's keying: run 118 left only 'vcp' for its 19 tickers (a partial
+    detect, then a raise). Every pool ticker HAS a row on the session, so a
+    ticker-and-date cover reads GREEN; the (ticker, date, class) cover does
+    not."""
+    conn = _conn(tmp_path)
+    _seed_live_121_shape(conn, classes_118=("vcp",))
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    assert "19 of 21" in c.detail
+
+
+def test_cover_on_another_session_is_amber(tmp_path):
+    """The cover is keyed on THIS run's action_session_date: run 118's rows on
+    a different session do not cover a ticker (a ticker-only cover would)."""
+    conn = _conn(tmp_path)
+    _seed_live_121_shape(conn, session_118="2026-07-03")
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    assert "19 of 21" in c.detail
+
+
+def test_cover_from_a_non_pipeline_source_is_amber(tmp_path):
+    """The detect step's skip key includes source='pipeline'; a backfill row
+    would not have stopped it writing, so it is not a cover."""
+    conn = _conn(tmp_path)
+    _seed_live_121_shape(conn, source_118="backfill")
+    c = _only(_check_per_run_detections(conn))
+    assert c.status == "yellow"
+    assert "19 of 21" in c.detail
+
+
+def test_detect_class_mirror_matches_the_detector_registry():
+    """The drift comparator for the monitor's class mirror: the classes a full
+    cover requires must be the classes the detect step writes."""
+    from swing.monitoring.research_health import _DETECT_PATTERN_CLASSES
+    from swing.pipeline.runner import _pattern_detect_registry
+
+    assert _DETECT_PATTERN_CLASSES == tuple(
+        cls for _, cls, _ in _pattern_detect_registry())
 
 
 # ---------------------------------------------------------------- (3) empty pool
