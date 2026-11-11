@@ -56,7 +56,7 @@
 
 > **THE DISCRIMINATING RULE — an instruction is removable only if it compensates for a MODEL limitation; never if it encodes a PROJECT fact or a CROSS-AGENT evidence gate.**
 
-The merged-head suite run, the per-round Codex banner assertion (§3), the trailer audit (§2), and orchestrator QA-on-disk are **evidence gates BETWEEN agents** — they are not self-verification nudges and **every one of them stays**. A broader prescriptiveness audit of harness docs is explicitly OUT of scope here and deferred to the Phase-21 close, one artifact at a time: a bulk trim of instructions carrying forensic provenance is the D21 class applied to words.
+The merged-head suite run, the per-round Codex banner assertion (§3), the commit-form check (§2: pathspec commits, no `--no-verify`, no amend; the trailer audit was RETIRED with the Co-Authored-By prohibition, operator 2026-11-03), and orchestrator QA-on-disk are **evidence gates BETWEEN agents** — they are not self-verification nudges and **every one of them stays**. A broader prescriptiveness audit of harness docs is explicitly OUT of scope here and deferred to the Phase-21 close, one artifact at a time: a bulk trim of instructions carrying forensic provenance is the D21 class applied to words.
 
 ---
 
