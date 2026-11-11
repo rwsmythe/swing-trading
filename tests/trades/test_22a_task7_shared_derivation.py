@@ -120,7 +120,17 @@ def test_the_gate_is_a_parameter_so_the_refusal_ORDER_is_preserved() -> None:
     pins those messages.  A prose promise could not hold that; the source
     position can be read.
     """
-    source = inspect.getsource(derive_cohort_keys_for_fire)
+    # sg-label T1.6 step 7 MOVED rungs 16-17 and the matcher call into
+    # `_as_of_narrow_matches` verbatim; the order is read where the code now
+    # lives, and the derivation is pinned to hand its `gate` through.
+    from swing.trades.cohort_provenance_correction import (
+        _as_of_narrow_matches,
+    )
+
+    delegating = inspect.getsource(derive_cohort_keys_for_fire)
+    assert "_as_of_narrow_matches(" in delegating
+    assert "gate=gate)" in delegating
+    source = inspect.getsource(_as_of_narrow_matches)
     bound_at = source.index("evaluation_run_persistence_bound(")
     gate_at = source.index("gate(bound, finished_parsed)")
     registry_at = source.index("for entry in list_hypotheses(conn):")

@@ -36,6 +36,16 @@ PREFILL_UNAVAILABLE_TEXT = (
     "pass --hypothesis or re-run"
 )
 
+# D102/D104 (sg-label arc, N = 5 RULED by CHARC and RD): how many of a
+# ticker's newest candidates rows count as "recent" for a watch fire. ONE
+# constant, read by the entry form's decision-night offer and by the
+# watch-fire relabel's last-fire walk
+# (`swing/trades/cohort_provenance_correction.py`), so the two paths cannot
+# disagree about the window. The reason is RD's, not a measurement: a fill
+# more than five of the ticker's rows after its fire is a resting order
+# older than a week of briefings, and it stops counting as that fire.
+WATCH_FIRE_WINDOW_ROWS = 5
+
 
 def lookup_active_recommendation_label(
     conn: sqlite3.Connection, *, ticker: str, starting_equity: float,

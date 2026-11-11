@@ -654,15 +654,19 @@ def build_sg_case(
     fill_price: float = 11.95,
     pipeline_complete: dict[int, bool] | None = None,
     live_registry: bool = True,
+    criteria_results: dict[int, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Trade 29's live world: three SG watch rows, its trade, fill and FEI row.
 
     No `daily_recommendations` row exists for SG on 193 or 194 (live).  No
-    latch link exists for the fill's order (live).  ``buckets`` and
-    ``pipeline_complete`` are refusal-test knobs; the defaults are live.
+    latch link exists for the fill's order (live).  ``buckets``,
+    ``pipeline_complete`` and ``criteria_results`` (candidate id ->
+    criterion name -> result, overriding the live RESULT only, planted by
+    the same raw INSERT) are refusal-test knobs; the defaults are live.
     """
     buckets = dict(buckets or {})
     pipeline_complete = dict(pipeline_complete or {})
+    criteria_results = dict(criteria_results or {})
     for (run_id, run_ts, asof, action, pr_id, started,
          finished) in SG_RUNS:
         conn.execute(
@@ -693,7 +697,9 @@ def build_sg_case(
         conn.executemany(
             "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
             "layer, result, value, rule) VALUES (?, ?, ?, ?, ?, ?)",
-            [(cid, *row) for row in SG_CRITERIA[cid]])
+            [(cid, name, layer,
+              criteria_results.get(cid, {}).get(name, result), value, rule)
+             for (name, layer, result, value, rule) in SG_CRITERIA[cid]])
     if live_registry:
         seed_sg_registry_as_live(conn)
     conn.execute(

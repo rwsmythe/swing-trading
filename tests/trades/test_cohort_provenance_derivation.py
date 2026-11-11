@@ -650,6 +650,27 @@ DERIVATION_CLOSURE_EXCLUSIONS: dict[str, str] = {
         "frozen dataclass container for a status-history row.",
     "swing.recommendations.hypothesis:Candidate":
         "frozen dataclass container for a candidates row.",
+    # sg-label T1.6 (D104): the kind-2 root and the factored matcher step.
+    "swing.trades.cohort_provenance_correction:_NarrowMatches":
+        "frozen dataclass container; carries the matcher's output, computes "
+        "none.",
+    "swing.trades.cohort_provenance_correction:_LastFire":
+        "frozen dataclass container; carries the walk's output, computes "
+        "none.",
+    "swing.trades.cohort_provenance_correction:_without_terminal":
+        "strips the terminal sentence from a quoted refusal; it can change "
+        "refusal TEXT and never a written value.",
+    # The readers are manifested under their HOME modules; the walker also
+    # reaches them through the service's module-level import binding.
+    "swing.trades.cohort_provenance_correction:fetch_candidate_by_id":
+        "the same function as swing.data.repos.candidates:"
+        "fetch_candidate_by_id, which IS manifested.",
+    "swing.trades.cohort_provenance_correction:get_evaluation_run_by_id":
+        "the same function as swing.data.repos.candidates:"
+        "get_evaluation_run_by_id, which IS manifested.",
+    "swing.trades.cohort_provenance_correction:is_trading_session":
+        "the same function as swing.evaluation.dates:is_trading_session, "
+        "which IS manifested.",
 }
 
 _DERIVATION_ROOT = "swing.trades.cohort_provenance_correction:_derive"
@@ -809,9 +830,13 @@ def test_every_exclusion_carries_a_reason() -> None:
 def test_no_exclusion_is_stale() -> None:
     """An exclusion for something no longer reachable is dead weight that
     makes the list look more considered than it is."""
-    closure = _derivation_closure()
+    # sg-label T1.6: TWO roots -- `_derive` (kind 1) and `_derive_watch_fire`
+    # (kind 2, its own closure check in test_cohort_provenance_watch_fire.py)
+    # share this exclusion list, so an exclusion is live if EITHER reaches it.
+    closure = _derivation_closure() | _derivation_closure(
+        "swing.trades.cohort_provenance_correction:_derive_watch_fire")
     stale = sorted(set(DERIVATION_CLOSURE_EXCLUSIONS) - closure)
-    assert not stale, f"exclusions no longer reachable from _derive: {stale}"
+    assert not stale, f"exclusions reachable from neither root: {stale}"
 
 
 def test_no_spec_is_both_manifested_and_excluded() -> None:
