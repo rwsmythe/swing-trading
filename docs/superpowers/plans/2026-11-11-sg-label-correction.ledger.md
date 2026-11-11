@@ -75,6 +75,83 @@ F6 -- CC, no dissent with A (same-bucket restriction). Cohort note only: when th
 P4 noted for my record: H4 is unreachable by a watch citation since D84; the brief's "H2/H4" for kind 2 is H2 in practice.
 ```
 
+## Rulings of the fold (verbatim, binding; source `fold-rulings.txt`, 7,333 bytes)
+
+### CHARC, `20261111T183325Z` (msg-id `b3be7323baec557b`) -- E3/E1/E2 confirmed
+
+```text
+file: 20261111T183325Z-charc-ruling-sg-fold-e3-refuse-confirmed-e1-an.md
+------------------------------------------------------------------------
+---
+from: charc
+to: orchestrator
+type: status
+subject: RULING: SG fold -- E3 REFUSE confirmed, E1 and E2 confirmed; R1 my pivot claim was wrong, RD rules R1 + E4
+posted: 2026-11-11T18:33:25Z
+msg-id: b3be7323baec557b
+---
+
+CHARC on 20261111T183248Z (fold 08ee3b57). E3 CONFIRMED: REFUSE. A window row whose as-of narrow matcher returns two or more matches is AMBIGUOUS, and the walk must never pass it to derive an older fire past a newer one; the refusal names the row, its run and the match set. That it cannot occur on today's registry is why it is cheap; a registry edit is what would make it matter, which is exactly when a silent pass-over would be wrong. Test it with a scratch registry that produces two narrow matches on the newest row. E1 CONFIRMED: the by_design intent gate enforced in SQL in the kind-2 arm's trade EXISTS, with the Python mirror models.PROVENANCE_WATCH_FIRE_ENTRY_INTENT compared to the trigger literal by drift test 1m; grep the member separately. E2 CONFIRMED: the citation trigger's top-level WHEN NOT gets the COALESCE wrap; no kind-1 outcome changes, and one test asserts that on the two live rows' shapes. P5 as folded is the correct reading (the live trigger is the COALESCE form, so the permitted FK SET NULL would ABORT; IS fixes both; 1g asserts both halves with the bare-form sibling) -- recorded. R1: MY INCIDENTAL CLAIM WAS WRONG. I wrote that the pivot already sits in the cited candidate snapshot; candidate_provenance_snapshot (cohort_provenance_correction.py:807) carries no pivot. A ruling's reasoning binds, its incidental factual claims are claims (harness section 2); this one failed at the code and I own it. The backlink reads the pivot through cited_candidate_id -> candidates.pivot, immutable under 0037's candidates triggers, and the fill price is in the fill snapshot. Whether the backlink suffices or the pivot goes into the row's own text is RD's (R1), as is E4 (the partition: join to provenance_corrections plus direction strictly-earlier, with the after-fill LQDA rows as a named residual). I hold on both. F6's edge (no aplus-or-watch row on the latest complete run -> empty offer, today's form, test 2k) ACCEPTED. Round 1 opens on RD's R1 + E4.
+```
+
+### RD, `20261111T183327Z` (msg-id `469aa43adc1ca7ba`) -- R1 and E4
+
+```text
+file: 20261111T183327Z-rd-ruling-sg-plan-r1-the-immutable-backlink.md
+------------------------------------------------------------------------
+---
+from: rd
+to: orchestrator
+type: status
+subject: RULING: SG plan R1 = the immutable backlink is enough; E4 = four-line H2 partition, corrections join first
+posted: 2026-11-11T18:33:27Z
+msg-id: 469aa43adc1ca7ba
+---
+
+RD rulings on the two cohort items in the orchestrator's 20261111T183248Z (SG plan folded at 08ee3b57). Round 1 may open on these as far as my seat goes.
+
+R1 -- THE BACKLINK IS ENOUGH. No pivot text on the row, no column, no comparison. The evidence rule asks two things of the pivot: recorded before the outcome, immutable since. candidates.pivot was written by the fire night's evaluation run and 0037's triggers make the candidates row immutable, so cited_candidate_id -> candidates.pivot satisfies both; copying it into the row would add a second copy that can only agree or be wrong. Correction to my own item 4 and to the ruling text that followed it: the pivot is NOT in candidate_provenance_snapshot; it is reached through the backlink. One condition so the read stays honest: the plan's section 0 names the two sources by path (pivot = candidates.pivot via cited_candidate_id; fill = entry_fill_snapshot_json $.price) and states that the pair is RECORDED EVIDENCE, NOT A GATE. If any path can null cited_candidate_id on a kind-2 row (an FK SET NULL), say so in section 0 and I re-read; an immutable candidates row should make that unreachable.
+
+E4 -- ACCEPTED: the join plus direction, no new column, FOUR lines. The H2 read rule I land in the watch-standard at the merge is, for every trade whose label is H2, evaluated in this order:
+ (1) KIND-2 CORRECTED: a provenance_corrections row with correction_kind watch_fire_relabel exists for the trade. Checked FIRST, whatever the candidate's night.
+ (2) LAST-WORD ENTRY: no such correction, and trades.candidate_id's evaluation run IS the ticker's last-word run before the fill.
+ (3) OPERATOR-NAMED EARLIER NIGHT: no such correction, and the candidate's run is STRICTLY EARLIER than that last-word run (T2's assertion; D96's tier).
+ (4) RESIDUAL, AFTER-FILL: the candidate's night is after the fill (the banked LQDA class, P11). Reported as its own named line, counted in none of the three, never folded silently into (3).
+Every H2 decision read reports all four and a sensitivity excluding (3). The plan's section 0.2 should state exactly this order; a test that pins the classifier on one row of each line (trade 29 after correction is line 1) is welcome but is CHARC's call on form.
+
+CHARC: E1 (my intent gate also enforced in the kind-2 trigger arm, with the drift mirror) is the stronger form and I have no dissent; E2 and E3 are yours. On E3 my cohort note only: REFUSE on a multi-match row is the right reading, an ambiguous newer row must never be passed over to reach an older fire.
+```
+
+### CHARC, `20261111T183404Z` (msg-id `c4334e2ee24ce9b7`) -- the classifier-test lock; R1's condition
+
+```text
+file: 20261111T183404Z-charc-ruling-sg-fold-closed-rd-s-r1-e4-stand-t.md
+------------------------------------------------------------------------
+---
+from: charc
+to: orchestrator
+type: status
+subject: RULING: SG fold closed -- RD's R1/E4 stand; the four-line H2 classifier test is NOT this arc's (lock); round 1 opens
+posted: 2026-11-11T18:34:04Z
+msg-id: c4334e2ee24ce9b7
+---
+
+CHARC on RD's 20261111T183327Z. R1 and E4 stand as ruled; no dissent. The one form item RD left to me: a classifier test pinning one row per partition line is NOT this arc's. The arc's lock names its files (cohort_provenance_correction.py, entry.py, exit.py, migration 0042, models.py, the corrections repo, the entry form) and no H2 reader is among them; the four-line order is RECORDED in the plan's section 0.2 verbatim as RD wrote it (kind-2 corrected first; last-word; strictly-earlier operator-named; after-fill residual, its own line, never folded) and lands in the watch-standard at the merge as RD's docs-only text. The classifier and its four-row test come with the FIRST reader change that implements the partition (owner RD on semantics, CHARC on form), with trade 29 post-correction as the line-1 row. R1's condition is accepted into the plan: section 0 names both sources by path (candidates.pivot via cited_candidate_id; entry_fill_snapshot_json $.price), states the pair is recorded evidence and not a gate, and states whether any path can null cited_candidate_id on a kind-2 row (the FK's ON DELETE clause, read at the DDL; if SET NULL, say so; if the candidates row is immutable the path is unreachable and the sentence says that). Round 1 opens. Nothing else is outstanding at this seat before the plan-stage read.
+```
+
+### Fold-2 record (commit after `08ee3b57`, before round 1)
+
+- **E3 RULED, REFUSE (CHARC; RD concurs).** T1.6 step 7: the refusal names the row, its run and the match set. Test 1n's case is now the NEWEST window row matching two narrow hypotheses under a scratch registry.
+- **E1 RULED (CHARC; RD no dissent).** The encoding is unchanged. The member `hypothesis_test_by_design` is already on the separately-grepped list in the mirror closure, and 1m compares it.
+- **E2 RULED (CHARC).** NEW test 1v: the two live rows' shapes are accepted, and the same shapes with one leg broken are refused, identically at v41 and v42. 1v lands in the T1.1 commit.
+- **R1 RULED (RD): the backlink is enough.** Section 0.4 is rewritten:
+  - both sources are named by path, and the pair is called RECORDED EVIDENCE, NOT A GATE;
+  - the FK is read at the DDL: `0039:126` is `NOT NULL ... ON DELETE RESTRICT`, NOT SET NULL, and it is copied verbatim;
+  - `candidates` is immutable through 0037's triggers, so the null path is UNREACHABLE, and the section says so;
+  - the fill price is frozen in the snapshot and survives the permitted `entry_fill_id` SET NULL.
+- **E4 RULED (RD) and the classifier lock (CHARC `20261111T183404Z`).** Section 0.2 now RECORDS RD's four lines VERBATIM, in RD's order. No H2 reader changes. The classifier and its four-row test are NOT this arc's: they come with the first reader change that implements the partition, with trade 29 post-correction as the line-1 row.
+- **Flagged to RD, not classified by the plan:** an H2-labelled trade with `candidate_id IS NULL` meets none of the four lines.
+
 ## Fold record (each fork, its ruled branch, and where the plan now carries it)
 
 - **F0 (A, orchestrator; CHARC no dissent).** The loop runs at the `fast` tier, with the banner expected to read `gpt-6-luna` / `medium`. It has three counted rounds and then an uncounted self-sweep, and a fourth round needs the orchestrator's written authorization. The plan's status line carries this.
@@ -121,19 +198,21 @@ P4 noted for my record: H4 is unreachable by a watch citation since D84; the bri
 - **R3.** The live citation trigger has 1,539 stored lines; the draft said 1,540. Its WHEN is the bare `WHEN NOT (`, which is why edit 0 exists.
 - **R4.** "For trade 29 the derivation is 15901": this re-reads true from the census criteria. 15980's non-pass set has two members, so it has zero narrow matches. 15901's set is `{proximity_20ma}`, which gives one match, H2. Test 1a executes it.
 
-## Encoding choices the rulings do not state literally (CHARC's plan-stage read)
+## Encoding choices the rulings did not state literally (all four now RULED; see the fold rulings)
 
-- **E1 -- RD's intent gate also lives in SQL.** The kind-2 arm's trade `EXISTS` carries `t.entry_intent = 'hypothesis_test_by_design'`. **Reason:** this table's schema IS the evidence rule (0036). Intent is a FACT on the trade, not a ranking, so SQL may verify it. Without the clause, a raw kind-2 insert for a standard-intent trade satisfies every structural check. **Cost:** one literal more in the mirror family, compared by 1m.
-- **E2 -- the citation trigger's top-level WHEN gets 0041's two-substitution wrap (edit 0).** **Reason:** the brief's section 1 T1 bullet says "Every `WHEN NOT (...)` arm is `WHEN NOT COALESCE(..., 0)`", and F3 says "a NULL anywhere in it must ABORT". No kind-1 outcome changes, because every top-level conjunct is `EXISTS` or `COALESCE`.
-- **E3 (UNSETTLED by the ruled text) -- a window row with two or more narrow matches REFUSES the correction and is not passed over.** The ruled text is "the newest ... row ... whose as-of narrow matcher ... returns exactly one match". Read literally, it would pass over a multi-match row and derive an OLDER fire past a NEWER one. The plan encodes the fail-safe refusal. The case is unreachable on today's registry, because a watch row reaches H2 alone since D84 and H3 is closed. CHARC to confirm or reverse at the plan-stage read.
-- **E4 -- the H2 partition (section 0.2) cannot be expressed by the backlink alone.** RD asked to be told if so, and is.
+- **E1 (RULED, CHARC `20261111T183325Z`) -- RD's intent gate also lives in SQL.** The kind-2 arm's trade `EXISTS` carries `t.entry_intent = 'hypothesis_test_by_design'`. **Reason:** this table's schema IS the evidence rule (0036). Intent is a FACT on the trade, not a ranking, so SQL may verify it. Without the clause, a raw kind-2 insert for a standard-intent trade satisfies every structural check. **Cost:** one literal more in the mirror family, compared by 1m.
+- **E2 (RULED, CHARC `20261111T183325Z`; test 1v) -- the citation trigger's top-level WHEN gets 0041's two-substitution wrap (edit 0).** **Reason:** the brief's section 1 T1 bullet says "Every `WHEN NOT (...)` arm is `WHEN NOT COALESCE(..., 0)`", and F3 says "a NULL anywhere in it must ABORT". No kind-1 outcome changes, because every top-level conjunct is `EXISTS` or `COALESCE`.
+- **E3 (RULED REFUSE, CHARC `20261111T183325Z`) -- a window row with two or more narrow matches REFUSES the correction and is not passed over.** The ruled text is "the newest ... row ... whose as-of narrow matcher ... returns exactly one match". Read literally, it would pass over a multi-match row and derive an OLDER fire past a NEWER one. The plan encodes the fail-safe refusal. The case is unreachable on today's registry, because a watch row reaches H2 alone since D84 and H3 is closed. CHARC to confirm or reverse at the plan-stage read.
+- **E4 (RULED, RD `20261111T183327Z`: four lines, the corrections join first) -- the H2 partition (section 0.2) cannot be expressed by the backlink alone.** RD asked to be told if so, and is.
 
 ## Banked / follow-on dispositions (RULED)
 
 - P11, the LQDA candidate night post-dating the entry: BANKED. Owner CHARC; a register row lands at the arc's close, with the charter compression.
 - F7-B, the CLI chooser: BANKED. Owner CHARC; trigger: an operator CLI entry mis-stamp.
 - D86's verbatim-ticker clause stays BANKED on the D86 row (no test in this arc shows it bites).
-- The H2 three-way read rule: owner RD. It lands in the watch-standard at the merge (RD item 5), reading section 0.2's statement.
+- The H2 read rule, now FOUR lines (E4): owner RD. It lands in the watch-standard at the merge as docs-only text, read from section 0.2.
+- The H2 classifier and its four-row test: BANKED to the FIRST reader change that implements the partition. RD owns the semantics and CHARC the form, and trade 29 post-correction is the line-1 row (CHARC `20261111T183404Z`).
+- An H2-labelled trade with `candidate_id IS NULL` meets none of the four lines. It is FLAGGED to RD, with no disposition yet.
 
 ## Round 0 -- the census (as routed at `bafddb6a`; superseded where the fold record says so)
 
@@ -208,4 +287,5 @@ Depth is filled by the orchestrator from `scripts/cell_depth.py --agent <id>`; a
 | Round | Kind | Tier / banner | `^ERROR` | footer | verdict token | crit/maj/min (reviewer) | task-bearing | NEW / REOPENED | reverts | tokens used | depth (orchestrator fills) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 0 | premise + fork census, NO Codex (`bafddb6a`) | -- | -- | -- | -- | -- | 10 forks routed (F0-F9) | -- | -- | 0 | |
-| 0-fold | rulings folded, NO Codex (continuation cell) | -- | -- | -- | -- | -- | 0 (E1-E4 declared; E3 unsettled) | -- | -- | 0 | |
+| 0-fold | rulings folded, NO Codex (continuation cell, `08ee3b57`) | -- | -- | -- | -- | -- | 0 (E1-E4 declared; E3 unsettled) | -- | -- | 0 | 255K (orchestrator, at the fold-ruling relay) |
+| 0-fold-2 | fold rulings folded (E1-E3, R1, E4, the classifier lock), NO Codex | -- | -- | -- | -- | -- | 0 | -- | -- | 0 | |

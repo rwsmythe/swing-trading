@@ -2,7 +2,7 @@
 
 **Brief:** `docs/sg-label-correction-arc-brief.md` (CHARC, `3b64f9ec`). **Base:** `main` at `f1eb4051`. **Worktree:** `.worktrees/sg-label`, branch `sg-label`.
 **Ledger (round-0 census, the fork packet, every round):** `docs/superpowers/plans/2026-11-11-sg-label-correction.ledger.md`. Rulings and their reasoning live there, not here.
-**Status:** FOLDED. Round-0 rulings: CHARC `20261111T181814Z` (F0-F9, P5, P13) and RD `20261111T181710Z` (F2, the F5 gate, the record-not-gate, the H2 read rule, N = 5, F6). They are quoted verbatim in the ledger. Each `[F#]` tag below names its RULED branch. The plan loop runs at the `fast` tier: three counted rounds, then a self-sweep.
+**Status:** FOLDED. Round-0 rulings: CHARC `20261111T181814Z` (F0-F9, P5, P13) and RD `20261111T181710Z` (F2, the F5 gate, the record-not-gate, the H2 read rule, N = 5, F6). The fold rulings followed: CHARC `20261111T183325Z` (E1-E3) and `20261111T183404Z` (lock on the classifier test), and RD `20261111T183327Z` (R1, E4). All of them are quoted verbatim in the ledger. Each `[F#]` tag below names its RULED branch. The plan loop runs at the `fast` tier: three counted rounds, then a self-sweep.
 
 Order of work: T3, T4, T1, T2 (T3 and T4 are independent and small; T1 lands the schema T2's tests do not need, but T1's service reads the same `candidate_id` semantics T2 changes, so T1 is proven on the pre-T2 entry path first). One commit per task step below. Fast suite green before Reviewer A on the executing diff.
 
@@ -16,40 +16,49 @@ Locks (brief section 2, restated as file sets): `swing/trades/` edits ONLY in `c
 
 T2 (the forward path) records the night the operator NAMES at entry. That is operator-asserted evidence (D96's tier), and it is admissible because it is recorded before the outcome. T1 kind 2 (the retro path) DERIVES the night from persisted rows. The operator's `--cite-fire-candidate` only confirms the derived id and cannot choose it, because a choice made after the outcome is post-outcome testimony.
 
-### 0.2 The H2 read rule (RD's; RD lands it in the watch-standard at the merge)
+### 0.2 The H2 read rule: RECORDED here, verbatim; RD lands it in the watch-standard at the merge (RD `20261111T183327Z`, CHARC `20261111T183404Z`)
 
-RD's rule asks the following. Every H2 read splits n three ways:
-- fire-night-is-last-word entries;
-- operator-named earlier-night entries;
-- kind-2 corrected rows.
+RD's four lines, verbatim:
 
-It also reports a sensitivity that excludes the operator-named entries. No new column is added.
+```text
+The H2 read rule I land in the watch-standard at the merge is, for every trade whose label is H2, evaluated in this order:
+ (1) KIND-2 CORRECTED: a provenance_corrections row with correction_kind watch_fire_relabel exists for the trade. Checked FIRST, whatever the candidate's night.
+ (2) LAST-WORD ENTRY: no such correction, and trades.candidate_id's evaluation run IS the ticker's last-word run before the fill.
+ (3) OPERATOR-NAMED EARLIER NIGHT: no such correction, and the candidate's run is STRICTLY EARLIER than that last-word run (T2's assertion; D96's tier).
+ (4) RESIDUAL, AFTER-FILL: the candidate's night is after the fill (the banked LQDA class, P11). Reported as its own named line, counted in none of the three, never folded silently into (3).
+Every H2 decision read reports all four and a sensitivity excluding (3).
+```
 
-**The backlink alone does NOT express this partition as RD phrased it.** RD's test for an operator-named night is "the trade's `candidate_id` run differs from the ticker's last-word run before the fill". Two other kinds of row also pass that test:
-- every kind-2 corrected row, because the correction MOVES `candidate_id` off the last-word row;
-- every trade whose candidate night POST-DATES the fill (the LQDA P11 shape, banked).
+**What this arc does with the rule.** It changes no H2 reader. The classifier and its four-row test are NOT this arc's, by CHARC's lock ruling. They come with the FIRST reader change that implements the partition: RD owns the semantics and CHARC the form, and trade 29 post-correction is the line-1 row.
 
-The partition IS expressible with no new column if the read adds a join and a direction. Here, F is the trade's entry-fill session, and LW(t) is the ticker's newest `candidates` row with action session `<= F`, ranked by the existing key `(action_session_date, run_ts, id)`:
-- **kind 2:** `EXISTS (provenance_corrections pc WHERE pc.trade_id = t.id AND pc.correction_kind = 'watch_fire_relabel')`. This needs the corrections table, not the backlink.
-- **last word:** not kind 2, and `t.candidate_id = LW(t)`.
-- **operator-named earlier night:** not kind 2, and `t.candidate_id` ranks STRICTLY BELOW LW(t).
-- **residual (a fourth line, never folded into the three):** not kind 2, and either `t.candidate_id` ranks above LW(t) (P11) or `t.candidate_id IS NULL`.
-
-The classes are disjoint by mechanism. Kind-2 eligibility (T1.6 step 3) requires the trade to be in the last-word class at correction time, so no operator-named trade can become a kind-2 row. RD re-reads the rule on this statement.
+**The arc's part is the data the four lines read.**
+- **T1 kind 2** writes the line-1 row.
+- **T2** writes the `candidate_id` that lines 2 and 3 compare.
+- **No new column is needed.** "The last-word run" is the existing `_assert_last_word_before_the_fill` ranking. `candidates` is `UNIQUE(evaluation_run_id, ticker)` (`0001:41`), so the run and the row coincide.
+- **The lines are disjoint by mechanism.** Kind-2 eligibility (T1.6 step 3 (e)) requires line 2 at correction time.
+- **One case meets none of the four lines:** an H2-labelled trade whose `candidate_id IS NULL`. It is flagged to RD in the ledger, and the plan does not classify it.
 
 ### 0.3 The two `candidate_id` readers whose reading shifts (CHARC: one sentence and one test each)
 
 - `swing/metrics/pattern_outcomes.py:_count_reached_1r_hit_stop` attributes a non-latched aplus trade to the PE row of the night the operator NAMED at T2, not the fill night's PE row. This only shifts for aplus nights, because the reader carries the aplus-only PE predicate. Test 2j.
 - `swing/web/view_models/patterns/review_form.py:_build_outcome_distribution` counts a trade's hit-stop and 1R outcome on the PE row of the decision night, not on the fill night's PE row. Both a T2-named night and a kind-2 correction cause this shift. Test 1u.
 
-### 0.4 The fill against the cited fire's pivot: RECORDED, never gated (RD item 4, CHARC F5)
+### 0.4 The fill against the cited fire's pivot: RECORDED EVIDENCE, NOT A GATE (RD item 4; R1 ruled by RD `20261111T183327Z` and accepted by CHARC `20261111T183404Z`)
 
-The plan adds no column, no comparison and no refusal. **Fact correction to the ruling:** the ruling places both values "in the cited candidate snapshot and the entry fill snapshot". The code has them in different places:
-- The entry-fill snapshot does carry `$.price`. The 22A-R15-01 clause of the citation trigger requires it.
-- `candidate_provenance_snapshot` (`cohort_provenance_correction.py:807`) does NOT carry `pivot`. Its keys are id, run, ticker, bucket, `rs_method` and criteria.
-- The pivot sits on the row BY BACKLINK instead: `cited_candidate_id -> candidates.pivot`. `candidates` rows are immutable structurally, through 0037's `trg_candidates_no_update`, `_no_delete` and `_no_replace`.
+A kind-2 row records the pair through two sources:
+- **The pivot:** `candidates.pivot`, reached through `provenance_corrections.cited_candidate_id`.
+- **The fill:** `provenance_corrections.entry_fill_snapshot_json` `$.price`.
 
-So the row records both values and nothing compares them. For trade 29 the fill is 11.95 (fill 60) and the pivot of 15901 is 11.949. Test 1r pins that a gap fill is NOT refused.
+Both values were written before the outcome and have been immutable since, which is everything the evidence rule asks (RD R1). The plan adds no pivot text to the row, no column, no comparison and no refusal. The pivot is NOT in `candidate_provenance_snapshot` (`cohort_provenance_correction.py:807`); the backlink is the source.
+
+**Can any path NULL `cited_candidate_id` on a kind-2 row? No. The path is unreachable.**
+- At the DDL the FK is `cited_candidate_id INTEGER NOT NULL REFERENCES candidates(id) ON DELETE RESTRICT` (`0039:126`). That is RESTRICT, not SET NULL, and 0042 copies it VERBATIM.
+- The `candidates` row cannot be deleted (0037's `trg_candidates_no_delete`) or updated (`_no_update`).
+- The update trigger refuses any change of `cited_candidate_id`.
+
+**The fill price outlives the fill.** It is frozen in the snapshot, so it survives the one permitted UPDATE: `entry_fill_id` SET NULL when the fill is deleted.
+
+For trade 29 the pair reads 11.95 (fill 60) and 11.949 (15901). Test 1r pins that a gap fill is NOT refused.
 
 ### 0.5 Accepted limitations (each with its reason; challenge invited)
 
@@ -371,7 +380,7 @@ Inner step order (the SELECT-first idempotency order):
    - The FIRST row with exactly one match is THE derived last fire. For trade 29 the walk passes 15980 (zero matches) and derives 15901.
    - **The derived id must EQUAL `fire_candidate_id`.** A mismatch REFUSES, and the message names BOTH ids ("cited <x>; the derived last fire is <y>"). Closest-wins never applies.
    - The walk also refuses when no row in the window has exactly one match, and when a row's derivation raises (clock margin, no pipeline bound, no status interval). A row the ranking cannot read cannot be passed over.
-   - **A row with two or more matches REFUSES the correction and is not passed over.** A row that matched is a fire, only an ambiguous one, so passing over it would derive an OLDER fire past a NEWER one. Since D84 a watch row reaches H2 alone, which makes this case unreachable on today's registry. The ledger flags it for CHARC's plan-stage read as the one point where the ruled text ("whose ... matcher returns exactly one match") does not say what happens to a multi-match row.
+   - **A row with two or more matches REFUSES the correction and is not passed over (E3, CHARC-confirmed `20261111T183325Z`; RD concurs).** The row is AMBIGUOUS, and the refusal names the row, its run and the match set. A newer ambiguous row is never passed over to reach an older fire. The case is unreachable on today's registry, because a watch row reaches H2 alone since D84. A registry edit is what would make it matter.
 8. `derive_cohort_keys_for_fire(conn, candidate=..., candidate_id=fire_candidate_id, evaluation_run_id=..., run_ts_parsed=..., gate=<the rung-14a same-session gate>)` is called with its signature and behaviour unchanged by step 7's factoring. The extraction is behaviour-preserving, and the Demand-C and 22-A suites staying green unchanged pins that, the same proof its own 22-A extraction used. The kind-2 applied origin is the trade's own (`pipeline_watch_manual`), and `keys.trade_origin` (hard-coded `APLUS_TRADE_ORIGIN`) is not read on this path. Applied label = `keys.hypothesis_label`; refuse if it equals the current label AND the current candidate is the fire (no-op).
 9. `update_cohort_provenance(conn, trade_id, hypothesis_label=label, candidate_id=fire_candidate_id, trade_origin='pipeline_watch_manual')` (the existing repo writer, unchanged; origin re-written to its own value).
 10. `insert_provenance_correction(..., correction_kind='watch_fire_relabel', admission_tier='last_fire', cited_daily_recommendation_id=None, cited_recommendation_action_session_date=None, cited_recommendation_snapshot_json=None, corrected_fields_json=json.dumps(list(PROVENANCE_WATCH_FIRE_CORRECTED_FIELDS)), pre/applied envelopes with all three keys, every other cited_* column filled exactly as kind 1 fills it)`.
@@ -403,17 +412,18 @@ Fixture: `tests/trades/_cohort_provenance_fixtures.py::build_sg_case(conn) -> di
 | 1k | migrate a v41 DB holding the two live-shaped rows -> both present, `correction_kind='fill_unset_provenance'`, every column byte-equal, `sqlite_sequence.seq` carried; `db-migrate` twice is a no-op (row counts, schema text, `sqlite_sequence` unchanged) | n/a | passes |
 | 1l | the backup gate fires at `current==41, target>=42` and not at `current==40` (the existing gate-table tests extended by one row) | gate absent | passes |
 | 1m | DRIFT (mandatory member): the SQL `correction_kind IN (...)` set == `PROVENANCE_CORRECTION_KINDS`; the SQL `admission_tier IN (...)` set == `PROVENANCE_ADMISSION_TIERS` (4); the coupling CHECK's per-kind tier sets == `PROVENANCE_ADMISSION_TIERS_BY_KIND`; the trigger's kind literals (edit 1 CASE, edit 2 CASE, edit 3) == the Python constants; the kind-2 `bucket` literal == `'watch'`; the corrected-fields literals per kind == the two Python tuples; the edit-2 `trade_origin` literal == `PROVENANCE_WATCH_FIRE_ORIGIN` and the `entry_intent` literal == `PROVENANCE_WATCH_FIRE_ENTRY_INTENT` (and is in the stored `trades.entry_intent` CHECK set). `test_a2_23`'s `len == 3` and `test_a2_25`'s regex `'(last_word|latch_ladder\w*)'` are updated to the four-value set (they would otherwise silently MISS `last_fire`) | `test_a2_23` asserts 3 | asserts 4, both kinds |
-| 1n | Service refusals, each asserting its message AND the counterfactual: zero rows, and the trade's label and `candidate_id` unchanged. The cases: trade origin `manual_off_pipeline`; `entry_intent = 'standard'` on an otherwise `build_sg_case` trade, refused by eligibility (b) with the message naming the intent condition (1a is the same fixture with `hypothesis_test_by_design` and is accepted, so the pair runs both modes); latched trade; current candidate not the last-word row; cited 15811 when 15901 is the derived last fire, where the message names BOTH 15811 and 15901; no single-match row within 5 rows; a window row with two matches (a registry variant), refused and not passed over; existing kind-1 row on the trade (a refusal, no `TypeError`); replay of the same call returns `already_applied` with the same id (SELECT-first precedes the reason and eligibility checks, so a replay with `reason=None` succeeds) | `ImportError` | passes |
+| 1n | Service refusals, each asserting its message AND the counterfactual: zero rows, and the trade's label and `candidate_id` unchanged. The cases: trade origin `manual_off_pipeline`; `entry_intent = 'standard'` on an otherwise `build_sg_case` trade, refused by eligibility (b) with the message naming the intent condition (1a is the same fixture with `hypothesis_test_by_design` and is accepted, so the pair runs both modes); latched trade; current candidate not the last-word row; cited 15811 when 15901 is the derived last fire, where the message names BOTH 15811 and 15901; no single-match row within 5 rows; the NEWEST window row matching two narrow hypotheses under a scratch registry (E3): refused, not passed over, and the message names the row, its run and the match set; existing kind-1 row on the trade (a refusal, no `TypeError`); replay of the same call returns `already_applied` with the same id (SELECT-first precedes the reason and eligibility checks, so a replay with `reason=None` succeeds) | `ImportError` | passes |
 | 1o | caller-held transaction -> `CallerHeldTransactionError`; a failure after the trade UPDATE rolls back both writes (trade label unchanged, zero rows) | n/a | passes |
 | 1p | reader: a kind-2 row reports no recommendation drift, re-derives clean; mutating the cited candidate's criteria in a scratch copy (raw, through the epoch barrier's test seam if one exists, else a pre-epoch id) reports `CITATION DRIFT` | n/a | passes |
 | 1r | RECORD, never gate (section 0.4). On a `build_sg_case` variant whose fill 60 price is 12.60, a gap 5.4% above the pivot 11.949, the correction is APPLIED. The row's `entry_fill_snapshot_json` `$.price` reads the fill price, and `candidates.pivot` through `cited_candidate_id` reads 11.949. On the unvaried fixture they read 11.95 and 11.949 | `ImportError` | passes (a gate would refuse the variant) |
 | 1u | shifting reader (section 0.3): `_build_outcome_distribution` with one PE row on run 207 (eval 193) and one on run 208 (eval 194) for SG, plus other-ticker PE rows padding the cohort to the `n >= 5` floor (`review_form.py`'s suppression), and trade 29 closed at negative R by the fixture. BEFORE the correction, the hit-stop counts on 208's row. AFTER `correct_watch_fire_label(..., 15901)`, it counts on 207's row and not on 208's (`tests/web/view_models/patterns/test_review_form_decision_night.py`) | the pre half passes; the post half has no correction to apply | both halves pass |
+| 1v | E2: no kind-1 outcome changes (CHARC `20261111T183325Z`). Each of the two live rows' shapes is built by the existing Demand-C and 22-A2 fixture builders: id 1 (trade 23, `last_word`) and id 2 (trade 25, `latch_ladder_tier2`). Each is ACCEPTED by the citation trigger. Each, with one leg broken (the cited candidate's run), is refused with the trigger's own message. The outcomes are asserted identical on a v41 DB and a v42 DB (`tests/data/test_migration_0042_*.py`) | v41: accepted, broken refused | v42: the same outcomes |
 | 1q | CLI (`tests/cli/test_correct_cohort_provenance_command.py`): `--cite-fire-candidate 15901 --dry-run` prints before/after with the exact label and writes nothing; with `--reason` writes; mode conflicts are `UsageError`; a service refusal is a `ClickException` (exit 1, no traceback); output ASCII | option absent | passes |
 
 Mirror closure (BY READ, ledger lists the read per site; each enum member grepped SEPARATELY -- `'aplus'`, `"aplus"`, `pipeline_aplus`, `manual_off_pipeline`, `today_decision`, `last_word`, `latch_ladder`, plus the two new kind literals, `last_fire`, and the kind-2 literals `'watch'`, `pipeline_watch_manual`, `hypothesis_test_by_design`):
 SQL: the five kind-CASE CHECKs, the two `IS NULL OR` CHECKs, the coupling CHECK, the presence CHECK, trigger edits 0-3 (edit 2's kind-2 arm carries the origin and intent literals), the update trigger's four lines. Python: `models.py` constants + `ProvenanceCorrection.__post_init__` + `_require_value_envelope`; repo `_COLUMNS`; service `APLUS_BUCKET` gate (`:1106`, kind-1 only, unchanged), `REQUIRED_RECOMMENDATION` (`:1097`, kind-1 only), `UNSET_TRADE_ORIGIN` gate (`:878`, kind-1 only), the `_authorize` existing-row comparison (`:2125`, changed), `CohortProvenanceCorrectionResult.cited_daily_recommendation_id` (typed `int | None`), `_preview_from_existing`, the reader's bucket and re-derivation sites (`:3359-3369`, `:3405-3408`), `frozen_value_evidence.py:1305-1311/1393-1397` (tier2-only filters: unchanged, read), `latched_origin.py:44-47,103-106` (re-exports `PROVENANCE_ADMISSION_TIERS`: read every consumer of the re-export at execution), `entry_intent_assignment.py:307-316` (reads `corrected_fields_json` as a set: value-agnostic, unchanged), `trg_eia_audit_trail` (value-agnostic, unchanged), `cli.py:3587` + the command. JSON envelope keys (pre/applied: three keys both kinds; corrected-fields: per kind). Prose: the CLI docstrings/help, the migration header, `db.py`'s gate comment. Comparator: test 1m.
 
-Commits: `feat(data): T1.1 (D104) -- migration 0042 rebuilds provenance_corrections with a second correction kind` (migration + `db.py` + manifest + `models.py` + repo + tests 1b-1m), `feat(trades): T1.2 (D104) -- the watch-fire relabel service` (service + tests 1a, 1n-1p, 1r, 1u), `feat(cli): T1.3 (D104) -- correct-cohort-provenance --cite-fire-candidate` (CLI + 1q). (#11: SQL CHECK + Python constant + dataclass validator land in ONE commit, the first.)
+Commits: `feat(data): T1.1 (D104) -- migration 0042 rebuilds provenance_corrections with a second correction kind` (migration + `db.py` + manifest + `models.py` + repo + tests 1b-1m, 1v), `feat(trades): T1.2 (D104) -- the watch-fire relabel service` (service + tests 1a, 1n-1p, 1r, 1u), `feat(cli): T1.3 (D104) -- correct-cohort-provenance --cite-fire-candidate` (CLI + 1q). (#11: SQL CHECK + Python constant + dataclass validator land in ONE commit, the first.)
 
 ---
 
