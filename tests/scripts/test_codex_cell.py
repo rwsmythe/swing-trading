@@ -677,6 +677,76 @@ def test_review_with_a_failed_status_read_fails(tmp_path, monkeypatch, capsys) -
     assert rc == 1
 
 
+def test_reviewer_allowance_reads_refs_with_rev_parse_never_git_branch() -> None:
+    """CHARC R1-3 (A1 amended): ``git branch`` mutates and the reviewer has no need of it;
+    ``git rev-parse`` reads the branch and HEAD. ``Bash(python:*)`` stays (the reviewer
+    runs the project's tests; the post-check is the enforcement)."""
+    m = _load()
+    assert "Bash(git branch" not in m.CLAUDE_ALLOWED
+    assert "Bash(git rev-parse:*)" in m.CLAUDE_ALLOWED
+    assert "Bash(python:*)" in m.CLAUDE_ALLOWED
+
+
+@pytest.mark.parametrize(
+    ("read", "changed"),
+    [
+        ("rev-parse", (0, "def5678\n")),
+        ("for-each-ref", (0, "refs/heads/lane abc1234\nrefs/heads/made abc1234\n")),
+        ("status --ignored", (0, "!! .pytest_cache/\n!! notes.txt\n")),
+    ],
+)
+def test_review_fails_when_the_worktree_snapshot_changed(
+    tmp_path, monkeypatch, capsys, read, changed
+) -> None:
+    """CHARC R1-3 (A1 amended): HEAD, every ref and the status INCLUDING ignored files are
+    read before and after the pass; any difference FAILS the review. A plain ``status``
+    stays clean in every case here, so only the snapshot can catch these writes."""
+    m = _load()
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        after={read: changed},
+    )
+    assert out["worktree_clean_after"] is True
+    assert out["snapshot_unchanged"] is False
+    names = {"rev-parse": "head", "for-each-ref": "refs", "status --ignored": "status_ignored"}
+    assert out["snapshot_changed"] == [names[read]]
+    assert rc == 1
+
+
+def test_review_fails_when_a_snapshot_read_fails(tmp_path, monkeypatch, capsys) -> None:
+    m = _load()
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n"),
+        git={"for-each-ref": (128, "")},
+    )
+    assert out["snapshot_unchanged"] is False
+    assert rc == 1
+
+
+def test_review_with_an_unchanged_snapshot_passes(tmp_path, monkeypatch, capsys) -> None:
+    m = _load()
+    rc, out, _ = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n")
+    )
+    assert out["snapshot_unchanged"] is True
+    assert out["snapshot_changed"] == []
+    assert rc == 0
+
+
+def test_review_runs_tests_without_writing_bytecode_or_a_pytest_cache(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The reviewer keeps ``Bash(python:*)`` to run the tests, and the snapshot reads
+    ignored files, so the pass runs with no .pyc writes and no pytest cache: a test run
+    must not trip the check that exists to catch a write."""
+    m = _load()
+    _, _, seen = _review(
+        m, tmp_path, monkeypatch, capsys, _result("VERDICT: NO_NEW_CRITICAL_MAJOR\n")
+    )
+    assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert "-p no:cacheprovider" in seen["env"]["PYTEST_ADDOPTS"]
+
+
 # ------------------------------------------- the cell's agent file (P3, the preamble) --
 AGENT_FILE = REPO_ROOT / ".claude" / "agents" / "implementer-codex-sol-high.md"
 

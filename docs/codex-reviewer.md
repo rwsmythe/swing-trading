@@ -386,6 +386,7 @@ turn in a git worktree, resumed by session id (`codex exec resume <id>`); the dr
   executable's `app-server`, `account/rateLimits/read`; the npm shim hangs under pipes).
 - **Reviewer for a Codex cell is the other model:** a `claude -p` read-only pass the driver runs
   between turns (`codex_cell.py review`); `--bare` drops OAuth and is never used.
+  **[swing] corrected -- delta 10: not read-only in the tool sense; a post-check enforces it.**
 
 ### [swing] instance deltas (codex-cli 0.167.1, probed 2026-11-11)
 
@@ -439,6 +440,18 @@ turn in a git worktree, resumed by session id (`codex exec resume <id>`); the dr
    `sh.exe` under the git fixture, the denied network, and a child pytest. They are named
    in the build ledger, Group 1, and the cell file carries the classes (build-ledger :59-65,
    :67-293).
+10. **The Claude review pass is NOT read-only in the tool sense** (CHARC 20261111T190129Z,
+    ruling A1 amended, on Codex review round 1 finding R1-3). `Bash(python:*)` stays,
+    because the reviewer must run the project's tests; `Bash(git branch:*)` is dropped (it
+    mutates) and `Bash(git rev-parse:*)` reads the branch and HEAD. The enforcement is the
+    driver's post-check: `git status --porcelain --ignored`, `git rev-parse HEAD` and
+    `git for-each-ref` are read before and after the pass, and a difference, or a read that
+    failed, FAILS the review (the review did not count). The pass runs with
+    `PYTHONDONTWRITEBYTECODE=1` and `PYTEST_ADDOPTS=-p no:cacheprovider`, so a test run
+    does not change the ignored files compared. **Limitation: writes OUTSIDE the worktree
+    are not caught.** A filesystem sandbox for `claude -p` is BANKED (owner CHARC); its
+    trigger is the first dispatch where the reviewer needs a non-repo write, or the next
+    lane arc, and its first step is a probe of what this Claude Code build supports.
 
 ## Codex is replaceable
 

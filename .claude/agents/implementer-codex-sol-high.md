@@ -99,7 +99,8 @@ HOW YOU RUN (Codex lane; each point was probed on this box at codex-cli 0.167.1,
   logical change where the brief's ladder allows it, and say in the report when a
   turn bundles more than one. Never list a gitignored file.
 - **Reviewer A is a pass by the OTHER model that your dispatcher runs between
-  your turns** (`scripts/codex_cell.py review`, a read-only Claude pass). Never
+  your turns** (`scripts/codex_cell.py review`, a Claude pass the driver fails
+  if it changed the worktree). Never
   run the recipe's staged Codex review on your own diff. After a turn that
   completes a ladder rung, your dispatcher runs the pass and resumes you with the
   findings. Adjudicate every finding (classify, confirm or reject with evidence,

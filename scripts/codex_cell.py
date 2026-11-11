@@ -50,7 +50,12 @@ This script pins the three operations so no seat improvises the flags:
     The Claude reviewer pass for the Codex lane (Reviewer A between turns, run
     by the driver; Reviewer B at the orchestrator's seat): the pre-generated
     diff against the base plus the staged prompt piped into ``claude -p`` with
-    a read-only tool policy and JSON output. Asserts the model from the result's
+    a restricted tool policy and JSON output. The policy is NOT read-only in the
+    tool sense (``Bash(python:*)`` stays so the reviewer can run the tests); the
+    enforcement is the post-check: HEAD, every ref and the status INCLUDING
+    ignored files are read before and after, and any difference FAILS the review.
+    Writes OUTSIDE the worktree are not caught (CHARC R1-3, A1 amended; a
+    filesystem sandbox for ``claude -p`` is banked). Asserts the model from the result's
     ``modelUsage``, a result that is not an error, exactly one verdict token on an
     anchored ``VERDICT: <token>`` line (``review_verdict``), and a clean worktree
     afterwards, read by a status command that itself succeeded (Codex R1-4).
@@ -100,11 +105,17 @@ CLAUDE_MODEL = "opus"
 CLAUDE_MODEL_PREFIX = "claude-opus"
 CLAUDE_EFFORT = "high"
 # The reviewer's tool allowance names the PROJECT's runner (the system python here).
+# CHARC R1-3 (A1 amended, 2026-11-11): Bash(python:*) stays so the reviewer can run the
+# tests, so the allowance is NOT read-only in the tool sense; the enforcement is the
+# post-check in cmd_review. git branch is dropped (it mutates); git rev-parse reads refs.
 CLAUDE_ALLOWED = (
     "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),"
-    "Bash(git cat-file:*),Bash(git branch:*),Bash(python:*),Bash(grep:*),Bash(ls:*),"
+    "Bash(git cat-file:*),Bash(git rev-parse:*),Bash(python:*),Bash(grep:*),Bash(ls:*),"
     "Bash(timeout:*)"
 )
+# The review process writes no .pyc and no pytest cache, so the tests the reviewer runs
+# do not change the ignored files the post-check compares.
+REVIEW_ENV = {"PYTHONDONTWRITEBYTECODE": "1", "PYTEST_ADDOPTS": "-p no:cacheprovider"}
 CLAUDE_DISALLOWED = "Edit,Write,NotebookEdit,Agent,WebFetch,WebSearch"
 # Pathspecs left out of the review diff: none (no lock file; the lane writes no proofs folder).
 DIFF_EXCLUDES: tuple[str, ...] = ()
@@ -311,11 +322,18 @@ def build_review_command(*, model: str = CLAUDE_MODEL, effort: str = CLAUDE_EFFO
 
 
 # ----------------------------------------------------------------- running --
-def _run_to_file(cmd: list[str], stdin_path: str, out_path: str, cwd: str) -> int:
+def _run_to_file(
+    cmd: list[str],
+    stdin_path: str,
+    out_path: str,
+    cwd: str,
+    extra_env: dict[str, str] | None = None,
+) -> int:
     # PATH is inherited unchanged (CHARC D-b): no reorder, because System32\bash.exe
     # is the WSL launcher and must not shadow or be shadowed by Git Bash.
     env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDECODE")}
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+    env.update(extra_env or {})
     # Resolve the executable (on Windows the npm shim is codex.cmd) and run WITHOUT a shell,
     # so the argv list is passed as is rather than re-parsed by cmd.exe.
     exe = shutil.which(cmd[0]) or cmd[0]
@@ -446,6 +464,31 @@ def cmd_commit(args: argparse.Namespace) -> int:
     return 0
 
 
+def worktree_snapshot(worktree: str) -> dict[str, Any]:
+    """HEAD, every ref and the status INCLUDING ignored files (CHARC R1-3, A1 amended).
+
+    Compared before and after the review pass: a difference, or a read that failed
+    (``ok`` false), FAILS the review. Writes OUTSIDE the worktree are not seen.
+    """
+    reads = {
+        "head": ["rev-parse", "HEAD"],
+        "refs": ["for-each-ref", "--format=%(refname) %(objectname)"],
+        "status_ignored": ["status", "--porcelain", "--ignored"],
+    }
+    snap: dict[str, Any] = {"ok": True}
+    for name, cmd in reads.items():
+        proc = subprocess.run(
+            ["git", "-C", worktree, *cmd],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        snap["ok"] = snap["ok"] and proc.returncode == 0
+        snap[name] = proc.stdout
+    return snap
+
+
 def cmd_review(args: argparse.Namespace) -> int:
     """Run the Claude reviewer pass on the worktree's diff against the base."""
     out = pathlib.Path(args.out)
@@ -470,13 +513,23 @@ def cmd_review(args: argparse.Namespace) -> int:
     combined = out / "review-input.txt"
     combined.write_bytes(pathlib.Path(args.prompt).read_bytes() + b"\n" + diff.read_bytes())
     result_json = out / "review.json"
+    before = worktree_snapshot(args.worktree)
     rc = _run_to_file(
         build_review_command(model=args.model, effort=args.effort),
         str(combined),
         str(result_json),
         args.worktree,
+        extra_env=REVIEW_ENV,
     )
-    summary: dict[str, Any] = {"exit": rc, "diff": str(diff), "json": str(result_json)}
+    after = worktree_snapshot(args.worktree)
+    changed = [k for k in ("head", "refs", "status_ignored") if before[k] != after[k]]
+    summary: dict[str, Any] = {
+        "exit": rc,
+        "diff": str(diff),
+        "json": str(result_json),
+        "snapshot_unchanged": before["ok"] and after["ok"] and not changed,
+        "snapshot_changed": changed,
+    }
     try:
         data = json.loads(result_json.read_text("utf-8", errors="replace"))
         text = data.get("result", "")
@@ -513,6 +566,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         and summary.get("model_ok")
         and summary.get("is_error") is False
         and summary["worktree_clean_after"]
+        and summary["snapshot_unchanged"]
         and summary.get("verdict") is not None
     )
     return 0 if ok else 1
