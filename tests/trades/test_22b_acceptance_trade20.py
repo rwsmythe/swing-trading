@@ -43,7 +43,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from swing.config import load as load_config
-from swing.data.db import open_connection, run_migrations
+from swing.data.db import EXPECTED_SCHEMA_VERSION, open_connection, run_migrations
 from tests._22b_fixtures import FILL41, FILL44, TRADE20, insert_row, seed_amn_row5
 from tests.metrics.test_22b_cohort_exclusion import _readers
 
@@ -440,8 +440,10 @@ def _world(tmp_path: Path):
     try:
         # 22-I: this world is read by the CLI (`hypothesis list`), whose
         # connect() refuses any version but EXPECTED_SCHEMA_VERSION -- so it
-        # is pinned to HEAD (41), moved with the version like a head test.
-        run_migrations(c, target_version=41, backup_dir=root / "bak")
+        # is pinned to HEAD. sg-label (0042): it now reads the constant, so a
+        # later bump cannot leave it one version behind HEAD again.
+        run_migrations(c, target_version=EXPECTED_SCHEMA_VERSION,
+                       backup_dir=root / "bak")
     finally:
         c.close()
     plain = sqlite3.connect(db_path)  # foreign keys OFF (the 18-B.1 technique)

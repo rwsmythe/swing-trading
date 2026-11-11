@@ -6,7 +6,8 @@ Instrument (plan T-F10): `open_connection_returning` patches
 call time, with a `FailingVerbsConn` whose `executescript` first runs the real
 `executescript("BEGIN;")` (the migration scripts open their own transaction;
 this leaves one OPEN, as a mid-script failure does) and then raises.  Each
-case drives `ensure_schema` on a v40 fixture (one migration, 0041, to apply)
+case drives `ensure_schema` on a HEAD-1 fixture (one migration, the newest, to apply;
+it was v40/0041 when written, and is HEAD-tracking since 0042)
 and asserts the proxy recorded >= 1 `executescript` (and, where the table says
 one runs, >= 1 `rollback()`): the did-it-fire rule.
 
@@ -21,8 +22,8 @@ one runs, >= 1 `rollback()`): the did-it-fire rule.
   transaction is read at the moment of the close (`_TxAtClose`), not after
   the raise (a closed connection cannot be read).
 * C2-21-c single failure (E1, rollback works) -> E1 re-raised, fresh read
-  `schema_version` 40, on both trees (a PIN).
-* C2-21-d CONTROL: pass-through proxy -> migrated to 41, on both trees.
+  `schema_version` HEAD-1, on both trees (a PIN).
+* C2-21-d CONTROL: pass-through proxy -> migrated to HEAD, on both trees.
 
 These stop before the post-COMMIT `finally` PRAGMAs, which are B-04's.  No
 clock is read by any assertion.
@@ -38,7 +39,11 @@ import pytest
 from swing.data.db import EXPECTED_SCHEMA_VERSION, open_connection, run_migrations
 from tests._22f_proxies import FailingVerbsConn, open_connection_returning
 
-_V_BEFORE = 40
+# HEAD-tracking (sg-label, 0042): the instrument needs exactly ONE migration to
+# apply -- R1-06's nothing-in-flight pins read the version AFTER the first
+# commit, so a two-migration walk would stop one short of HEAD.  The fixture
+# name `v40` is now stale; its rename is a separate change from this bump.
+_V_BEFORE = EXPECTED_SCHEMA_VERSION - 1
 
 
 @pytest.fixture

@@ -67,6 +67,9 @@ _COLUMNS: tuple[str, ...] = (
     # --- 22-A2 (migration 0039): the seventh citation column, in the same
     # one tuple for the same reason.
     "cited_frozen_value_evidence_json",
+    # --- D104 (migration 0042): the correction KIND, in the same one tuple
+    # (read and write widen together).
+    "correction_kind",
 )
 
 _SELECT = "provenance_correction_id, " + ", ".join(_COLUMNS)

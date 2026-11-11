@@ -63,6 +63,9 @@ MIG_DIR = REPO_ROOT / "swing" / "data" / "migrations"
 M0036 = MIG_DIR / "0036_provenance_corrections.sql"
 M0037 = MIG_DIR / "0037_latch_order_mandate_links.sql"
 M0039 = MIG_DIR / "0039_provenance_corrections_tier2.sql"
+# sg-label (0042) rebuilt the table again and re-created every dependant;
+# HEAD-scoped pins in this module read 0042, 0039-scoped pins target v39.
+M0042 = MIG_DIR / "0042_provenance_corrections_watch_fire_relabel.sql"
 CITATION = "trg_provenance_corrections_citation_graph"
 APPEND_UPDATE = "trg_provenance_corrections_append_only_update"
 # Arc 22-B (R0.I): the D51b-normalized sha256 of 0039's three changed objects,
@@ -174,7 +177,14 @@ def _seq(conn: sqlite3.Connection):
 def _migrate_to_head(conn: sqlite3.Connection, tmp_path: Path) -> None:
     run_migrations(conn, target_version=EXPECTED_SCHEMA_VERSION,
                    backup_dir=tmp_path / "gate_bak")
-    assert _current_version(conn) == EXPECTED_SCHEMA_VERSION == 41
+    assert _current_version(conn) == EXPECTED_SCHEMA_VERSION == 42
+
+
+def _migrate_to_39(conn: sqlite3.Connection, tmp_path: Path) -> None:
+    """0039's OWN result (sg-label: these pins are about 0039's text, and
+    0042 rebuilt the table again, so HEAD is no longer 0039's DDL)."""
+    run_migrations(conn, target_version=39, backup_dir=tmp_path / "gate_bak")
+    assert _current_version(conn) == 39
 
 
 def _strip_comments(sql: str) -> str:
@@ -193,7 +203,7 @@ def test_a2_10_three_edits_of_the_v38_stored_ddl_equal_the_v39_stored_ddl(
         for old, new in (EDIT1, EDIT2, EDIT3):
             assert expected.count(old) == 1, old
             expected = expected.replace(old, new)
-        _migrate_to_head(c, tmp_path)
+        _migrate_to_39(c, tmp_path)
         v39 = _stored(c, "provenance_corrections")
     finally:
         c.close()
@@ -214,7 +224,7 @@ def test_a2_11_edit_anchors_occur_once_and_the_seventh_column_is_last(
         assert v38.rstrip().endswith("= 'active')\n)") or v38.rstrip().endswith(")")
         assert "CHECK" in v38[v38.rindex("cited_latch_probe_json TEXT"):]
         v38_cols = _v38_columns(c)
-        _migrate_to_head(c, tmp_path)
+        _migrate_to_39(c, tmp_path)
         v39_cols = _v38_columns(c)
     finally:
         c.close()
@@ -314,14 +324,20 @@ def test_a2_16_statement_order(tmp_path: Path) -> None:
 
 
 def test_a2_17_the_four_unchanged_objects_are_verbatim(tmp_path: Path) -> None:
-    c = _db(tmp_path, "c3", EXPECTED_SCHEMA_VERSION)
+    c = _db(tmp_path, "c3", 39)
+    h = _db(tmp_path, "c3h", EXPECTED_SCHEMA_VERSION)
     try:
         for name, source in VERBATIM.items():
             assert _stored(c, name) == create_statement_in(source, name), name
-            # and the HEAD definition of each is the 0039 re-create
-            assert head_create_statement(name)[0] == M0039, name
+            assert create_statement_in(M0039, name) == create_statement_in(
+                source, name), name
+            # sg-label: the HEAD definition of each is now 0042's re-create,
+            # and it is STILL the original text, byte for byte.
+            assert head_create_statement(name)[0] == M0042, name
+            assert _stored(h, name) == create_statement_in(source, name), name
     finally:
         c.close()
+        h.close()
 
 
 # ---------------------------------------------------------------------------
@@ -428,10 +444,12 @@ def test_a2_23_sql_admission_tier_check_equals_the_python_enum(tmp_path: Path) -
         sql = _stored(c, "provenance_corrections")
     finally:
         c.close()
-    found = re.findall(r"admission_tier IN \(([^)]*)\)", sql)
+    # sg-label (0042): the column CHECK's IN-list is the four-value mirror;
+    # the coupling CHECK's per-kind IN-list is test 1m's (0042 module).
+    found = re.findall(r"CHECK \(admission_tier IN \(([^)]*)\)", sql)
     assert len(found) == 1
     assert set(re.findall(r"'([^']+)'", found[0])) == PROVENANCE_ADMISSION_TIERS
-    assert len(PROVENANCE_ADMISSION_TIERS) == 3
+    assert len(PROVENANCE_ADMISSION_TIERS) == 4
 
 
 def test_a2_24_the_model_carries_the_three_way_paired_rule(tmp_path: Path) -> None:
@@ -473,16 +491,20 @@ def test_a2_24_the_model_carries_the_three_way_paired_rule(tmp_path: Path) -> No
         replace(row, admission_tier="latch_ladder_tier3")
     # and the repo round-trips the seventh column (read + write in one tuple)
     from swing.data.repos import provenance_corrections as repo
-    assert repo._COLUMNS[-1] == PROVENANCE_TIER2_EVIDENCE_FIELD
+    # sg-label (0042): correction_kind is the LAST column, the seventh is [-2]
+    assert repo._COLUMNS[-2] == PROVENANCE_TIER2_EVIDENCE_FIELD
+    assert repo._COLUMNS[-1] == "correction_kind"
 
 
 def test_a2_25_trigger_literals_equal_their_python_mirrors() -> None:
     """Tier literals, rung-9 verdict literals, probe-version literals and the
     seventh blob's version literal, parsed from the HEAD citation trigger."""
     path, stmt = head_create_statement(CITATION)
-    assert path == M0039
+    assert path == M0042   # sg-label: 0042 re-creates the citation trigger
     code = _strip_comments(stmt)
-    tiers = set(re.findall(r"'(last_word|latch_ladder\w*)'", code))
+    # widened by 0042 to catch every `last_*` tier, so `last_fire` (or a next
+    # sibling) cannot be silently missed by a hand-listed alternation
+    tiers = set(re.findall(r"'(last_\w+|latch_ladder\w*)'", code))
     assert tiers == PROVENANCE_ADMISSION_TIERS, tiers
     verdicts = set(re.findall(
         r"'\$\.authorization\.rung9_stored_freeze_tier\.verdict'\)\s*=\s*'([^']+)'",
@@ -704,7 +726,7 @@ def test_a2_31_the_tier2_row_is_append_only(tmp_path: Path) -> None:
             conn.execute("DELETE FROM provenance_corrections")
         conn.rollback()
         cols = _v38_columns(conn)
-        assert len(cols) == 41
+        assert len(cols) == 42   # sg-label: + correction_kind
         head_update = head_create_statement(APPEND_UPDATE)[1]
         missing = [col for col in cols if f"NEW.{col} " not in head_update
                    and f"NEW.{col}\n" not in head_update]
@@ -721,13 +743,16 @@ def test_the_head_citation_trigger_keeps_every_fei_consumer_marked() -> None:
     the citation trigger 0039 re-creates needs its own HEAD-level pin: every
     FROM/JOIN reference to ``fill_envelope_identity`` in the HEAD definition
     carries a ``FEI-CONSUMER`` marker, and the tier-2 arm added NO consumer --
-    the marker set equals 0037's citation trigger's exactly."""
+    the marker set equals 0037's citation trigger's exactly.  sg-label (0042)
+    adds exactly ONE: the kind-2 ``last_fire`` arm's absence-of-authority
+    read, the ``last_word`` consumer's twin (VERSION_BLIND, L19's reason)."""
     marker = re.compile(r"--\s*FEI-CONSUMER\s+(\w+)\s*::\s*(\w+)")
     reference = re.compile(r"\b(?:FROM|JOIN)\s+fill_envelope_identity\b")
     head = head_create_statement(CITATION)[1]
     old = create_statement_in(M0037, CITATION)
     head_marks = marker.findall(head)
-    assert sorted(head_marks) == sorted(marker.findall(old))
+    assert sorted(head_marks) == sorted(
+        marker.findall(old) + [("last_fire_subject_order_id", "VERSION_BLIND")])
     blanked = "\n".join("" if ln.lstrip().startswith("--") else ln
                         for ln in head.split("\n"))
     assert len(reference.findall(blanked)) == len(head_marks)

@@ -384,6 +384,32 @@ def _source_sha(module_path: str, fn_name: str) -> str:
     return hashlib.sha256(src.encode("utf-8")).hexdigest()
 
 
+# sg-label (D104, migration 0042): the provenance_corrections table and its
+# citation trigger were rebuilt AGAIN, so seven 0039 case functions that read
+# HEAD were re-scoped -- to v39 where they pin 0039's OWN text (A2-10, A2-11,
+# A2-17's first half) and to the four-value / 0042 HEAD where they pin HEAD
+# (A2-17's second half, A2-23, A2-24, A2-25, A2-31). Each is NAMED with its
+# post-re-scope sha, so a further edit is still a visible drift.
+_REASON_SG = ("re-scoped sg-label (0042), reason: HEAD moved to 0042; "
+              "ledger 'Executing -- cell 3', class 3")
+RE_SCOPED_SG_LABEL: dict[str, tuple[tuple[str, str], str, str]] = {
+    "A2-10": ((_M4, "test_a2_10_three_edits_of_the_v38_stored_ddl_equal_the_v39_stored_ddl"),
+              "701a850b276f78df58c6b896116780ed4b2c8f22cd08665000ec3363f9a3dc83", _REASON_SG),
+    "A2-11": ((_M4, "test_a2_11_edit_anchors_occur_once_and_the_seventh_column_is_last"),
+              "1170613770f7af344678f5ef1da6e1f6189e26a597b8e1ccfb9f34e3b4476ccb", _REASON_SG),
+    "A2-17": ((_M4, "test_a2_17_the_four_unchanged_objects_are_verbatim"),
+              "30deb58e0b45b212143431ed1a16973edb533271f86dff2ee90327f66af193eb", _REASON_SG),
+    "A2-23": ((_M4, "test_a2_23_sql_admission_tier_check_equals_the_python_enum"),
+              "7e7b487b71c6a9a8717c0682683ef6e41f104a4b784b01bef0e6ad4d52e1d97c", _REASON_SG),
+    "A2-24": ((_M4, "test_a2_24_the_model_carries_the_three_way_paired_rule"),
+              "56548203a814fe1d972a59cfcdd927664aab986c8fcaa335b8faed4543f07d57", _REASON_SG),
+    "A2-25": ((_M4, "test_a2_25_trigger_literals_equal_their_python_mirrors"),
+              "798240c3e8e1df84e94a209b81dca40e721a5ab3bd7496748ccc850b61d1b5eb", _REASON_SG),
+    "A2-31": ((_M4, "test_a2_31_the_tier2_row_is_append_only"),
+              "ad340cc4e2b16c48e95479ef8cb292e649d944c5f55bf53ecee26fde5199d9a1", _REASON_SG),
+}
+
+
 def test_the_22a2_case_functions_are_byte_unchanged_except_three_re_scoped_b22_170(
 ) -> None:
     found = _roster_tokens_in_tests()
@@ -404,9 +430,16 @@ def test_the_22a2_case_functions_are_byte_unchanged_except_three_re_scoped_b22_1
     assert len(base_keys) == 106
     drifted = [
         rid for rid, key in implementing.items()
-        if rid not in RE_SCOPED_22B and _source_sha(*key) != BASE_PINS_22A2[key]
+        if rid not in RE_SCOPED_22B and rid not in RE_SCOPED_SG_LABEL
+        and _source_sha(*key) != BASE_PINS_22A2[key]
     ]
     assert not drifted, drifted
+    assert not set(RE_SCOPED_SG_LABEL) & set(RE_SCOPED_22B)
+    for rid, (key, sha, reason) in RE_SCOPED_SG_LABEL.items():
+        assert reason == _REASON_SG
+        assert implementing[rid] == key, (rid, implementing[rid])
+        assert _source_sha(*key) == sha, rid
+        assert BASE_PINS_22A2[key] != sha, (rid, "re-scope changed nothing")
     for rid, (key, sha, reason) in RE_SCOPED_22B.items():
         assert reason == _REASON
         assert _source_sha(*key) == sha, rid

@@ -166,7 +166,7 @@ def _pc_world(tmp_path: Path) -> sqlite3.Connection:
 
     c = build_last_word_world(tmp_path)
     c.isolation_level = None
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 41
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 42
     return c
 
 

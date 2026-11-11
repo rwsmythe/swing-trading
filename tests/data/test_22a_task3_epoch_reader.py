@@ -294,8 +294,13 @@ def test_the_epoch_is_read_in_exactly_one_place() -> None:
                 hits.add(path.relative_to(SWING).as_posix())
         return hits
 
+    # sg-label (0042) re-creates the citation trigger AGAIN, so the HEAD twin
+    # is now 0042 and 0039's re-create stays on disk as a historical site --
+    # named, so a further site still shows up as a file, not a count.
+    prior_twin = "data/migrations/0039_provenance_corrections_tier2.sql"
+    assert head_twin == "data/migrations/0042_provenance_corrections_watch_fire_relabel.sql"
     assert _sites("max_candidate_id_at_barrier") == {
-        reader, migration, head_twin}
+        reader, migration, prior_twin, head_twin}
     for name in BARRIER_TRIGGER_NAMES:
         assert _sites(name) == {reader, migration}, name
 

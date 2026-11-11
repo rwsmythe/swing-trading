@@ -439,6 +439,19 @@ def truthful_tier2_payload(
 
 
 def insert_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+    """Raw INSERT of a HEAD-shaped payload into the world's table.
+
+    A world migrated to a version BELOW 42 has no ``correction_kind`` column
+    (0042 added it). The HEAD emitter's payload carries it, valued
+    ``fill_unset_provenance`` for every kind-1 row; that value is exactly what
+    0042's copy statement writes for a pre-0042 row, so dropping the key for an
+    older world is the older-column subset of the SAME row (0039 SS-1's
+    precedent). A kind-2 value is NEVER dropped: it has no pre-0042 meaning.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(provenance_corrections)")}
+    if "correction_kind" in payload and "correction_kind" not in cols:
+        assert payload["correction_kind"] == "fill_unset_provenance", payload
+        payload = {k: v for k, v in payload.items() if k != "correction_kind"}
     conn.execute(
         f"INSERT INTO provenance_corrections ({', '.join(payload)}) "
         f"VALUES ({', '.join('?' * len(payload))})", tuple(payload.values()))

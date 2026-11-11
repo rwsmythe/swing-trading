@@ -3073,10 +3073,49 @@ LATCH_FREEZE_TIERS = frozenset(
 PROVENANCE_ADMISSION_TIER_LAST_WORD = "last_word"
 PROVENANCE_ADMISSION_TIER_LATCH = "latch_ladder"
 PROVENANCE_ADMISSION_TIER_LATCH_TIER2 = "latch_ladder_tier2"
+# FOUR-VALUED from the SG label arc (D104, migration 0042): ``last_fire`` admits
+# the second correction KIND, a watch-origin fire relabel whose cited fire is
+# DERIVED as the last narrow-rule fire before the fill (CHARC F2 = B).
+PROVENANCE_ADMISSION_TIER_LAST_FIRE = "last_fire"
 PROVENANCE_ADMISSION_TIERS = frozenset(
     {PROVENANCE_ADMISSION_TIER_LAST_WORD, PROVENANCE_ADMISSION_TIER_LATCH,
-     PROVENANCE_ADMISSION_TIER_LATCH_TIER2}
+     PROVENANCE_ADMISSION_TIER_LATCH_TIER2, PROVENANCE_ADMISSION_TIER_LAST_FIRE}
 )
+
+# D104 (migration 0042): the correction KIND (CHARC F1 = A). Kind 1 is the
+# Demand-C fill of UNSET provenance; kind 2 relabels a watch-origin trade to
+# the fire it was entered off. The SQL halves are the table's
+# `correction_kind IN (...)` CHECK, the kind-CASE CHECKs, the coupling CHECK
+# and the citation trigger's kind literals; test 1m compares them (#11).
+PROVENANCE_CORRECTION_KIND_FILL_UNSET = "fill_unset_provenance"
+PROVENANCE_CORRECTION_KIND_WATCH_FIRE = "watch_fire_relabel"
+PROVENANCE_CORRECTION_KINDS = frozenset(
+    {PROVENANCE_CORRECTION_KIND_FILL_UNSET,
+     PROVENANCE_CORRECTION_KIND_WATCH_FIRE}
+)
+# The coupling CHECK's Python twin: which tiers admit which kind.
+PROVENANCE_ADMISSION_TIERS_BY_KIND: dict[str, frozenset[str]] = {
+    PROVENANCE_CORRECTION_KIND_FILL_UNSET: frozenset(
+        {PROVENANCE_ADMISSION_TIER_LAST_WORD, PROVENANCE_ADMISSION_TIER_LATCH,
+         PROVENANCE_ADMISSION_TIER_LATCH_TIER2}),
+    PROVENANCE_CORRECTION_KIND_WATCH_FIRE: frozenset(
+        {PROVENANCE_ADMISSION_TIER_LAST_FIRE}),
+}
+# Kind 2 corrects TWO fields: the origin is unchanged by a fire relabel (F4 = A).
+PROVENANCE_WATCH_FIRE_CORRECTED_FIELDS: tuple[str, ...] = (
+    "trades.hypothesis_label",
+    "trades.candidate_id",
+)
+# Kind 2's origin, both sides of the envelope, and the trade's (the trigger's
+# edit-2 literal; brief: pipeline_watch_manual only).
+PROVENANCE_WATCH_FIRE_ORIGIN = "pipeline_watch_manual"
+# RD's F5 gate (CHARC-ruled): kind 2 is admissible only for a trade whose
+# entry intent, recorded at the lock pre-outcome, is ALREADY by-design. The
+# trigger's edit-2 literal is its SQL side; test 1m compares the two.
+PROVENANCE_WATCH_FIRE_ENTRY_INTENT = "hypothesis_test_by_design"
+if PROVENANCE_WATCH_FIRE_ENTRY_INTENT not in ENTRY_INTENTS_ASSERTABLE:
+    raise AssertionError(
+        "PROVENANCE_WATCH_FIRE_ENTRY_INTENT must be an assertable entry intent")
 
 # The seventh citation column (0039).  NULL on every ``last_word`` and
 # ``latch_ladder`` row; present -- a closed, versioned JSON blob the citation
@@ -3217,7 +3256,7 @@ def _require_extended_iso_date(name: str, value) -> None:
 
 def _require_value_envelope(
     name: str, raw, *, required_candidate_id: int | None = None,
-    unset: bool = False,
+    unset: bool = False, kind: str = PROVENANCE_CORRECTION_KIND_FILL_UNSET,
 ) -> None:
     """Mirror of the 0036 pre/applied value-envelope CHECKs (Codex R1 M3).
 
@@ -3238,6 +3277,34 @@ def _require_value_envelope(
         raise ValueError(
             f"{name} is missing {sorted(missing)}; it must carry all three "
             "cohort keys, because the correction writes all three together")
+    if kind == PROVENANCE_CORRECTION_KIND_WATCH_FIRE:
+        # D104 (0042): the kind-2 envelope rules, the table CHECKs' twin.
+        if env["trades.trade_origin"] != PROVENANCE_WATCH_FIRE_ORIGIN:
+            raise ValueError(
+                f"{name}['trades.trade_origin'] is "
+                f"{env['trades.trade_origin']!r}; a watch-fire relabel keeps "
+                f"the {PROVENANCE_WATCH_FIRE_ORIGIN!r} origin on both sides")
+        label = env["trades.hypothesis_label"]
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(
+                f"{name}['trades.hypothesis_label'] must be a non-empty "
+                f"string; got {label!r}")
+        cid = env["trades.candidate_id"]
+        if not isinstance(cid, int) or isinstance(cid, bool):
+            raise ValueError(
+                f"{name}['trades.candidate_id'] must be an integer; got "
+                f"{cid!r}")
+        if unset:
+            if cid == required_candidate_id:
+                raise ValueError(
+                    f"{name}['trades.candidate_id'] is the cited candidate "
+                    f"{cid}: a relabel that does not MOVE the anchor is not a "
+                    "fire relabel")
+        elif cid != required_candidate_id:
+            raise ValueError(
+                f"{name}['trades.candidate_id'] is {cid!r} but this row CITES "
+                f"candidate {required_candidate_id}")
+        return
     if unset:
         if env["trades.trade_origin"] != "manual_off_pipeline":
             raise ValueError(
@@ -3372,7 +3439,8 @@ class ProvenanceCorrection:
     entry_fill_id_at_correction: int
     entry_fill_snapshot_json: str
     cited_candidate_id: int
-    cited_daily_recommendation_id: int
+    # NULL on a kind-2 (watch_fire_relabel) row ONLY (0042, F3 = A).
+    cited_daily_recommendation_id: int | None
     cited_evaluation_run_id: int
     cited_hypothesis_id: int
     cited_hypothesis_status_history_id: int
@@ -3387,10 +3455,10 @@ class ProvenanceCorrection:
     cited_hypothesis_status_effective_to: str | None
     cited_hypothesis_name_at_correction: str
     cited_candidate_action_session_date: str
-    cited_recommendation_action_session_date: str
+    cited_recommendation_action_session_date: str | None
     entry_fill_session_date: str
     cited_run_ts_raw: str
-    cited_recommendation_snapshot_json: str
+    cited_recommendation_snapshot_json: str | None
     cited_candidate_snapshot_json: str
     derivation_rule_version: str
     pre_value_json: str
@@ -3412,14 +3480,48 @@ class ProvenanceCorrection:
     cited_latch_probe_json: str | None = None
     # --- 22-A2 (migration 0039): the seventh citation column.
     cited_frozen_value_evidence_json: str | None = None
+    # --- D104 (migration 0042): the correction KIND, the LAST column.
+    correction_kind: str = PROVENANCE_CORRECTION_KIND_FILL_UNSET
 
     def __post_init__(self) -> None:
+        # D104 (0042): the KIND, its tier coupling and its recommendation
+        # citation presence -- the twins of the kind CHECK, the coupling CHECK
+        # and the presence CHECK.
+        if self.correction_kind not in PROVENANCE_CORRECTION_KINDS:
+            raise ValueError(
+                f"correction_kind {self.correction_kind!r} is not one of "
+                f"{sorted(PROVENANCE_CORRECTION_KINDS)}")
+        watch_fire = (
+            self.correction_kind == PROVENANCE_CORRECTION_KIND_WATCH_FIRE)
+        rec_triple = {
+            "cited_daily_recommendation_id":
+                self.cited_daily_recommendation_id,
+            "cited_recommendation_action_session_date":
+                self.cited_recommendation_action_session_date,
+            "cited_recommendation_snapshot_json":
+                self.cited_recommendation_snapshot_json,
+        }
+        if watch_fire:
+            present = sorted(k for k, v in rec_triple.items() if v is not None)
+            if present:
+                raise ValueError(
+                    f"a watch_fire_relabel row cites no recommendation; it "
+                    f"carries {present}")
+        else:
+            absent = sorted(k for k, v in rec_triple.items() if v is None)
+            if absent:
+                raise ValueError(
+                    f"a fill_unset_provenance row must cite its "
+                    f"today_decision recommendation; {absent} missing")
         for fname in (
             "cited_candidate_action_session_date",
-            "cited_recommendation_action_session_date",
             "entry_fill_session_date",
         ):
             _require_extended_iso_date(fname, getattr(self, fname))
+        if self.cited_recommendation_action_session_date is not None:
+            _require_extended_iso_date(
+                "cited_recommendation_action_session_date",
+                self.cited_recommendation_action_session_date)
         for fname in (
             "cited_run_ts_raw",
             "cited_pipeline_finished_ts_raw",
@@ -3442,7 +3544,8 @@ class ProvenanceCorrection:
                 "cited_candidate_action_session_date "
                 f"{self.cited_candidate_action_session_date} POST-DATES the "
                 f"entry fill session {self.entry_fill_session_date}")
-        if (self.cited_recommendation_action_session_date
+        if (self.cited_recommendation_action_session_date is not None
+                and self.cited_recommendation_action_session_date
                 > self.entry_fill_session_date):
             raise ValueError(
                 "cited_recommendation_action_session_date "
@@ -3513,6 +3616,12 @@ class ProvenanceCorrection:
             raise ValueError(
                 f"admission_tier {self.admission_tier!r} is not one of "
                 f"{sorted(PROVENANCE_ADMISSION_TIERS)}")
+        allowed = PROVENANCE_ADMISSION_TIERS_BY_KIND[self.correction_kind]
+        if self.admission_tier not in allowed:
+            raise ValueError(
+                f"admission_tier {self.admission_tier!r} does not admit a "
+                f"{self.correction_kind!r} row; the coupled tiers are "
+                f"{sorted(allowed)}")
         cited = {
             name: getattr(self, name)
             for name in PROVENANCE_LATCH_CITATION_FIELDS
@@ -3521,15 +3630,17 @@ class ProvenanceCorrection:
         # citations AND the seventh NULL; latch_ladder -> the five present and
         # the seventh NULL; latch_ladder_tier2 -> all six present.
         seventh = getattr(self, PROVENANCE_TIER2_EVIDENCE_FIELD)
-        if self.admission_tier == PROVENANCE_ADMISSION_TIER_LAST_WORD:
+        # last_fire (kind 2) carries no latch citation, exactly as last_word.
+        if self.admission_tier in (PROVENANCE_ADMISSION_TIER_LAST_WORD,
+                                   PROVENANCE_ADMISSION_TIER_LAST_FIRE):
             present = sorted(k for k, v in cited.items() if v is not None)
             if seventh is not None:
                 present.append(PROVENANCE_TIER2_EVIDENCE_FIELD)
             if present:
                 raise ValueError(
-                    f"admission_tier 'last_word' carries latch citations "
-                    f"{present}: the tier a row claims and the evidence it "
-                    "carries may not disagree")
+                    f"admission_tier {self.admission_tier!r} carries latch "
+                    f"citations {present}: the tier a row claims and the "
+                    "evidence it carries may not disagree")
         else:
             if self.admission_tier == PROVENANCE_ADMISSION_TIER_LATCH_TIER2:
                 cited[PROVENANCE_TIER2_EVIDENCE_FIELD] = seventh
@@ -3578,15 +3689,25 @@ class ProvenanceCorrection:
         # SUBSET rule accepted a row claiming ONE corrected field while the
         # service always writes all three, so the audit row could assert a
         # partial cohort assignment that cannot have happened.
-        if list(fields) != list(PROVENANCE_CORRECTED_FIELDS):
+        expected_fields = (PROVENANCE_WATCH_FIRE_CORRECTED_FIELDS if watch_fire
+                           else PROVENANCE_CORRECTED_FIELDS)
+        if list(fields) != list(expected_fields):
             raise ValueError(
                 f"corrected_fields_json must be exactly "
-                f"{list(PROVENANCE_CORRECTED_FIELDS)} in order; got {fields!r}")
+                f"{list(expected_fields)} in order; got {fields!r}")
         _require_value_envelope(
             "applied_value_json", self.applied_value_json,
-            required_candidate_id=self.cited_candidate_id)
+            required_candidate_id=self.cited_candidate_id,
+            kind=self.correction_kind)
         _require_value_envelope(
-            "pre_value_json", self.pre_value_json, unset=True)
+            "pre_value_json", self.pre_value_json, unset=True,
+            required_candidate_id=self.cited_candidate_id,
+            kind=self.correction_kind)
+        if not watch_fire:
+            self._validate_recommendation_snapshot()
+        self._validate_remaining_snapshots(watch_fire=watch_fire)
+
+    def _validate_recommendation_snapshot(self) -> None:
         rec = _provenance_snapshot_dict(
             "cited_recommendation_snapshot_json",
             self.cited_recommendation_snapshot_json)
@@ -3608,6 +3729,8 @@ class ProvenanceCorrection:
                 "action_session_date":
                     self.cited_recommendation_action_session_date,
             })
+
+    def _validate_remaining_snapshots(self, *, watch_fire: bool) -> None:
         pipe = _provenance_snapshot_dict(
             "cited_pipeline_run_snapshot_json",
             self.cited_pipeline_run_snapshot_json)
@@ -3628,7 +3751,8 @@ class ProvenanceCorrection:
             "cited_candidate_snapshot_json", cand, {
                 "id": self.cited_candidate_id,
                 "evaluation_run_id": self.cited_evaluation_run_id,
-                "bucket": "aplus",
+                # the cited bucket by kind: the snapshot CHECK's twin
+                "bucket": "watch" if watch_fire else "aplus",
             })
         if not isinstance(cand.get("criteria"), list):
             raise ValueError(

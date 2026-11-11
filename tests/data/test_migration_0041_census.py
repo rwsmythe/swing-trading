@@ -211,7 +211,10 @@ def test_f2_a_rowid_move_is_refused_by_a_blanket_trigger(tmp_path: Path,
                                                         table: str) -> None:
     c = _builder(table)(tmp_path)
     try:
-        assert int(c.execute("SELECT version FROM schema_version").fetchone()[0]) == 41
+        # sg-label: the PC world is built by `build_last_word_world`
+        # (ensure_schema -> HEAD, 42); every other world is migrated to 41.
+        want = 42 if table in PC_WORLD else 41
+        assert int(c.execute("SELECT version FROM schema_version").fetchone()[0]) == want
         rowid = c.execute(f"SELECT min(rowid) FROM {table}").fetchone()[0]
         assert rowid is not None, f"{table}: the world seeded no row"
         fresh = c.execute(f"SELECT max(rowid) + 1000 FROM {table}").fetchone()[0]

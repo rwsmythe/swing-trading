@@ -176,7 +176,7 @@ def test_rc_split_into_partials_end_to_end(tmp_path: Path) -> None:
     from swing.trades.reconciliation_auto_correct import apply_tier2_resolution
     from tests.trades.test_apply_tier2_resolution import _seed_dhc_pending
 
-    assert EXPECTED_SCHEMA_VERSION == 41
+    assert EXPECTED_SCHEMA_VERSION == 42
     conn = ensure_schema(tmp_path / "split.db")
     try:
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = "

@@ -26,6 +26,7 @@ No helper here reads `datetime.now()`; every date is frozen.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -470,4 +471,340 @@ def build_cadl_case(
         "daily_recommendation_id": dr_id,
         "trade_id": trade_id,
         "fill_id": fill_id,
+    }
+
+
+# ===========================================================================
+# THE LIVE SG CASE (trade 29 / fill 60 / candidates 15811, 15901, 15980;
+# evaluation runs 192-194 / pipeline runs 206-208), the D104 watch-fire
+# relabel arc.  Every value below was read `mode=ro` off the operator's live
+# database on 2026-11-11 (the plan's live-shape facts); the criteria are the
+# 18 live `candidate_criteria` rows per candidate, VERBATIM and in rowid
+# order.  Values NOT read live are named where they are set.
+# ===========================================================================
+SG_TICKER = "SG"
+SG_TRADE_ID = 29
+SG_FILL_ID = 60
+SG_FIRE_CANDIDATE_ID = 15901        # eval 193, the H2 fire (D104)
+SG_LAST_WORD_CANDIDATE_ID = 15980   # eval 194, the batch night
+SG_OLDER_CANDIDATE_ID = 15811       # eval 192
+SG_FILL_DATETIME = "2026-11-06T16:00:00"
+SG_FILL_SESSION = "2026-11-06"
+SG_BASELINE_LABEL = (
+    "Broad-watch baseline (watch); failed: proximity_20ma, tightness")
+# The label RD witnessed in the 2026-11-05 briefing (brief section 0).
+SG_FIRE_LABEL = (
+    "Near-A+ defensible: extension test (watch); failed: proximity_20ma")
+SG_WATCH_MANUAL_ORIGIN = "pipeline_watch_manual"
+SG_BY_DESIGN_INTENT = "hypothesis_test_by_design"
+SG_LIVE_ENVELOPE = (
+    '{"entry_date": "2026-11-06", "entry_date_source": "execution_leg", '
+    '"entry_price": 11.945, "schwab_instrument_symbol": "SG", '
+    '"schwab_order_id": "1008560562620", "shares": 11}'
+)
+SG_LIVE_OPERATOR_CORRECTED = (
+    '{"entry_date": "2026-11-06", "entry_price": 11.95, "shares": 11}')
+
+# (eval id, run_ts, data_asof, action_session, pipeline id, started, finished)
+SG_RUNS: tuple[tuple[int, str, str, str, int, str, str], ...] = (
+    (192, "2026-11-03T17:30:04", "2026-11-03", "2026-11-04",
+     206, "2026-11-03T17:30:04", "2026-11-03T17:34:17"),
+    (193, "2026-11-04T17:30:04", "2026-11-04", "2026-11-05",
+     207, "2026-11-04T17:30:04", "2026-11-04T17:34:17"),
+    (194, "2026-11-05T17:30:15", "2026-11-05", "2026-11-06",
+     208, "2026-11-05T17:30:15", "2026-11-05T17:36:20"),
+)
+
+# candidate id -> (eval id, close, pivot, initial_stop, adr_pct, tight_streak,
+#                  pullback_pct, prior_trend_pct, rs_return_12w_vs_spy)
+SG_CANDIDATES: dict[int, tuple] = {
+    15811: (192, 11.40999984741211, 11.949000358581543, 8.970000267028809,
+            5.270621989764364, 1, 0.52, 94.89, 1.1177427462780027),
+    15901: (193, 11.800000190734863, 11.949000358581543, 8.975000381469727,
+            5.263322736970535, 2, 0.0, 103.62, 1.1941060122593852),
+    15980: (194, 11.550000190734863, 11.949000358581543, 9.460000038146973,
+            5.259590449667274, 0, 2.12, 104.89, 1.0356564475700996),
+}
+
+SG_CRITERIA: dict[int, tuple[tuple[str, str, str, str | None, str | None], ...]] = {
+    15811: (
+        ('TT1_above_150_200', 'trend_template', 'pass', 'close=11.41 150MA=7.72 200MA=7.23', 'close > 150MA AND close > 200MA'),
+        ('TT2_150_above_200', 'trend_template', 'pass', '150MA=7.72 200MA=7.23', '150MA > 200MA'),
+        ('TT3_200_rising', 'trend_template', 'pass', '200MA now=7.23 vs 21bars ago=6.91', '200MA rising over 21 bars'),
+        ('TT4_50_above_150_200', 'trend_template', 'pass', '50MA=8.63 150MA=7.72 200MA=7.23', '50MA > 150MA AND 50MA > 200MA'),
+        ('TT5_above_50', 'trend_template', 'pass', 'close=11.41 50MA=8.63', 'close > 50MA'),
+        ('TT6_above_52w_low_30pct', 'trend_template', 'pass', '+142.8% above 52w low', '>= 30.0% above 52w low'),
+        ('TT7_within_52w_high_25pct', 'trend_template', 'pass', '-0.5% from 52w high', '<= 25.0% below 52w high'),
+        ('TT8_rs_rank', 'trend_template', 'pass', 'fallback, excess=+111.77% vs SPY 12w', 'outside universe; pass if excess >= +20%'),
+        ('prior_trend', 'vcp', 'pass', '94.9%', '>= 25.0% required'),
+        ('ma_stack_10_20_50', 'vcp', 'pass', '10MA=10.70 20MA=10.34 50MA=8.63', '10MA > 20MA > 50MA'),
+        ('ma_short_rising', 'vcp', 'pass', '10:True 20:True 50:True', 'all three short MAs rising over 5 bars'),
+        ('proximity_20ma', 'vcp', 'fail', '+10.32%', '|price - 20MA| <= 5.0% of 20MA'),
+        ('adr', 'vcp', 'pass', '5.27%', '>= 4.0% required for sufficient volatility'),
+        ('pullback', 'vcp', 'pass', '0.5%', '< 25.0% from consolidation high'),
+        ('tightness', 'vcp', 'fail', '1 day streak', '>= 2 consec. days with range <= 0.67 x ADR (3.53%)'),
+        ('vcp_volume_contraction', 'vcp', 'pass', 'cons:4,373,110 vs trend:5,883,923', 'consolidation avg volume < prior trend avg volume'),
+        ('orderliness', 'vcp', 'pass', 'max 2.68x, CV 0.46', 'max bar <= 3.0x median AND range CV <= 0.60'),
+        ('risk_feasibility', 'risk', 'pass', '12 sh, $35.75 risk', '>= 1 share fits in 0.5% of equity ($37.50)'),
+    ),
+    15901: (
+        ('TT1_above_150_200', 'trend_template', 'pass', 'close=11.80 150MA=7.77 200MA=7.25', 'close > 150MA AND close > 200MA'),
+        ('TT2_150_above_200', 'trend_template', 'pass', '150MA=7.77 200MA=7.25', '150MA > 200MA'),
+        ('TT3_200_rising', 'trend_template', 'pass', '200MA now=7.25 vs 21bars ago=6.92', '200MA rising over 21 bars'),
+        ('TT4_50_above_150_200', 'trend_template', 'pass', '50MA=8.73 150MA=7.77 200MA=7.25', '50MA > 150MA AND 50MA > 200MA'),
+        ('TT5_above_50', 'trend_template', 'pass', 'close=11.80 50MA=8.73', 'close > 50MA'),
+        ('TT6_above_52w_low_30pct', 'trend_template', 'pass', '+151.1% above 52w low', '>= 30.0% above 52w low'),
+        ('TT7_within_52w_high_25pct', 'trend_template', 'pass', '-0.0% from 52w high', '<= 25.0% below 52w high'),
+        ('TT8_rs_rank', 'trend_template', 'pass', 'fallback, excess=+119.41% vs SPY 12w', 'outside universe; pass if excess >= +20%'),
+        ('prior_trend', 'vcp', 'pass', '103.6%', '>= 25.0% required'),
+        ('ma_stack_10_20_50', 'vcp', 'pass', '10MA=10.86 20MA=10.48 50MA=8.73', '10MA > 20MA > 50MA'),
+        ('ma_short_rising', 'vcp', 'pass', '10:True 20:True 50:True', 'all three short MAs rising over 5 bars'),
+        ('proximity_20ma', 'vcp', 'fail', '+12.65%', '|price - 20MA| <= 5.0% of 20MA'),
+        ('adr', 'vcp', 'pass', '5.26%', '>= 4.0% required for sufficient volatility'),
+        ('pullback', 'vcp', 'pass', '0.0%', '< 25.0% from consolidation high'),
+        ('tightness', 'vcp', 'pass', '2 day streak', '>= 2 consec. days with range <= 0.67 x ADR (3.53%)'),
+        ('vcp_volume_contraction', 'vcp', 'pass', 'cons:4,397,585 vs trend:5,886,952', 'consolidation avg volume < prior trend avg volume'),
+        ('orderliness', 'vcp', 'pass', 'max 2.68x, CV 0.46', 'max bar <= 3.0x median AND range CV <= 0.60'),
+        ('risk_feasibility', 'risk', 'pass', '12 sh, $35.69 risk', '>= 1 share fits in 0.5% of equity ($37.50)'),
+    ),
+    15980: (
+        ('TT1_above_150_200', 'trend_template', 'pass', 'close=11.55 150MA=7.81 200MA=7.28', 'close > 150MA AND close > 200MA'),
+        ('TT2_150_above_200', 'trend_template', 'pass', '150MA=7.81 200MA=7.28', '150MA > 200MA'),
+        ('TT3_200_rising', 'trend_template', 'pass', '200MA now=7.28 vs 21bars ago=6.93', '200MA rising over 21 bars'),
+        ('TT4_50_above_150_200', 'trend_template', 'pass', '50MA=8.82 150MA=7.81 200MA=7.28', '50MA > 150MA AND 50MA > 200MA'),
+        ('TT5_above_50', 'trend_template', 'pass', 'close=11.55 50MA=8.82', 'close > 50MA'),
+        ('TT6_above_52w_low_30pct', 'trend_template', 'pass', '+145.7% above 52w low', '>= 30.0% above 52w low'),
+        ('TT7_within_52w_high_25pct', 'trend_template', 'pass', '-2.1% from 52w high', '<= 25.0% below 52w high'),
+        ('TT8_rs_rank', 'trend_template', 'pass', 'fallback, excess=+103.57% vs SPY 12w', 'outside universe; pass if excess >= +20%'),
+        ('prior_trend', 'vcp', 'pass', '104.9%', '>= 25.0% required'),
+        ('ma_stack_10_20_50', 'vcp', 'pass', '10MA=11.00 20MA=10.57 50MA=8.82', '10MA > 20MA > 50MA'),
+        ('ma_short_rising', 'vcp', 'pass', '10:True 20:True 50:True', 'all three short MAs rising over 5 bars'),
+        ('proximity_20ma', 'vcp', 'fail', '+9.23%', '|price - 20MA| <= 5.0% of 20MA'),
+        ('adr', 'vcp', 'pass', '5.26%', '>= 4.0% required for sufficient volatility'),
+        ('pullback', 'vcp', 'pass', '2.1%', '< 25.0% from consolidation high'),
+        ('tightness', 'vcp', 'fail', '0 day streak', '>= 2 consec. days with range <= 0.67 x ADR (3.52%)'),
+        ('vcp_volume_contraction', 'vcp', 'pass', 'cons:4,458,440 vs trend:5,851,485', 'consolidation avg volume < prior trend avg volume'),
+        ('orderliness', 'vcp', 'pass', 'max 2.68x, CV 0.46', 'max bar <= 3.0x median AND range CV <= 0.60'),
+        ('risk_feasibility', 'risk', 'pass', '15 sh, $37.34 risk', '>= 1 share fits in 0.5% of equity ($37.50)'),
+    ),
+}
+
+# The live `hypothesis_status_history`, rows 1-8 (history_id, hypothesis_id,
+# status, effective_from, effective_to, recorded_at, change_reason).  The
+# change_reason of row 7 is ABBREVIATED (233 chars live; not
+# derivation-bearing); every other value is verbatim.
+SG_LIVE_HISTORY: tuple[tuple, ...] = (
+    (1, 1, "active", "2026-04-25T00:00:00.000", None,
+     "2026-05-12T08:18:10.560", None),
+    (2, 2, "active", "2026-04-25T00:00:00.000", "2026-05-12T17:22:54.847",
+     "2026-05-12T08:18:10.560", None),
+    (3, 3, "active", "2026-04-25T00:00:00.000", "2026-06-04T07:18:45.126",
+     "2026-05-12T08:18:10.560", None),
+    (4, 4, "active", "2026-04-25T00:00:00.000", None,
+     "2026-05-12T08:18:10.560", None),
+    (5, 2, "paused", "2026-05-12T17:22:54.847", "2026-05-12T17:22:56.143",
+     "2026-05-12T17:22:54.847", "operator gate S4 (will revert)"),
+    (6, 2, "active", "2026-05-12T17:22:56.143", None,
+     "2026-05-12T17:22:56.143", "operator gate S4 revert to baseline"),
+    (7, 3, "closed-target-met", "2026-06-04T07:18:45.126", None,
+     "2026-06-04T07:18:45.126",
+     "n=10 (2x target 5); mean R -0.20; net -$79.02; win rate 20%. "
+     "(abbreviated in the fixture)"),
+    (8, 5, "active", "2026-06-09T00:00:00.000", None,
+     "2026-06-10T09:43:00.617", None),
+)
+
+
+def seed_sg_registry_as_live(conn: sqlite3.Connection) -> None:
+    """Make the registry and its history the live 2026-11-11 shape.
+
+    `ensure_schema` writes H3 `active` and history rows 1-5 (row 5 = H5)
+    stamped at apply time; live has H3 `closed-target-met`, H2's
+    active/paused/active cycle and H5 at row 8.  The migration-written rows
+    are held by 0041's no_delete + immutable guards, so this is the
+    guard-seam's kind 4 (fixture construction over migration-written rows,
+    reproducing the live shape).
+    """
+    from tests._22i_guard_seam import guards_dropped
+
+    with guards_dropped(conn, "trg_hsh_no_delete", "trg_hsh_immutable",
+                        "trg_hsh_no_replace"):
+        conn.execute("DELETE FROM hypothesis_status_history")
+        conn.executemany(
+            "INSERT INTO hypothesis_status_history (history_id, hypothesis_id,"
+            " status, effective_from, effective_to, recorded_at,"
+            " change_reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            SG_LIVE_HISTORY)
+    conn.execute(
+        "UPDATE hypothesis_registry SET status = 'closed-target-met', "
+        "status_changed_at = '2026-06-04T07:18:45.126' WHERE id = 3")
+    conn.execute(
+        "UPDATE hypothesis_registry SET status_changed_at = "
+        "'2026-05-12T17:22:56.143' WHERE id = 2")
+
+
+def build_sg_case(
+    conn: sqlite3.Connection,
+    *,
+    entry_intent: str = SG_BY_DESIGN_INTENT,
+    trade_origin: str = SG_WATCH_MANUAL_ORIGIN,
+    hypothesis_label: str | None = SG_BASELINE_LABEL,
+    candidate_id: int | None = SG_LAST_WORD_CANDIDATE_ID,
+    buckets: dict[int, str] | None = None,
+    fill_price: float = 11.95,
+    pipeline_complete: dict[int, bool] | None = None,
+    live_registry: bool = True,
+) -> dict[str, Any]:
+    """Trade 29's live world: three SG watch rows, its trade, fill and FEI row.
+
+    No `daily_recommendations` row exists for SG on 193 or 194 (live).  No
+    latch link exists for the fill's order (live).  ``buckets`` and
+    ``pipeline_complete`` are refusal-test knobs; the defaults are live.
+    """
+    buckets = dict(buckets or {})
+    pipeline_complete = dict(pipeline_complete or {})
+    for (run_id, run_ts, asof, action, pr_id, started,
+         finished) in SG_RUNS:
+        conn.execute(
+            "INSERT INTO evaluation_runs (id, run_ts, data_asof_date, "
+            "action_session_date, finviz_csv_path, tickers_evaluated, "
+            "aplus_count, watch_count, skip_count, excluded_count, "
+            "error_count) VALUES (?, ?, ?, ?, NULL, 85, 0, 16, 68, 1, 0)",
+            (run_id, run_ts, asof, action))
+        if pipeline_complete.get(run_id, True):
+            conn.execute(
+                "INSERT INTO pipeline_runs (id, started_ts, finished_ts, "
+                "trigger, data_asof_date, action_session_date, state, "
+                "lease_token, evaluation_run_id) VALUES "
+                "(?, ?, ?, 'scheduled', ?, ?, 'complete', ?, ?)",
+                (pr_id, started, finished, asof, action, f"lease-{pr_id}",
+                 run_id))
+    for cid, (run_id, close, pivot, stop, adr, tight, pullback, prior,
+              rs_ret) in SG_CANDIDATES.items():
+        conn.execute(
+            "INSERT INTO candidates (id, evaluation_run_id, ticker, bucket, "
+            "close, pivot, initial_stop, adr_pct, tight_streak, pullback_pct,"
+            " prior_trend_pct, rs_rank, rs_return_12w_vs_spy, rs_method, "
+            "pattern_tag, notes, sector, industry) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'fallback_spy', NULL,"
+            " NULL, 'Consumer Cyclical', 'Restaurants')",
+            (cid, run_id, SG_TICKER, buckets.get(cid, "watch"), close, pivot,
+             stop, adr, tight, pullback, prior, rs_ret))
+        conn.executemany(
+            "INSERT INTO candidate_criteria (candidate_id, criterion_name, "
+            "layer, result, value, rule) VALUES (?, ?, ?, ?, ?, ?)",
+            [(cid, *row) for row in SG_CRITERIA[cid]])
+    if live_registry:
+        seed_sg_registry_as_live(conn)
+    conn.execute(
+        "INSERT INTO trades (id, ticker, entry_date, entry_price, "
+        "initial_shares, initial_stop, current_stop, state, trade_origin, "
+        "pre_trade_locked_at, current_size, current_avg_cost, last_fill_at, "
+        "hypothesis_label, candidate_id, entry_intent, sector, industry) "
+        "VALUES (?, ?, ?, ?, 11, 8.98, 8.98, 'managing', ?, ?, 11.0, ?, ?, "
+        "?, ?, ?, 'Consumer Cyclical', 'Restaurants')",
+        (SG_TRADE_ID, SG_TICKER, SG_FILL_SESSION, fill_price, trade_origin,
+         SG_FILL_DATETIME, fill_price, SG_FILL_DATETIME, hypothesis_label,
+         candidate_id, entry_intent))
+    conn.execute(
+        "INSERT INTO fills (fill_id, trade_id, fill_datetime, action, "
+        "quantity, price, manual_entry_confidence, reconciliation_status, "
+        "fill_origin, schwab_source_value_json, operator_corrected_value_json,"
+        " auto_fill_audit_at) VALUES (?, ?, ?, 'entry', 11.0, ?, 'normal', "
+        "'unreconciled', 'schwab_auto_then_operator_corrected', ?, ?, "
+        "'2026-11-06T20:43:54.570250+00:00')",
+        (SG_FILL_ID, SG_TRADE_ID, SG_FILL_DATETIME, fill_price,
+         SG_LIVE_ENVELOPE, SG_LIVE_OPERATOR_CORRECTED))
+    _record_envelope_identity(conn, SG_FILL_ID, SG_LIVE_ENVELOPE)
+    return {
+        "trade_id": SG_TRADE_ID,
+        "fill_id": SG_FILL_ID,
+        "fire_candidate_id": SG_FIRE_CANDIDATE_ID,
+        "last_word_candidate_id": SG_LAST_WORD_CANDIDATE_ID,
+        "older_candidate_id": SG_OLDER_CANDIDATE_ID,
+        "fire_evaluation_run_id": 193,
+        "fire_pipeline_run_id": 207,
+    }
+
+
+def watch_fire_payload(
+    conn: sqlite3.Connection, *, fire_candidate_id: int = SG_FIRE_CANDIDATE_ID,
+    trade_id: int = SG_TRADE_ID, apply_trade_update: bool = True,
+    correction_kind: str = "watch_fire_relabel",
+    admission_tier: str = "last_fire",
+) -> dict[str, Any]:
+    """The kind-2 row's every column, from the PRODUCTION derivation helpers.
+
+    Built from ``derive_cohort_keys_for_fire`` (the one derivation), the
+    production snapshot helpers and the authoritative-fill resolver, so the
+    row is the emitter's shape rather than a hand-written one.  With
+    ``apply_trade_update`` the trade is first moved to the applied values
+    through the production writer, as the service does (the citation
+    trigger's kind-2 arm reads the trade at INSERT time).
+    """
+    from swing.data.repos.trades import update_cohort_provenance
+    from swing.trades import cohort_provenance_correction as cpc
+
+    trade = cpc._load_trade_or_refuse(conn, trade_id)
+    fill = cpc.resolve_authoritative_entry_fill(conn, trade_id)
+    cited = cpc.fetch_candidate_by_id(conn, fire_candidate_id)
+    run = cpc.get_evaluation_run_by_id(conn, cited.evaluation_run_id)
+    run_ts_parsed = cpc._require_naive_datetime(run.run_ts, what="run_ts")
+    keys = cpc.derive_cohort_keys_for_fire(
+        conn, candidate=cited.candidate, candidate_id=fire_candidate_id,
+        evaluation_run_id=int(cited.evaluation_run_id),
+        run_ts_parsed=run_ts_parsed)
+    pre = {
+        "trades.hypothesis_label": trade.hypothesis_label,
+        "trades.candidate_id": trade.candidate_id,
+        "trades.trade_origin": trade.trade_origin,
+    }
+    applied = {
+        "trades.hypothesis_label": keys.hypothesis_label,
+        "trades.candidate_id": fire_candidate_id,
+        "trades.trade_origin": trade.trade_origin,
+    }
+    if apply_trade_update:
+        update_cohort_provenance(
+            conn, trade_id=trade_id, hypothesis_label=keys.hypothesis_label,
+            candidate_id=fire_candidate_id, trade_origin=trade.trade_origin)
+    si = keys.status_interval
+    return {
+        "trade_id": trade_id,
+        "entry_fill_id": fill.fill_id,
+        "entry_fill_id_at_correction": fill.fill_id,
+        "entry_fill_snapshot_json": json.dumps(fill.snapshot(), sort_keys=True),
+        "cited_candidate_id": fire_candidate_id,
+        "cited_daily_recommendation_id": None,
+        "cited_evaluation_run_id": int(cited.evaluation_run_id),
+        "cited_hypothesis_id": keys.hypothesis_id,
+        "cited_hypothesis_status_history_id": si.history_id,
+        "cited_hypothesis_status_at_record": si.status,
+        "cited_pipeline_finished_ts_raw": keys.pipeline_finished_ts_raw,
+        "cited_run_ts_utc": cpc._to_utc_naive(run_ts_parsed).isoformat(),
+        "cited_status_window_upper_utc": keys.status_window_upper_utc,
+        "cited_pipeline_run_id": keys.pipeline_run_id,
+        "cited_pipeline_run_snapshot_json": json.dumps(
+            keys.pipeline_snapshot, sort_keys=True),
+        "cited_hypothesis_status_recorded_at": si.recorded_at_raw,
+        "cited_hypothesis_status_effective_from": si.effective_from_raw,
+        "cited_hypothesis_status_effective_to": si.effective_to_raw,
+        "cited_hypothesis_name_at_correction": keys.hypothesis_name,
+        "cited_candidate_action_session_date": str(run.action_session_date),
+        "cited_recommendation_action_session_date": None,
+        "entry_fill_session_date": SG_FILL_SESSION,
+        "cited_run_ts_raw": str(run.run_ts),
+        "cited_recommendation_snapshot_json": None,
+        "cited_candidate_snapshot_json": json.dumps(
+            cpc.candidate_provenance_snapshot(cited), sort_keys=True),
+        "derivation_rule_version": cpc.DERIVATION_RULE_VERSION,
+        "pre_value_json": json.dumps(pre, sort_keys=True),
+        "applied_value_json": json.dumps(applied, sort_keys=True),
+        "corrected_fields_json": json.dumps(
+            ["trades.hypothesis_label", "trades.candidate_id"]),
+        "applied_at": "2026-11-12T09:00:00",
+        "applied_by": "operator",
+        "correction_reason": "D104 fixture: the SG fire relabel",
+        "admission_tier": admission_tier,
+        "correction_kind": correction_kind,
     }

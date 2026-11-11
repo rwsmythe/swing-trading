@@ -82,11 +82,11 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_expected_schema_version_is_head() -> None:
-    assert EXPECTED_SCHEMA_VERSION == 41
+    assert EXPECTED_SCHEMA_VERSION == 42
 
 
 def test_migration_applies_and_stamps_version_head(conn) -> None:
-    assert _current_version(conn) == 41
+    assert _current_version(conn) == 42
 
 
 def test_table_and_both_indexes_exist_read_from_sqlite_master(conn) -> None:
@@ -138,10 +138,18 @@ def test_every_declared_column_is_present_and_notnull_as_designed(conn) -> None:
         # 'latch_ladder_tier2' row -- enforced by the citation trigger's
         # per-tier paired rule, not by column nullability.
         "cited_frozen_value_evidence_json",
+        # --- MADE NULLABLE BY MIGRATION 0042 (sg-label, F3 = A). A
+        # 'watch_fire_relabel' correction cites NO recommendation; the
+        # presence CHECK by kind keeps all three NOT NULL on every
+        # 'fill_unset_provenance' row, so kind 1's guarantee is a table CHECK
+        # now rather than column nullability.
+        "cited_daily_recommendation_id",
+        "cited_recommendation_action_session_date",
+        "cited_recommendation_snapshot_json",
     }
     for required in (
         "trade_id", "entry_fill_id_at_correction", "entry_fill_snapshot_json",
-        "cited_candidate_id", "cited_daily_recommendation_id",
+        "cited_candidate_id",
         "cited_evaluation_run_id", "cited_hypothesis_id",
         "cited_hypothesis_status_history_id",
         "cited_hypothesis_status_at_record", "cited_pipeline_finished_ts_raw",
@@ -151,11 +159,11 @@ def test_every_declared_column_is_present_and_notnull_as_designed(conn) -> None:
         "cited_hypothesis_status_effective_from",
         "cited_hypothesis_name_at_correction",
         "cited_candidate_action_session_date",
-        "cited_recommendation_action_session_date",
         "entry_fill_session_date", "cited_run_ts_raw",
-        "cited_recommendation_snapshot_json", "derivation_rule_version",
+        "derivation_rule_version",
         "pre_value_json", "applied_value_json", "corrected_fields_json",
         "applied_at", "applied_by", "correction_reason",
+        "correction_kind",   # 0042: NOT NULL DEFAULT 'fill_unset_provenance'
     ):
         assert info[required][1] == 1, f"{required} must be NOT NULL"
 
@@ -196,7 +204,7 @@ def test_rerunning_the_migration_is_a_clean_no_op(conn) -> None:
     ).fetchone()[0]
     run_migrations(conn)
     run_migrations(conn)
-    assert _current_version(conn) == 41
+    assert _current_version(conn) == 42
     after = conn.execute(
         "SELECT sql FROM sqlite_master WHERE name='provenance_corrections'",
     ).fetchone()[0]
