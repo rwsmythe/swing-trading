@@ -154,11 +154,20 @@ $RoleLaunch = @{
 # runs commands in, inherited by a self-launched successor via Start-Process,
 # and honored by the successor's own claude CLI (colors off, empty-commit-
 # message aborts) -- not set anywhere in config.
+#
+# CLAUDE_CODE_SESSION_ATTENDED + AI_AGENT + TRACEPARENT (CHARC merge-gate item 2,
+# 2026-11-11, from the Codex-lane SS-1 read of the Claude Code 2.1.322 binary):
+# written by Claude Code into every shell it runs a command in. A child claude
+# reads the attended flag at startup; codex reads the trace context. This list
+# and scripts/codex_cell.py SESSION_MARKERS are ONE roster in two spellings --
+# tests/scripts/test_codex_cell.py compares them by equality. Both are read off
+# one CLI build; re-read them at each Claude Code build change.
 $SessionMarkers = @(
     'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDECODE', 'CLAUDE_PID',
     'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN',
     'CLAUDE_CODE_BRIDGE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXECPATH',
-    'CLAUDE_EFFORT', 'NO_COLOR', 'GIT_EDITOR'
+    'CLAUDE_EFFORT', 'NO_COLOR', 'GIT_EDITOR',
+    'CLAUDE_CODE_SESSION_ATTENDED', 'AI_AGENT', 'TRACEPARENT'
 )
 
 # Short, quoting-safe directive prompts (no newlines, quotes, or semicolons --

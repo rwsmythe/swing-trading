@@ -1109,11 +1109,14 @@ def _launcher_session_markers() -> set[str]:
 
 def test_the_driver_scrubs_every_session_marker_the_launcher_scrubs() -> None:
     """Codex R3-2: the drift test between the two representations. The launcher's list is
-    the project's record of what makes a child claude inherit its parent's identity."""
+    the project's record of what makes a child claude inherit its parent's identity.
+    EQUALITY, not containment (CHARC merge-gate item 2, 20261111T221023Z): one roster,
+    two spellings, so a marker added to either list without the other fails here."""
     m = _load()
     markers = _launcher_session_markers()
     assert len(markers) >= 10
-    assert markers <= set(m.SESSION_MARKERS)
+    assert markers == set(m.SESSION_MARKERS)
+    assert len(m.SESSION_MARKERS) == len(set(m.SESSION_MARKERS))
 
 
 def test_the_reviewer_starts_as_its_own_session_with_no_role(

@@ -347,9 +347,10 @@ def build_review_command(*, model: str = CLAUDE_MODEL, effort: str = CLAUDE_EFFO
 # launcher's own list (scripts/start_directors.ps1 $SessionMarkers; a test reads both and
 # fails on drift); the roles are what the comms hooks read. Other settings pass through
 # (CLAUDE_CODE_GIT_BASH_PATH, which Claude Code needs on Windows, among them).
-# The last three are not on the launcher's list (SS-1-1): Claude Code writes them into
-# every shell it runs a command in (read from the CLI build of 2026-11-11, 2.1.322). A child
-# claude reads the attended flag at startup; codex reads the trace context.
+# The last three were added by SS-1-1 and then to the launcher (CHARC merge-gate item 2):
+# Claude Code writes them into every shell it runs a command in (read from the CLI build of
+# 2026-11-11, 2.1.322). A child claude reads the attended flag at startup; codex reads the
+# trace context. The two lists are compared by equality.
 SESSION_MARKERS = (
     "CLAUDE_CODE_CHILD_SESSION",
     "CLAUDE_CODE_SESSION_ID",
