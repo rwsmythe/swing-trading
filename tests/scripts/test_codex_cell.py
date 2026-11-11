@@ -1157,6 +1157,23 @@ def test_the_child_env_drops_every_marker_the_cli_writes_into_its_shells(
     assert rc == 0
 
 
+WINDOWS_TIMEOUT = r"C:\Windows\System32\timeout.exe"
+
+
+@pytest.mark.skipif(not Path(WINDOWS_TIMEOUT).exists(), reason="the Windows timeout command")
+def test_the_tool_set_never_runs_the_windows_timeout_command(monkeypatch) -> None:
+    """Codex R4-1: from a native Windows shell PATH resolves ``timeout`` to System32's, a
+    pause command that refuses the wrapper form (measured: "Invalid syntax", exit 1), so
+    the stability test failed there. The reviewer's ``timeout`` is Git Bash's GNU one."""
+    real_which = shutil.which
+
+    def which(name, *a, **k):
+        return WINDOWS_TIMEOUT if name == "timeout" else real_which(name, *a, **k)
+
+    monkeypatch.setattr(shutil, "which", which)
+    assert [t for t in _review_tool_set(sys.executable) if t[0] == WINDOWS_TIMEOUT] == []
+
+
 def _review_tool_set(py: str) -> list[list[str]]:
     """Each tool the reviewer's allowance admits, in the form a reviewer would run it here.
 
@@ -1178,9 +1195,20 @@ def _review_tool_set(py: str) -> list[list[str]]:
     for name, rest in (("grep", ["-rn", "VALUE", "."]), ("ls", ["-la"])):
         if shutil.which(name):
             tools.append([shutil.which(name), *rest])
-    if shutil.which("timeout"):
-        tools.append([shutil.which("timeout"), "60", py, "-c", "pass"])
+    timeout = _gnu_timeout()
+    if timeout:
+        tools.append([timeout, "60", py, "-c", "pass"])
     return tools
+
+
+def _gnu_timeout() -> str | None:
+    """The GNU ``timeout`` on PATH (the one the reviewer's Git Bash runs), or None; never
+    System32's pause command of the same name (Codex R4-1), which fails ``--version``."""
+    path = shutil.which("timeout")
+    if not path:
+        return None
+    probe = subprocess.run([path, "--version"], capture_output=True, text=True, errors="replace")
+    return path if probe.returncode == 0 and "GNU" in probe.stdout else None
 
 
 def test_the_review_env_keeps_the_ignored_manifest_stable_across_the_tool_set(tmp_path) -> None:
