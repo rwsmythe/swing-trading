@@ -77,9 +77,13 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
 
 > **This section decays fastest. Update on every meaningful change.**
 
-> **Archive companion (2026-05-18 Phase 12.5 #3 T-3.3 split — zero-yield):** This section inspected for pre-2026-05-13 entries during the Phase 12.5 #3 archive-split pass; ZERO entries qualified (all "Prior state" snapshots are dated 2026-05-17 or later). No content moved from this section; pointer retained for symmetry with the "Lessons captured" pointer below + audit-trail integrity. See [`docs/orchestrator-context-archive.md`](docs/orchestrator-context-archive.md) for archive companion structure.
+> **Archive companion:** superseded in-flight states move verbatim to [`docs/orchestrator-context-archive.md`](orchestrator-context-archive.md) (latest: §"Appended 2026-11-11").
 
-### Currently in-flight (2026-10-26): **D84 MERGED at `42d0365c` and CLOSED** (no migration). Next: the operator's push, then his Finviz widening config edit (RD writes watch-standard v2.5 that day), then the registered queue.
+### Currently in-flight (2026-11-11): **the Codex implementer-lane arc is DISPATCHED** (CHARC brief `e0d3ddd9`, operator-commissioned 2026-11-03; Stage 0 first, in `.worktrees/codex-lane`). The cap episode is closed; trade 29 SG's label correction waits on CHARC's mechanism ruling.
+
+- **Codex implementer lane (2026-11-11):** one `implementer-opus-xhigh` cell, Stage 0 (probed facts, a return report and no commit), then CHARC's plan-stage read, then the ports P1-P6. Locks: nothing under `swing/`; `scripts/role_mail.py`, the hooks and the launcher are not this arc's. Gate: Reviewer A (the WSL Codex chain, `strong`), Reviewer B mine, the merged-head suite, then the operator witness step by step.
+- **The cap (closed 2026-10-30):** the cap STAYS UNSET (RD ruling, operator-agreed, `be5464a3`): a cap is set only from a measured cost (the observe wall nearing 1,800 s). The hole closed at run 203 (110 detections on all 22 watch names; RD's v2.5 addendum `8a6cde5d`). CHARC holds D100 (a raise inside `step_guard` leaves no warnings entry) and D101 (no per-run detection-count health check).
+- **Trade 29 SG (2026-11-10, RD ruling, operator-concurred):** a legitimate H2 fire on eval 193 whose label the entry-form prefill stamped from the fill night (#30). The label becomes the fire's H2 label by a RECORDED correction; CHARC rules the mechanism, then I execute; RD witnesses H2 4 -> 5.
 
 - **D84, the capital soft-stop arc (risk is a flag, not a gate).**
   - Merged `--no-ff` at `42d0365c`. The merged head is green (15624 / 13 / 0, after one reaper-killed attempt). The nine research pins were filled at `54c5a299`, and CHARC called MAIN GREEN.
@@ -87,53 +91,14 @@ Full detail: `reference/Future Work/QuantEcon/2026-04-24-quant-econ-companion-tr
   - The plan 6.3 operator witness PASSED on scratch copies, recorded at `6994d32c` and `cea1b8f7`. CHARC DISCHARGED amendment 3 (a stubbed auto-fill). RD's VII.F boundary note is at `d0d9aaa8`: the first post-boundary run, 200 / 186, is quiet.
   - Record: `docs/superpowers/plans/2026-10-26-d84-soft-stop.exec-ledger.md`. Evidence: `~/swing-data/review-transcripts/d84-soft-stop/`.
   - The worktrees are removed; the branches `d84-exec` and `d84-plan` are KEPT. Main is pushed.
-- **Widening stage 1 and the cap (2026-10-28):** the cap of 15 (`9a8eeb09`) sorted watch by `rs_rank`, which is NULL on every live row, so `pattern_detect` raised on runs 201 and 202 (a two-night detection hole; RD's v2.5 at `a6134339`). Safe floor `fbcd4dcf` unset the cap. The ranked fix (by `rs_return_12w_vs_spy` desc, `dropped_tickers` in the #27 row) merged at `c84f21cd`, merged head 15631 / 13 / 0, pushed. **Open:** the operator restores the cap to 15 (and drops the safe-floor comment in `swing.config.toml`); CHARC registers D100 (a raise inside `step_guard` leaves no warnings entry) and D101 (no per-run detection-count health check).
+- **Widening stage 1 and the cap (2026-10-28):** the cap of 15 (`9a8eeb09`) sorted watch by `rs_rank`, which is NULL on every live row, so `pattern_detect` raised on runs 201 and 202. Safe floor `fbcd4dcf`; the ranked fix (by `rs_return_12w_vs_spy` desc, `dropped_tickers` in the #27 row) merged at `c84f21cd`, merged head 15631 / 13 / 0. **The cap-fix cell used the Agent tool's `isolation: worktree`, against C-b; never again.**
   - **Standing watches:**
     - the first real auto-filled entry on a flagged ticker (the live-emitter watch; record it in the exec ledger);
     - the first live risk-flagged A+ (RD).
   - **Registered from D84:** D96 (H4 operator-asserted), D97 (the entry form sizes on unfloored equity), D98 (A5-01 re-render staleness), D99 (on a LIVE card the correction affordance offers only `acted_manually`; a swing/web rider, triggered by the next latch-surface touch or D94 (c)). D91, D92 and D93 remain queued.
 - **The background-shell reaper** (CHARC `586ccd6a`): Claude Code stops an IDLE session's background shell under host memory pressure. It is off from the next launch. Until then, keep the session busy with a foreground until-loop wait while a background suite runs.
 
-### Prior state (2026-10-19): **D79 MERGED at `38c1d97d`** (no migration). Next, in order: a tests-only load-flake rider, then the maintenance rider, then the soft-stop arc.
-
-- **D79, the exit identity arc.**
-  - Merged `--no-ff` at `38c1d97d` (tree `500f69c9`), cleared by both CHARC and RD at `b6d4b82b`.
-  - Review outcome: **STOPPED-AND-ROUTED at round 7** under the bounded rule's branch 2. Seven counted A rounds; the uncounted self-sweep SS-1..SS-8; Reviewer B dispositioned (AL-13, AL-5 restated).
-  - Record: `docs/superpowers/plans/2026-10-19-d79-exit-identity.exec-ledger.md`, with a correction appended at `f7dd0794`. Evidence: `~/swing-data/review-transcripts/d79-exit-identity/`.
-  - Merged-head suite: 15497 passed, 1 failed. The failure is a timing flake under load, classified by mechanism; it is not green.
-  - The worktrees are removed; the branches `d79-exec` and `d79-plan` are KEPT because the ledgers cite them. Main is NOT pushed (the operator pushes).
-  - **Owed, RD's witness:** the first live exit after merge IS the witness. RD reads its fill row first. The operator's `swing web` must be restarted to serve D79.
-  - **Banked:** D85 and D86 (CHARC); execution-level identity (RD); RA-07, R5-06 and B-04 (orchestrator; trigger: the next `fills.py`/`state.py` carve-out, the signed-envelope arc, or a docs rider).
-- **Operator-approved, sequenced by the orchestrator:**
-  1. DONE: D87, the tests-only load-robustness rider. Merged at `501247a2`, converged at round 2. Its merged head was green at `-n 8`. A third D79 merged-head run at `-n 8` was also clean (15498 / 0).
-  2. DONE: the maintenance rider. Merged at `29679b05`, converged at round 1 (A clean; B one minor, B-01, a correction to L-1's reason).
-     - **CLOSED on run 195** (the first nightly after merge, ladder ON):
-       - D82 witnessed GREEN by RD (71 of 1546), with all seven research-health checks green.
-       - F8 (a): singles inside observe 216 -> 8.
-       - F8 (b): the observe wall 1,300 s -> 542 s, read as an UPPER BOUND. CHARC's ruling: the ladder only adds work, so no ladder-OFF night is owed.
-       - The cohort line: open_det=248, open_det_added=218.
-     - Record: `docs/superpowers/plans/2026-10-20-maintenance-rider-d82-d83.exec-ledger.md`. Addendum mail: `20261020T034646Z`.
-  3. DONE: D89, observe's per-step read memo. Operator-approved 2026-10-20.
-     - Merged at `717e4ebe`, converged at round 1; Reviewer B 0/0/0. The merged head is green (15518 / 0).
-     - Replay on run 195's copies: 7,139 archive reads down to 248, with rows byte-equal.
-     - **Owed at run 196, the first D89-only nightly:** RD reads W1 (the observe wall against 541,691 ms) and W5 (live `resolve_reads`, about 248), with the ladder state, BEFORE anyone quotes the projection. I post the addendum once the run exists.
-  4. DONE: D90, observe's ladder detach. Operator-approved by name 2026-10-20 ("Yes, D90 after D89 and before soft-stop arc").
-     - Branch `d90-detach` at `c0c92de7`; converged at A round 1. B-01 (major) was accepted by RD as a limitation; B-02 and B-03 are fixed.
-     - CLEARED by CHARC (`20261020T092202Z`, tree `e1c971bb`) and RD (`20261020T092235Z`), FOR EXECUTION AFTER run 196 exists and RD has read D89's W1/W5.
-     - A code or test change to main or the branch before then re-opens the clearance; docs-only is fine.
-     - **MERGED at `baac5c20`** (the merged head is green, 15525 / 0). RD's VII.F boundary note is at `d99053dd` (the boundary is run 197).
-     - **CLOSED on run 197:**
-       - 0 Schwab calls inside observe, against 241;
-       - observe wall 142,234 -> 42,758 ms;
-       - W0 met (33 pricehistory calls outside observe; fetch_window 240);
-       - all 6,835 rows are yfinance.
-     - Across runs 194 -> 197, the observe step went 1,300 s -> 43 s and the night 25 min -> 3 min.
-  5. **HOLD LIFTED, 2026-10-25.** The operator confirmed it to the orchestrator directly, after CHARC's relay of "Hold is lifted, proceed". The order, in his choices:
-     - (i) **D94 (a)+(b) first:** the web-layer rider (the prompt gate on cancel and fill rows, plus the ledger-keyed cancel affordance). No schema. D94 (c), the broker-history tier, is a schema change and is not in it.
-     - (ii) **Then the soft-stop arc (D84):** brainstorm, writing-plans and the plan-stage director review, on CHARC's dispatch `20261025T164200Z` (F1-F6) and RD's population and cohort items. It **STOPS FOR THE OPERATOR BEFORE ANY EXECUTING DISPATCH**; his choice was "Stop before executing", so it does not run end to end. The widening rider is an operator config edit the night after D84 merges.
-     - (iii) **Registered for after D84:** D91, D92 and D93.
-     - Registered for after D84: D91 (stuck detections; RD semantics), D92 (range reads merging two adjustment bases on 55 tickers), D93 (zero-price bars pass the archive barriers).
-- **Plan cells run out of context:** two writing-plans cells (opus-xhigh) passed 400K reading the whole comms record. Brief a plan cell with a NARROW reading list, and expect a continuation cell.
+### Prior state (2026-10-19): D79 MERGED at `38c1d97d` -- MOVED verbatim to the archive companion §"Appended 2026-11-11" at the size-trigger trim.
 
 ### Prior state: PHASE 22 ACTIVE — **22-F MERGED 2026-09-26 at `58368c86` (code-only, schema v41 unchanged); the `d4f2cbed` grant is SPENT; the next arc is the operator's to commission**
 
@@ -305,6 +270,8 @@ Memory: `feedback_dispatch_model_effort_recommendation`.
 
 **Cell selection (rubric):** select by TASK (reasoning-density / scope / leverage / risk), NOT by phase. Floor `sonnet-med`, ceiling `opus-max`; **no `low`/`haiku` implementer cells** (even mechanical implementer work carries the TDD+Codex+return load; this codebase's gotcha density makes a too-weak implementer net-negative — rework > savings; trivial-enough-for-`low` work is done inline, not dispatched). `opus-max` = break-glass irreversible / measurement-chain.
 
+**Two implementer lanes, one rule: the reviewer is the OTHER model from the implementer** (operator-commissioned 2026-11-03; CHARC; the Codex-lane arc brief `e0d3ddd9`; canonical text in the recipe §3/§2A once that arc lands). A Claude cell's Reviewer A is the Codex reviewer. A Codex cell (`codex exec` processes run by `scripts/codex_cell.py`) gets a Claude pass as its Reviewer A, which I run between its turns (`codex_cell.py review`); a Codex cell never runs the staged Codex invocation on its own diff. The Codex lane takes WELL-SPECIFIED builds only (interfaces, algorithms and tests fixed by the brief; never a design package or a frozen-interface touch). TIEBREAK: read both weekly usage readouts and send the build to the lane with the lower `pace`. Until the arc merges and its witness passes, the Codex lane does not exist here.
+
 **Live-pickup:** a NEW cell registers at a turn-boundary registry rescan (NOT the same turn it's written; a full restart is not strictly required but guarantees a reload). **Verifying a new cell:** config-correctness (frontmatter, tracked) + a smoke-spawn (loads + reads the recipe + acts + returns) — NOT an effort readout (impossible; effort is not runtime-observable).
 
 ### Triage of return reports
@@ -438,7 +405,8 @@ These have caused real problems; resist the impulse:
      - **At or past ~400K:**
        - dispatch nothing new;
        - if a cell is in flight (`cell_depth.py --live 2`), HOLD until it returns and is QA'd and committed;
-       - then roll by the four acts: commit the handoff, announce, stop the Monitor, launch fresh.
+       - then roll by the THREE acts (harness-architecture §6, 2026-11-04): (1) overwrite and pathspec-commit the state pointer, (2) announce and stop draining, (3) LAST, launch the successor (DryRun first). A seat that armed a Monitor stops it before act 2.
+       - **The precondition covers ANY background job of my own,** not just a cell: a process spawned from my pane dies with it. At the cap with a job running, wait for its exit line and record it, then roll; near the cap, start no long job I cannot see finish.
      - **What the miss cost:** this generation never ran the gauge. It peaked at 965K and was auto-compacted.
 - **Bug-fix investigation that tests plausible mechanisms instead of operator's actual reproduction.** Bug 2 (trade entry form vanishes mid-typing, 2026-04-25) demonstrated this failure mode: implementer interpreted operator's ambiguous symptom report ("when I adjust the price") as form submission with stop≥entry; built TestClient probe of POST /trades/entry with stop=entry; got 500 + bare-div response that gets hoisted out of `<tbody>` by HTML parser; declared mechanism identified; built fix for that path. Adversarial review approved because the fix was internally correct. Operator manual verification revealed the actual mechanism was different (sizing-hint span hx-target inheritance from parent form). First fix `04ef355→20d2cab` was correct for ITS mechanism but wasn't operator's bug; required follow-up `2a167d1` for the actual cause. **Pattern to avoid:** treating implementer's interpretation of operator's symptom as ground truth. For UI bugs especially: TestClient confirms server-side behavior but doesn't verify the bug fires through the path the operator is hitting. **Mitigation:** see §"Operating processes" §"Bug-fix briefs and operator-confirmation gate" — INVESTIGATION-FIRST bug-fix briefs must include an operator-confirmation gate between investigation and fix.
 

@@ -927,3 +927,49 @@ numeric coincidence and were re-run text-anchored.
 **Trading reality, unchanged by any of this: the admitting gate stays open — 131 post-barrier candidates, ZERO A+.** Open trades 23 CADL (partial_exited), 24 RHI, 25 OII, 26 NRIX, 28 PBF. Real money. The four named-pending rows (19 FTRE, 24 RHI, 25 OII, 28 PBF) carry into the October read byte-identical across the migration, per RD's own W3 read.
 
 *(Rewritten 2026-09-10 on the operator's word. The section it replaces described 22-A as PAUSED mid-flight at `22-a-exec` @ `403ea9ff`, with the live DB "UNTOUCHED at v36 — migration `0037` is UNAPPLIED" — every load-bearing fact false, and by the time it was rewritten **the branch and worktree it named had been deleted an hour earlier**. That section already carried TWO prior generations' corrections saying a section-of-record is where a stale claim does the most damage, and it went stale again underneath both of them. The lesson is not "be careful": it is that this section decays BY DEFAULT, so its upkeep belongs in the close-of-sitting ritual and not to whoever next happens to notice.)*
+
+## Appended 2026-11-11 — §"Currently in-flight work" prior state as of 2026-10-19 (D79), verbatim
+
+Moved at the 2026-11-11 size-trigger trim of `docs/orchestrator-context.md` (122K over its 120K cap).
+
+### Prior state (2026-10-19): **D79 MERGED at `38c1d97d`** (no migration). Next, in order: a tests-only load-flake rider, then the maintenance rider, then the soft-stop arc.
+
+- **D79, the exit identity arc.**
+  - Merged `--no-ff` at `38c1d97d` (tree `500f69c9`), cleared by both CHARC and RD at `b6d4b82b`.
+  - Review outcome: **STOPPED-AND-ROUTED at round 7** under the bounded rule's branch 2. Seven counted A rounds; the uncounted self-sweep SS-1..SS-8; Reviewer B dispositioned (AL-13, AL-5 restated).
+  - Record: `docs/superpowers/plans/2026-10-19-d79-exit-identity.exec-ledger.md`, with a correction appended at `f7dd0794`. Evidence: `~/swing-data/review-transcripts/d79-exit-identity/`.
+  - Merged-head suite: 15497 passed, 1 failed. The failure is a timing flake under load, classified by mechanism; it is not green.
+  - The worktrees are removed; the branches `d79-exec` and `d79-plan` are KEPT because the ledgers cite them. Main is NOT pushed (the operator pushes).
+  - **Owed, RD's witness:** the first live exit after merge IS the witness. RD reads its fill row first. The operator's `swing web` must be restarted to serve D79.
+  - **Banked:** D85 and D86 (CHARC); execution-level identity (RD); RA-07, R5-06 and B-04 (orchestrator; trigger: the next `fills.py`/`state.py` carve-out, the signed-envelope arc, or a docs rider).
+- **Operator-approved, sequenced by the orchestrator:**
+  1. DONE: D87, the tests-only load-robustness rider. Merged at `501247a2`, converged at round 2. Its merged head was green at `-n 8`. A third D79 merged-head run at `-n 8` was also clean (15498 / 0).
+  2. DONE: the maintenance rider. Merged at `29679b05`, converged at round 1 (A clean; B one minor, B-01, a correction to L-1's reason).
+     - **CLOSED on run 195** (the first nightly after merge, ladder ON):
+       - D82 witnessed GREEN by RD (71 of 1546), with all seven research-health checks green.
+       - F8 (a): singles inside observe 216 -> 8.
+       - F8 (b): the observe wall 1,300 s -> 542 s, read as an UPPER BOUND. CHARC's ruling: the ladder only adds work, so no ladder-OFF night is owed.
+       - The cohort line: open_det=248, open_det_added=218.
+     - Record: `docs/superpowers/plans/2026-10-20-maintenance-rider-d82-d83.exec-ledger.md`. Addendum mail: `20261020T034646Z`.
+  3. DONE: D89, observe's per-step read memo. Operator-approved 2026-10-20.
+     - Merged at `717e4ebe`, converged at round 1; Reviewer B 0/0/0. The merged head is green (15518 / 0).
+     - Replay on run 195's copies: 7,139 archive reads down to 248, with rows byte-equal.
+     - **Owed at run 196, the first D89-only nightly:** RD reads W1 (the observe wall against 541,691 ms) and W5 (live `resolve_reads`, about 248), with the ladder state, BEFORE anyone quotes the projection. I post the addendum once the run exists.
+  4. DONE: D90, observe's ladder detach. Operator-approved by name 2026-10-20 ("Yes, D90 after D89 and before soft-stop arc").
+     - Branch `d90-detach` at `c0c92de7`; converged at A round 1. B-01 (major) was accepted by RD as a limitation; B-02 and B-03 are fixed.
+     - CLEARED by CHARC (`20261020T092202Z`, tree `e1c971bb`) and RD (`20261020T092235Z`), FOR EXECUTION AFTER run 196 exists and RD has read D89's W1/W5.
+     - A code or test change to main or the branch before then re-opens the clearance; docs-only is fine.
+     - **MERGED at `baac5c20`** (the merged head is green, 15525 / 0). RD's VII.F boundary note is at `d99053dd` (the boundary is run 197).
+     - **CLOSED on run 197:**
+       - 0 Schwab calls inside observe, against 241;
+       - observe wall 142,234 -> 42,758 ms;
+       - W0 met (33 pricehistory calls outside observe; fetch_window 240);
+       - all 6,835 rows are yfinance.
+     - Across runs 194 -> 197, the observe step went 1,300 s -> 43 s and the night 25 min -> 3 min.
+  5. **HOLD LIFTED, 2026-10-25.** The operator confirmed it to the orchestrator directly, after CHARC's relay of "Hold is lifted, proceed". The order, in his choices:
+     - (i) **D94 (a)+(b) first:** the web-layer rider (the prompt gate on cancel and fill rows, plus the ledger-keyed cancel affordance). No schema. D94 (c), the broker-history tier, is a schema change and is not in it.
+     - (ii) **Then the soft-stop arc (D84):** brainstorm, writing-plans and the plan-stage director review, on CHARC's dispatch `20261025T164200Z` (F1-F6) and RD's population and cohort items. It **STOPS FOR THE OPERATOR BEFORE ANY EXECUTING DISPATCH**; his choice was "Stop before executing", so it does not run end to end. The widening rider is an operator config edit the night after D84 merges.
+     - (iii) **Registered for after D84:** D91, D92 and D93.
+     - Registered for after D84: D91 (stuck detections; RD semantics), D92 (range reads merging two adjustment bases on 55 tickers), D93 (zero-price bars pass the archive barriers).
+- **Plan cells run out of context:** two writing-plans cells (opus-xhigh) passed 400K reading the whole comms record. Brief a plan cell with a NARROW reading list, and expect a continuation cell.
+
