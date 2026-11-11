@@ -474,6 +474,14 @@ turn in a git worktree, resumed by session id (`codex exec resume <id>`); the dr
     sandbox for `claude -p` is BANKED (owner CHARC); its trigger is the first dispatch
     where the reviewer needs a non-repo write, or the next lane arc, and its first step is
     a probe of what this Claude Code build supports.
+11. **Declared limitation: `executed_ok` counts any `succeeded in` line, including a
+    command's printed output** (CHARC merge-gate ruling 20261111T221023Z, item 3). In
+    practice it is subsumed by the identity witness, which already requires a command that
+    ran and printed the driver's user as a whole line, so a turn in which no command ran
+    fails `identity_ok` whatever `succeeded_in` reads; the residual (the identity command
+    ran, every other command failed, and one printed a matching line) is a turn the return
+    file and the dispatcher's QA read. Banked for the next `codex_cell.py` touch: count
+    only a `succeeded in` line that closes an exec block.
 
 ## Codex is replaceable
 
