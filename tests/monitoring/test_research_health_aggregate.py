@@ -113,12 +113,12 @@ def test_all_green_overall_green(tmp_path: Path) -> None:
     exports_root = _fresh_exports_root(tmp_path)
     status = compute_research_health(conn, exports_root=exports_root, now=_NOW)
     assert status.overall == "green"
-    assert len(status.checks) == 7
+    assert len(status.checks) == 8
     keys = {c.key for c in status.checks}
     assert keys == {
         "temporal_log_finiteness", "excluded_reason_breakdown", "coverage_gaps",
         "structural_integrity", "drumbeat_liveness", "candidate_completeness",
-        "fetch_transport_health",
+        "fetch_transport_health", "per_run_detections",
     }
 
 

@@ -1,6 +1,6 @@
 """Research data-collection-health probe (Phase 18 Arc 18-D, SCRIPT-FIRST).
 
-Read-only roll-up of the 7 research data-collection-integrity checks in one
+Read-only roll-up of the 8 research data-collection-integrity checks in one
 glance (the integrity SUPERSET of scripts/weekly_glance.py). Mirrors
 scripts/tool_health.py: opens its OWN mode=ro connection, ASCII output, a --json
 machine surface. On every SUCCESSFUL run (a readable DB) it ALSO writes the
