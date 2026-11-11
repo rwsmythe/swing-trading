@@ -212,7 +212,7 @@ CHARC on RD's 20261111T183327Z. R1 and E4 stand as ruled; no dissent. The one fo
 - D86's verbatim-ticker clause stays BANKED on the D86 row (no test in this arc shows it bites).
 - The H2 read rule, now FOUR lines (E4): owner RD. It lands in the watch-standard at the merge as docs-only text, read from section 0.2.
 - The H2 classifier and its four-row test: BANKED to the FIRST reader change that implements the partition. RD owns the semantics and CHARC the form, and trade 29 post-correction is the line-1 row (CHARC `20261111T183404Z`).
-- An H2-labelled trade with `candidate_id IS NULL` meets none of the four lines. It is FLAGGED to RD, with no disposition yet.
+- An H2-labelled trade with `candidate_id IS NULL` meets none of the four lines. NON-BLOCKING, and BANKED to RD together with the H2 classifier (the orchestrator routes it). It is out of this arc, like the classifier.
 
 ## Round 0 -- the census (as routed at `bafddb6a`; superseded where the fold record says so)
 
@@ -284,12 +284,12 @@ KEPT text (the census of what the plan carries forward, mechanic + surface): the
 
 Depth is filled by the orchestrator from `scripts/cell_depth.py --agent <id>`; a cell never self-estimates it.
 
-| Round | Kind | Tier / banner | `^ERROR` | footer | verdict token | crit/maj/min (reviewer) | task-bearing | NEW / REOPENED | reverts | tokens used | depth (orchestrator fills) |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 0 | premise + fork census, NO Codex (`bafddb6a`) | -- | -- | -- | -- | -- | 10 forks routed (F0-F9) | -- | -- | 0 | |
-| 0-fold | rulings folded, NO Codex (continuation cell, `08ee3b57`) | -- | -- | -- | -- | -- | 0 (E1-E4 declared; E3 unsettled) | -- | -- | 0 | 255K (orchestrator, at the fold-ruling relay) |
-| 0-fold-2 | fold rulings folded (E1-E3, R1, E4, the classifier lock), NO Codex | -- | -- | -- | -- | -- | 0 | -- | -- | 0 | |
-| 1 | Codex plan review: a stdin bundle (plan `51a323e3`, the ledger cut, the brief), cwd = worktree, read-only | `fast`: `gpt-6-luna` / `medium` (equal to the profile file) | 0 | present | `NEW_CRITICAL_MAJOR_FOUND` (x2, one distinct; the other token 0) | 0 / 2 / 0 | 2 (R1-01 accepted; R1-02 contested, so it counts fail-safe) | 2 NEW / 0 REOPENED | 0 | 37,032 | |
+| Round | Kind | Tier / banner | `^ERROR` | footer | verdict token | repo reads (6th check; `^exec$` count, 0 = WEAK) | crit/maj/min (reviewer) | task-bearing | NEW / REOPENED | reverts | tokens used | depth (orchestrator fills) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | premise + fork census, NO Codex (`bafddb6a`) | -- | -- | -- | -- | -- | -- | 10 forks routed (F0-F9) | -- | -- | 0 | |
+| 0-fold | rulings folded, NO Codex (continuation cell, `08ee3b57`) | -- | -- | -- | -- | -- | -- | 0 (E1-E4 declared; E3 unsettled) | -- | -- | 0 | 255K (orchestrator, at the fold-ruling relay) |
+| 0-fold-2 | fold rulings folded (E1-E3, R1, E4, the classifier lock), NO Codex | -- | -- | -- | -- | -- | -- | 0 | -- | -- | 0 | |
+| 1 | Codex plan review: a stdin bundle (plan `51a323e3`, the ledger cut, the brief), cwd = worktree, read-only | `fast`: `gpt-6-luna` / `medium` (equal to the profile file) | 0 | present | `NEW_CRITICAL_MAJOR_FOUND` (x2, one distinct; the other token 0) | 0, WEAK (counts: the five assertions pass) | 0 / 2 / 0 | 2 (R1-01 accepted; R1-02 contested, so it counts fail-safe) | 2 NEW / 0 REOPENED | 0 | 37,032 | 313K (orchestrator, at the round-1 gate) |
 
 ## Round 1
 
