@@ -11,7 +11,9 @@ Codex-lane arc, P1). Edits from the template, each from a CHARC plan-stage rulin
   without them falls back to the global model, effort and ELEVATED sandbox (stage0 4e);
 - the in-turn identity witness (D-a): the driver appends a required first act to every
   turn's prompt and the turn FAILS unless the transcript carries `sandbox-user: <driver
-  user>` and never `CodexSandboxOffline`. The banner cannot see the windows.sandbox mode.
+  user>` and never the elevated sandbox's account (`ELEVATED_SANDBOX_USER`, which this file
+  and the driver build from two parts, CHARC N4). The banner cannot see the windows.sandbox
+  mode.
 
 No network and no real codex process: `_run_to_file` is replaced by a fake that writes a
 canned transcript, and CODEX_HOME points at an empty tmp dir so no real session is read.
@@ -32,6 +34,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "codex_cell.py"
+# The elevated sandbox's account, built from two parts (CHARC N4, 2026-11-11): the witness
+# checks the WHOLE transcript, so a lane source file that spelled it would fail any Codex
+# turn that printed that file -- a lane that could not work on its own driver.
+_ELEVATED = "CodexSandbox" + "Offline"
 
 
 def _load():
@@ -292,7 +298,7 @@ class Commands(unittest.TestCase):
 
 
 # ------------------------------------------------------- the identity witness (D-a) --
-ELEVATED_FALLBACK_4E = _turn_transcript("sandbox-user: CodexSandboxOffline")
+ELEVATED_FALLBACK_4E = _turn_transcript("sandbox-user: " + _ELEVATED)
 
 
 def test_identity_witness_accepts_the_unelevated_user() -> None:
@@ -327,7 +333,7 @@ def test_identity_witness_absence_of_the_line_fails() -> None:
 
 def test_identity_witness_a_right_line_beside_the_marker_still_fails() -> None:
     m = _load()
-    text = _turn_transcript("sandbox-user: rwsmy") + "note: CodexSandboxOffline\n"
+    text = _turn_transcript("sandbox-user: rwsmy") + f"note: {_ELEVATED}\n"
     w = m.identity_witness(text, "rwsmy")
     assert w["identity_line_present"] is True
     assert w["identity_ok"] is False
@@ -337,6 +343,16 @@ def test_identity_witness_needs_the_whole_line() -> None:
     m = _load()
     for out in ("sandbox-user: rwsmy2", "  sandbox-user: rwsmy", "xsandbox-user: rwsmy"):
         assert m.identity_witness(_turn_transcript(out), "rwsmy")["identity_ok"] is False, out
+
+
+def test_no_lane_source_spells_the_elevated_account() -> None:
+    """CHARC N4: the driver and this test file build the elevated account's name from two
+    parts, so a Codex turn that prints either file does not fail its own witness. The
+    driver's constant still equals the whole name, so the transcript check is unchanged."""
+    m = _load()
+    assert m.ELEVATED_SANDBOX_USER == _ELEVATED
+    for path in (SCRIPT, Path(__file__)):
+        assert _ELEVATED not in path.read_text(encoding="utf-8"), path
 
 
 def _run_turn(m, tmp_path, monkeypatch, capsys, transcript: str, session: str | None = None):
@@ -403,7 +419,7 @@ def test_every_turn_prompt_carries_the_witness_act(tmp_path, monkeypatch, capsys
     stdin = seen["stdin"].decode("utf-8")
     assert stdin.startswith("Do the task.\n")
     assert '"sandbox-user: " + [Environment]::UserName' in stdin
-    assert "CodexSandboxOffline" not in stdin
+    assert _ELEVATED not in stdin
     assert m.identity_witness(stdin, me)["identity_line_present"] is False
     assert ("resume" in seen["cmd"]) is bool(session)
 

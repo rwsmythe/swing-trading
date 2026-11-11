@@ -21,8 +21,9 @@ This script pins the three operations so no seat improvises the flags:
     not in the banner, so this identity line is the only in-turn witness that the
     turn ran unelevated: the turn FAILS (``identity_ok`` false) unless the
     transcript carries the whole line ``sandbox-user: <the driver's user>`` and
-    nowhere carries ``CodexSandboxOffline`` (the elevated sandbox's account). A
-    brief that itself quotes that account name fails its turn: fail-safe.
+    nowhere carries the elevated sandbox's account (``ELEVATED_SANDBOX_USER``). A
+    brief that itself quotes that account name fails its turn: fail-safe. This
+    source builds the name from two parts, so a turn that prints it does not.
     The transcript and the ``-o`` return file land in the evidence folder; the
     banner assertions (model, effort, sandbox line, session id), the anchored
     ``^ERROR`` lines, the ``tokens used`` footer, the context depth of record
@@ -83,7 +84,9 @@ CELL_TEST_COMMAND = (
 )
 # The in-turn identity witness (CHARC D-a).
 IDENTITY_PREFIX = "sandbox-user: "
-ELEVATED_SANDBOX_USER = "CodexSandboxOffline"
+# Built from two parts (CHARC N4): the check is transcript-wide, so a literal here would
+# fail any Codex turn that printed this file.
+ELEVATED_SANDBOX_USER = "CodexSandbox" + "Offline"
 
 CLAUDE_MODEL = "opus"
 CLAUDE_MODEL_PREFIX = "claude-opus"
