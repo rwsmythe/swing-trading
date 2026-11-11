@@ -18,12 +18,15 @@ are replaced, and the credentials are a tmp file holding a sentinel.
 from __future__ import annotations
 
 import datetime as dt
+import http.client
 import importlib.util
 import io
 import json
 import sys
 import unittest
 import urllib.error
+import urllib.request
+import urllib.response
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -116,15 +119,19 @@ class _Resp(io.BytesIO):
 
 
 def _run_claude(tmp_path, monkeypatch, capsys, behaviour):
-    """Run usage_claude.main with urlopen replaced; return (rc, stdout+stderr, requests)."""
+    """Run usage_claude.main with its opener replaced; return (rc, stdout+stderr, requests).
+
+    The readout sends the token ONLY through ``build_opener()`` (Codex R1-5), so that is the
+    seam replaced here; no socket is opened."""
     mod = _load("usage_claude")
     seen: list = []
 
-    def fake_urlopen(req, timeout):
-        seen.append(req)
-        return behaviour(req)
+    class _FakeOpener:
+        def open(self, req, timeout):
+            seen.append(req)
+            return behaviour(req)
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(mod, "build_opener", lambda *handlers: _FakeOpener())
     rc = mod.main(["--credentials", str(_credentials(tmp_path)), "--timeout", "1"])
     cap = capsys.readouterr()
     return rc, cap.out + cap.err, seen
@@ -153,7 +160,50 @@ def test_the_token_goes_only_to_the_vendor_host_over_tls(tmp_path, monkeypatch, 
     assert len(seen) == 1
     assert seen[0].full_url == "https://api.anthropic.com/api/oauth/usage"
     assert seen[0].get_header("Authorization") == "Bearer " + SENTINEL
+    # Unredirected: urllib never copies it onto a redirected request (R1-5, second belt).
+    assert "Authorization" not in seen[0].headers
     assert json.loads(out)["lane"] == "claude"
+
+
+class _RedirectingHTTPS(urllib.request.HTTPSHandler):
+    """An in-process HTTPS transport (no socket): every URL but ``target`` answers 302 to
+    ``target``; each request opened is recorded with the Authorization it carried."""
+
+    def __init__(self, target: str) -> None:
+        super().__init__()
+        self.target = target
+        self.opened: list[tuple[str, str | None]] = []
+
+    def https_open(self, req):
+        self.opened.append((req.full_url, req.get_header("Authorization")))
+        hdrs = http.client.HTTPMessage()
+        hdrs["Location"] = self.target
+        code = 200 if req.full_url == self.target else 302
+        resp = urllib.response.addinfourl(io.BytesIO(b"{}"), hdrs, req.full_url, code)
+        resp.msg = "OK" if code == 200 else "Found"
+        return resp
+
+
+def test_a_redirect_is_refused_and_the_token_is_never_resent(tmp_path):
+    """Codex R1-5: urllib's redirect handler copies ordinary headers to the redirected
+    request. The positive control shows this transport reproduces the leak with a plain
+    opener; the readout's own opener refuses the redirect and opens nothing else."""
+    mod = _load("usage_claude")
+    other = "https://other.invalid/usage"
+    control = _RedirectingHTTPS(other)
+    req = urllib.request.Request(mod.USAGE_URL, headers={"Authorization": "Bearer " + SENTINEL})
+    urllib.request.build_opener(control).open(req, timeout=1).close()
+    assert control.opened[-1] == (other, "Bearer " + SENTINEL)
+
+    transport = _RedirectingHTTPS(other)
+    try:
+        mod.fetch(SENTINEL, 1, opener=mod.build_opener(transport))
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 302
+        assert SENTINEL not in str(exc)
+    else:
+        raise AssertionError("a redirect was followed")
+    assert [url for url, _ in transport.opened] == [mod.USAGE_URL]
 
 
 def test_the_token_is_never_printed_on_any_path(tmp_path, monkeypatch, capsys):

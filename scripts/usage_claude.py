@@ -11,7 +11,8 @@ Claude Code stores in ``~/.claude/.credentials.json``. Prints one JSON object::
 ``pace`` is the projected end-of-window utilization as a multiple of the
 allotment (see ``scripts/usage_codex.py``; the same formula, so the two lanes
 compare directly). The token is read, sent once over TLS to the vendor's own
-host, and never printed. An agent session runs this ONLY under the standing
+host (a redirect is refused, never followed), and never printed. An agent
+session runs this ONLY under the standing
 project permission rule the operator granted by commissioning the Codex-lane
 arc on 2026-11-03 (re-confirmed 2026-11-11), recorded as ``_comment_usage``
 beside the exact allow rule in ``.claude/settings.json``; any other use of the
@@ -79,20 +80,40 @@ def parse_usage(body: dict[str, Any], now_epoch: float) -> dict[str, Any]:
     return out
 
 
-def fetch(credentials: pathlib.Path, timeout: float) -> dict[str, Any]:
-    """GET the usage endpoint with the stored bearer token; return the JSON body."""
-    cred = json.loads(credentials.read_text("utf-8"))
-    token = cred["claudeAiOauth"]["accessToken"]
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect (Codex R1-5): urllib copies ordinary headers onto a
+    redirected request, so following one could send the token to another host or over
+    plain HTTP. A 3xx is an error reading, never a second request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, "redirect refused: the token goes only to USAGE_URL", headers, fp
+        )
+
+
+def build_opener(*handlers: urllib.request.BaseHandler) -> urllib.request.OpenerDirector:
+    """The ONLY opener the token is sent through: redirects are refused."""
+    return urllib.request.build_opener(RefuseRedirects, *handlers)
+
+
+def fetch(
+    token: str, timeout: float, opener: urllib.request.OpenerDirector | None = None
+) -> dict[str, Any]:
+    """GET the usage endpoint with the bearer token; return the JSON body.
+
+    The Authorization header is UNREDIRECTED (never copied to a redirected request), and
+    the request goes through :func:`build_opener`, which refuses redirects outright.
+    """
     req = urllib.request.Request(
         USAGE_URL,
         headers={
-            "Authorization": "Bearer " + token,
             "anthropic-beta": "oauth-2025-04-20",
             "User-Agent": "harness-usage/0.1",
             "Accept": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    req.add_unredirected_header("Authorization", "Bearer " + token)
+    with (opener or build_opener()).open(req, timeout=timeout) as resp:
         body: dict[str, Any] = json.loads(resp.read().decode("utf-8"))
     return body
 
@@ -107,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     now = time.time()
     try:
-        body = fetch(pathlib.Path(args.credentials), args.timeout)
+        cred = json.loads(pathlib.Path(args.credentials).read_text("utf-8"))
+        body = fetch(cred["claudeAiOauth"]["accessToken"], args.timeout)
         out = parse_usage(body, now)
     except (OSError, KeyError, TypeError, ValueError, urllib.error.URLError) as exc:
         print(json.dumps({"lane": "claude", "error": f"{type(exc).__name__}: {exc}"}))
