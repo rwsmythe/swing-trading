@@ -419,6 +419,12 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
     # own version.
     ("2026-10-26.1",
      "30ac90635973ac5ea1eb5e61bcc9e60fa665e0b967e6d0407193a1e1f1a3db4b"),
+    # sg-label T3 (D103, `063235a1`): a DOCSTRING-only edit inside
+    # `match_candidate_to_hypotheses` (a manifest member) moved the digest.
+    # No derivation behaviour changed; the version moves because the guard
+    # hashes SOURCE, which is the guard working as designed.
+    ("2026-11-11.1",
+     "fee2b4bd3abcca3f9ae8f0bd7fc15f2cba68c3eee2f9ebddc24ee5b30bb5d3bc"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
