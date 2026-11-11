@@ -477,6 +477,96 @@ def _entry_notice_literal_inner(trade_id, warnings, render_failure,
     return "".join(parts)
 
 
+# D102 T2.3 -- the decision-night ladder's refusal texts (ASCII, test 2i).
+_DECISION_ANCHOR_REJECTED_PREFIX = (
+    "Trade entry rejected: the decision-night anchor")
+_DECISION_ANCHOR_SUFFIX = (
+    " Nothing was recorded; the form has been re-rendered with the current "
+    "nights, please re-submit.")
+_DECISION_NIGHT_NOT_OFFERED_TEXT = (
+    "Trade entry rejected: the night you chose is no longer offered (a newer "
+    "run completed, or the form was altered)." + _DECISION_ANCHOR_SUFFIX)
+_DECISION_NIGHT_LABEL_CHANGED_TEXT = (
+    "Trade entry rejected: the suggestion for {date} changed since the form "
+    "was rendered." + _DECISION_ANCHOR_SUFFIX)
+_DECISION_NIGHTS_UNAVAILABLE_TEXT = (
+    "Trade entry rejected: the decision nights could not be re-read (the "
+    "cohort read raced an intent write), so the chosen night was not "
+    "validated." + _DECISION_ANCHOR_SUFFIX)
+_DECISION_ANCHOR_KEYS = ("candidate_id", "evaluation_run_id", "label")
+
+
+def _decision_anchor_refusal(raw: str, chosen_raw: str, *, ticker: str,
+                             conn) -> tuple[str | None, int | None, dict]:
+    """D102 T2.3 -- the 4-tier ladder over the decision-night anchor.
+
+    Returns ``(refusal_text, chosen_id, offered_by_id)``; ``refusal_text`` is
+    None when every rung passes. (a) malformed JSON; (b) not a list; (c) an
+    entry that is not an object or lacks a key; (d) invalid value shapes:
+    a non-integer id (``bool`` is refused, it is an ``int`` subclass), a
+    non-text label, a choice that is not an integer or not IN the submitted
+    set, a chosen row that is absent, of another ticker, or of a run whose
+    pipeline row is not complete. The SERVER-STAMP (the re-derived offer and
+    its label) runs after this, in the caller.
+    """
+    import json as _json
+
+    def _no(detail: str):
+        return (f"{_DECISION_ANCHOR_REJECTED_PREFIX} {detail}."
+                + _DECISION_ANCHOR_SUFFIX, None, {})
+
+    try:
+        parsed = _json.loads(raw)
+    except Exception:  # noqa: BLE001 -- any decode failure is rung (a)
+        return _no("is not valid JSON")
+    if not isinstance(parsed, list):
+        return _no("is not a JSON list")
+    offered: dict[int, dict] = {}
+    for entry in parsed:
+        if not isinstance(entry, dict) or not all(
+                k in entry for k in _DECISION_ANCHOR_KEYS):
+            return _no("has an entry missing candidate_id, "
+                       "evaluation_run_id or label")
+        cid, run_id, label = (entry[k] for k in _DECISION_ANCHOR_KEYS)
+        if (not isinstance(cid, int) or isinstance(cid, bool)
+                or not isinstance(run_id, int) or isinstance(run_id, bool)
+                or not (label is None or isinstance(label, str))):
+            return _no("carries an invalid value (ids must be integers, "
+                       "the label text or null)")
+        offered[cid] = entry
+    try:
+        chosen = int(chosen_raw.strip())
+    except (TypeError, ValueError):
+        return _no(f"choice {chosen_raw.strip()[:40]!r} is not an integer")
+    if chosen not in offered:
+        return _no(f"choice {chosen} is not in the offered set")
+    row = conn.execute(
+        "SELECT c.ticker FROM candidates c WHERE c.id = ? AND EXISTS ("
+        "SELECT 1 FROM pipeline_runs pr WHERE pr.evaluation_run_id = "
+        "c.evaluation_run_id AND pr.state = 'complete')",
+        (chosen,)).fetchone()
+    if row is None or str(row[0]).upper() != ticker.upper():
+        return _no(f"choice {chosen} is not a {ticker.upper()} row of a "
+                   f"complete run")
+    return None, chosen, offered
+
+
+def _with_decision_choice(vm, submitted: str | None):
+    """D102 T2.3: re-select the operator's submitted night on a re-render, but
+    ONLY if the rebuilt VM's FRESH offer still contains it. Anything else
+    (None, blank, non-integer, no longer offered) keeps the fresh default."""
+    from dataclasses import replace as dc_replace
+    if vm is None or not submitted or not getattr(vm, "decision_nights", ()):
+        return vm
+    try:
+        chosen = int(str(submitted).strip())
+    except (TypeError, ValueError):
+        return vm
+    if chosen not in {n.candidate_id for n in vm.decision_nights}:
+        return vm
+    return dc_replace(vm, selected_decision_candidate_id=chosen)
+
+
 def _rerender_entry_form_with_error(
     *, request: Request, templates, cfg, cache, executor,
     ticker: str, entry_date: str, entry_price: float, shares: int,
@@ -493,6 +583,12 @@ def _rerender_entry_form_with_error(
     submitted_schwab_source_value_json: str | None = None,
     submitted_auto_fill_audit_at: str | None = None,
     submitted_fill_origin_at_form_render: str | None = None,
+    # D102 T2.3: the operator's submitted night choice. It is RE-SELECTED
+    # only when the rebuilt VM's FRESH offer still contains it; the anchor is
+    # always the fresh one (what the re-rendered form shows). A refused
+    # decision anchor passes None, so the recovery form carries the default
+    # (newest) night and the rejected anchor never comes back.
+    submitted_decision_candidate_id: str | None = None,
 ) -> HTMLResponse:
     """T4: re-render trade_entry_form with preserved values + banner at 400.
 
@@ -519,6 +615,7 @@ def _rerender_entry_form_with_error(
             rationale=rationale,
             notes=notes or "",
         )
+        vm = _with_decision_choice(vm, submitted_decision_candidate_id)
         # Phase 13 T3.SB1 Codex R1 Major #3 fix — overwrite the freshly-
         # rebuilt auto-fill anchors with the SUBMITTED values, so the
         # operator's force=true / retry submit replays the same anchor
@@ -806,6 +903,12 @@ def entry_post(
     pattern_evaluation_id: str = Form(""),
     claimed_pattern_evaluation_anchor: str = Form(""),
     pipeline_run_id_at_form_render: str = Form(""),
+    # D102 T2.3 -- the decision-night chooser: the operator's choice and the
+    # hidden anchor carrying the offered set. Both Form("") so an anchor-less
+    # POST (bare cURL, CLI tests, a latched form, the F6 edge) takes today's
+    # path verbatim. Both round-trip through the soft-warn form_values.
+    decision_candidate_id: str = Form(""),
+    decision_nights_anchor: str = Form(""),
 ):
     cfg = apply_overrides(request.app.state.cfg)
     cache = request.app.state.price_cache
@@ -834,6 +937,7 @@ def entry_post(
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
             submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            submitted_decision_candidate_id=decision_candidate_id,
         )
 
     # Bug 2 (2026-04-25): validate stop < entry at the request boundary so
@@ -870,6 +974,7 @@ def entry_post(
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
             submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            submitted_decision_candidate_id=decision_candidate_id,
         )
 
     # Tuition-vs-error (Codex R1 Major): early-validate entry_intent at the
@@ -901,6 +1006,7 @@ def entry_post(
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
             submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            submitted_decision_candidate_id=decision_candidate_id,
         )
 
     # Phase 5 spec §3.6 — resolve the operator override.
@@ -941,6 +1047,7 @@ def entry_post(
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
             submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            submitted_decision_candidate_id=decision_candidate_id,
         )
 
     # Codex R1 Major 1 (Phase 7 Sub-C) — schema-layer guards that used to
@@ -967,6 +1074,7 @@ def entry_post(
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
             submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            submitted_decision_candidate_id=decision_candidate_id,
         )
     if cp_anchor_value is not None:
         from swing.data.repos.pattern_classifications import get_classification
@@ -1013,6 +1121,7 @@ def entry_post(
                 submitted_schwab_source_value_json=schwab_source_value_json,
                 submitted_auto_fill_audit_at=auto_fill_audit_at,
                 submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                submitted_decision_candidate_id=decision_candidate_id,
             )
         if _cls_row is None:
             return _rerender_entry_form_with_error(
@@ -1030,6 +1139,7 @@ def entry_post(
                 submitted_schwab_source_value_json=schwab_source_value_json,
                 submitted_auto_fill_audit_at=auto_fill_audit_at,
                 submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                submitted_decision_candidate_id=decision_candidate_id,
             )
 
     # Phase 9 Sub-bundle D Task D.1 + D.2 — sector/industry tamper
@@ -1099,6 +1209,7 @@ def entry_post(
                 submitted_schwab_source_value_json=schwab_source_value_json,
                 submitted_auto_fill_audit_at=auto_fill_audit_at,
                 submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                submitted_decision_candidate_id=decision_candidate_id,
             )
         cached_sector = _cand_row[0] or ""
         cached_industry = _cand_row[1] or ""
@@ -1160,6 +1271,7 @@ def entry_post(
                 submitted_schwab_source_value_json=schwab_source_value_json,
                 submitted_auto_fill_audit_at=auto_fill_audit_at,
                 submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                submitted_decision_candidate_id=decision_candidate_id,
             )
 
     # Phase 7 Sub-C C.3 — emotional_state_pre_trade JSON-encoding.
@@ -1258,6 +1370,7 @@ def entry_post(
                 submitted_schwab_source_value_json=None,
                 submitted_auto_fill_audit_at=None,
                 submitted_fill_origin_at_form_render=None,
+                submitted_decision_candidate_id=decision_candidate_id,
             )
 
         if (
@@ -1491,6 +1604,7 @@ def entry_post(
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
             submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            submitted_decision_candidate_id=decision_candidate_id,
         )
 
     # Phase 13 T2.SB6c T-A.6c.4 §C.5 anchor-threading (OQ-12 CLOSURE) —
@@ -1529,6 +1643,7 @@ def entry_post(
             submitted_schwab_source_value_json=schwab_source_value_json,
             submitted_auto_fill_audit_at=auto_fill_audit_at,
             submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+            submitted_decision_candidate_id=decision_candidate_id,
         )
 
     resolved_pe_id: int | None = None
@@ -1665,6 +1780,80 @@ def entry_post(
     # anchor is absent but claim is true → covered above. No additional
     # branch needed here.
 
+    # D102 T2.3 -- THE DECISION NIGHT. Anchor ABSENT (bare cURL, CLI tests, a
+    # latched form, the F6 edge): today's path verbatim -- no candidate id
+    # is supplied and the posted hypothesis_label stands. Anchor PRESENT:
+    # the 4-tier ladder (`_decision_anchor_refusal`), then the SERVER-STAMP.
+    # The submitted set is the operator's CLAIM about what he saw, never the
+    # authority on what is eligible (Codex R2-01): the eligible set is
+    # RE-DERIVED here through the same function that rendered the form, at
+    # POST time because `record_entry` derives the trade's origin at POST
+    # time from the same latest complete run. The chosen row is validated
+    # AS THAT ROW (the TOCTOU gotcha), never re-picked as a "latest", and
+    # its label is the SERVER's; a label differing from the one the
+    # operator saw is refused rather than recorded under him.
+    #
+    # Every refusal here is a 400 that CLEARS the decision anchor (the
+    # re-render carries the fresh offer and the default night) and keeps
+    # the auto-fill anchors, which were not what failed.
+    decision_candidate_value: int | None = None
+    decision_label_value: str | None = None
+    decision_anchor_present = bool(decision_nights_anchor.strip())
+    if decision_anchor_present:
+        def _reject_decision_anchor(error_message: str) -> HTMLResponse:
+            return _rerender_entry_form_with_error(
+                request=request, templates=templates, cfg=cfg,
+                cache=cache, executor=executor,
+                ticker=ticker, entry_date=entry_date,
+                entry_price=entry_price, shares=shares,
+                initial_stop=initial_stop, rationale=rationale, notes=notes,
+                error_message=error_message,
+                origin=origin_coerced,
+                submitted_schwab_source_value_json=schwab_source_value_json,
+                submitted_auto_fill_audit_at=auto_fill_audit_at,
+                submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                submitted_decision_candidate_id=None,
+            )
+
+        from swing.metrics.cohort import CohortReadRacedError
+        from swing.recommendations.hypothesis_prefill import (
+            list_decision_nights,
+        )
+        from swing.trades.frozen_value_evidence import (
+            WEB_REPLAY_BUDGET_SECONDS,
+        )
+        _conn = connect(cfg.paths.db_path)
+        try:
+            refusal, chosen_id, offered_claim = _decision_anchor_refusal(
+                decision_nights_anchor, decision_candidate_id,
+                ticker=ticker, conn=_conn)
+            server_nights = None
+            if refusal is None:
+                try:
+                    server_nights = list_decision_nights(
+                        _conn, ticker=ticker.upper(),
+                        starting_equity=cfg.account.starting_equity,
+                        budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+                    )
+                except CohortReadRacedError:
+                    refusal = _DECISION_NIGHTS_UNAVAILABLE_TEXT
+        finally:
+            _conn.close()
+        if refusal is not None:
+            return _reject_decision_anchor(refusal)
+        server_by_id = {n.candidate_id: n for n in server_nights}
+        if (chosen_id not in server_by_id
+                or offered_claim[chosen_id]["evaluation_run_id"]
+                != server_by_id[chosen_id].evaluation_run_id):
+            return _reject_decision_anchor(_DECISION_NIGHT_NOT_OFFERED_TEXT)
+        night = server_by_id[chosen_id]
+        if offered_claim[chosen_id]["label"] != night.label:
+            return _reject_decision_anchor(
+                _DECISION_NIGHT_LABEL_CHANGED_TEXT.format(
+                    date=night.action_session_date))
+        decision_candidate_value = night.candidate_id
+        decision_label_value = night.label
+
     req = EntryRequest(
         ticker=ticker.upper(),
         entry_date=entry_date,
@@ -1680,7 +1869,15 @@ def entry_post(
         # record_entry's canonicalize_hypothesis_label also handles
         # empty/whitespace-only → None, but explicit boundary coercion
         # documents the contract.
-        hypothesis_label=hypothesis_label or None,
+        # D102 T2.3: on the anchored path the SERVER's label for the chosen
+        # night (possibly None) replaces the posted hidden label.
+        hypothesis_label=(
+            decision_label_value if decision_anchor_present
+            else (hypothesis_label or None)),
+        # D102 T2.3: the chosen decision night's candidate row. None on the
+        # anchor-less path, where `record_entry` resolves today's candidate
+        # exactly as before; a latched admission overrides it there.
+        candidate_id=decision_candidate_value,
         chart_pattern_operator=cp_operator_value,
         chart_pattern_algo=cp_algo_value,
         chart_pattern_algo_confidence=cp_conf_value,
@@ -1887,6 +2084,8 @@ def entry_post(
                             else vm.auto_fill_advisory_text
                         ),
                     )
+                    # D102 T2.3: keep the operator's night if still offered.
+                    vm = _with_decision_choice(vm, decision_candidate_id)
                     return templates.TemplateResponse(
                         request, "partials/trade_entry_form.html.j2",
                         {"vm": vm, "error_message": error_message},
@@ -2070,6 +2269,12 @@ def entry_post(
                     "pattern_evaluation_id": pe_anchor_raw,
                     "claimed_pattern_evaluation_anchor": pe_claim_raw,
                     "pipeline_run_id_at_form_render": pe_pipeline_raw,
+                    # D102 T2.3: the decision-night choice and its anchor
+                    # round-trip VERBATIM, so the force=true resubmit
+                    # re-runs the same ladder and server-stamp (the
+                    # hidden-anchor round-trip gotcha).
+                    "decision_candidate_id": decision_candidate_id,
+                    "decision_nights_anchor": decision_nights_anchor,
                     "open_count": actual_open,
                     "soft_warn": cfg.position_limits.soft_warn_open,
                     "hard_cap": cfg.position_limits.hard_cap_open,
@@ -2135,6 +2340,8 @@ def entry_post(
                             else vm.auto_fill_advisory_text
                         ),
                     )
+                    # D102 T2.3: keep the operator's night if still offered.
+                    vm = _with_decision_choice(vm, decision_candidate_id)
                     return templates.TemplateResponse(
                         request, "partials/trade_entry_form.html.j2",
                         {"vm": vm, "error_message": str(exc)},
@@ -2191,6 +2398,7 @@ def entry_post(
                     submitted_schwab_source_value_json=schwab_source_value_json,
                     submitted_auto_fill_audit_at=auto_fill_audit_at,
                     submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                    submitted_decision_candidate_id=decision_candidate_id,
                 )
             except sqlite3.IntegrityError as exc:
                 # Codex R1 Major 1 — tampered hidden-form-field POST that slips
@@ -2242,6 +2450,7 @@ def entry_post(
                     submitted_schwab_source_value_json=schwab_source_value_json,
                     submitted_auto_fill_audit_at=auto_fill_audit_at,
                     submitted_fill_origin_at_form_render=fill_origin_at_form_render,
+                    submitted_decision_candidate_id=decision_candidate_id,
                 )
         finally:
             # **THE DURABILITY BOUNDARY IS THE BINDING OF `result`.**

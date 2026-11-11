@@ -655,8 +655,14 @@ def build_sg_case(
     pipeline_complete: dict[int, bool] | None = None,
     live_registry: bool = True,
     criteria_results: dict[int, dict[str, str]] | None = None,
+    with_trade: bool = True,
 ) -> dict[str, Any]:
     """Trade 29's live world: three SG watch rows, its trade, fill and FEI row.
+
+    ``with_trade=False`` seeds the nights and the registry only -- the world
+    the entry form sees BEFORE trade 29 exists (D102 T2.2-2.3's web tests
+    enter SG through the POST, which the open trade 29 would refuse as a
+    duplicate open position).
 
     No `daily_recommendations` row exists for SG on 193 or 194 (live).  No
     latch link exists for the fill's order (live).  ``buckets``,
@@ -702,6 +708,12 @@ def build_sg_case(
              for (name, layer, result, value, rule) in SG_CRITERIA[cid]])
     if live_registry:
         seed_sg_registry_as_live(conn)
+    if not with_trade:
+        return {
+            "fire_candidate_id": SG_FIRE_CANDIDATE_ID,
+            "last_word_candidate_id": SG_LAST_WORD_CANDIDATE_ID,
+            "older_candidate_id": SG_OLDER_CANDIDATE_ID,
+        }
     conn.execute(
         "INSERT INTO trades (id, ticker, entry_date, entry_price, "
         "initial_shares, initial_stop, current_stop, state, trade_origin, "

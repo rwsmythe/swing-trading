@@ -301,6 +301,19 @@ class TradeEntryFormVM:
     # ASCII line visible beside the Hypothesis field (the same text the
     # CLI prefill prints). None on the ordinary path.
     hypothesis_suggestion_unavailable_text: str | None = None
+    # D102 T2.2 -- the DECISION NIGHT chooser. ``decision_nights`` is the
+    # server's offer (``list_decision_nights``, newest first);
+    # ``decision_nights_anchor_json`` is that offer as the hidden anchor the
+    # POST ladder validates (``[{"candidate_id", "evaluation_run_id",
+    # "label"}]``); ``selected_decision_candidate_id`` is the pre-selected
+    # night (default: the newest -- today's behaviour). All three stay
+    # empty when the chooser is OMITTED: no offered night (the F6 edge,
+    # origin manual_off_pipeline) or a latched entry (the latch decides the
+    # night). ``hypothesis_label`` above stays the newest night's label so
+    # every existing reader of it is unchanged.
+    decision_nights: tuple = ()
+    decision_nights_anchor_json: str | None = None
+    selected_decision_candidate_id: int | None = None
     # D84 T8 step 3 (RD's floor (1)): the STATED zero when the prices are
     # valid and the sizing comes out at zero shares -- the one formatter's
     # line on the "entry" basis. None otherwise, so "Enter a valid entry price
@@ -591,6 +604,7 @@ def build_entry_form_vm(
             from swing.metrics.cohort import CohortReadRacedError
             from swing.recommendations.hypothesis_prefill import (
                 PREFILL_UNAVAILABLE_TEXT,
+                list_decision_nights,
                 lookup_active_recommendation_label,
             )
             from swing.trades.frozen_value_evidence import (
@@ -602,14 +616,31 @@ def build_entry_form_vm(
             # asymmetry). A raced read here skips the suggestion and the
             # form renders WITH that line visible beside the field; the
             # entry PROCEEDS.
+            #
+            # D102 T2.2: the OFFERED NIGHTS come first; when there are any,
+            # the newest night's label IS the suggestion (the same value the
+            # latest-night lookup returns, without a second cohort read).
+            # When there are none, the latest-night lookup runs exactly as
+            # before. Both degrade on a raced read: no chooser, no label.
             hypothesis_suggestion_unavailable_text: str | None = None
+            decision_nights: tuple = ()
             try:
-                resolved_hypothesis_label = lookup_active_recommendation_label(
+                decision_nights = tuple(list_decision_nights(
                     conn, ticker=ticker,
                     starting_equity=cfg.account.starting_equity,
                     budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
-                )
+                ))
+                if decision_nights:
+                    resolved_hypothesis_label = decision_nights[0].label
+                else:
+                    resolved_hypothesis_label = (
+                        lookup_active_recommendation_label(
+                            conn, ticker=ticker,
+                            starting_equity=cfg.account.starting_equity,
+                            budget_seconds=WEB_REPLAY_BUDGET_SECONDS,
+                        ))
             except CohortReadRacedError:
+                decision_nights = ()
                 resolved_hypothesis_label = None
                 hypothesis_suggestion_unavailable_text = PREFILL_UNAVAILABLE_TEXT
             # Phase 13 T3.SB1 dispatch brief §5 watch item 7 — banner-pin
@@ -637,8 +668,37 @@ def build_entry_form_vm(
         auto_fill = resolve_entry_auto_fill(
             ticker=ticker, cfg=cfg, conn=conn,
         )
+        # D102 T2.2 -- the chooser is OMITTED on a LATCHED entry: the
+        # auto-filled envelope names an order (the ONE recognition trigger,
+        # query-free) AND a mandate link exists for that order. The latch
+        # decides the trade's night at POST (`record_entry`), so offering a
+        # choice there would offer one that cannot take effect.
+        if decision_nights:
+            from swing.data.repos.latch_order_mandate_links import (
+                list_links_for_broker_order,
+            )
+            from swing.trades.latched_origin import (
+                broker_order_id_from_envelope,
+                envelope_recognises_an_order,
+            )
+            _envelope = auto_fill.schwab_source_value_json
+            if envelope_recognises_an_order(_envelope):
+                _order_id = broker_order_id_from_envelope(_envelope)
+                if _order_id is not None and list_links_for_broker_order(
+                        conn, _order_id):
+                    decision_nights = ()
     finally:
         conn.close()
+    decision_nights_anchor_json: str | None = None
+    selected_decision_candidate_id: int | None = None
+    if decision_nights:
+        import json as _json
+        decision_nights_anchor_json = _json.dumps([
+            {"candidate_id": n.candidate_id,
+             "evaluation_run_id": n.evaluation_run_id,
+             "label": n.label}
+            for n in decision_nights])
+        selected_decision_candidate_id = decision_nights[0].candidate_id
 
     # Live price.
     prices = cache.get_many(
@@ -872,6 +932,9 @@ def build_entry_form_vm(
         hypothesis_suggestion_unavailable_text=(
             hypothesis_suggestion_unavailable_text
         ),
+        decision_nights=decision_nights,
+        decision_nights_anchor_json=decision_nights_anchor_json,
+        selected_decision_candidate_id=selected_decision_candidate_id,
         # Phase 13 T3.SB1 — Schwab auto-fill fields (T-B.1.3).
         auto_fill_kind=auto_fill.kind,
         auto_fill_fill_origin=auto_fill.fill_origin,
