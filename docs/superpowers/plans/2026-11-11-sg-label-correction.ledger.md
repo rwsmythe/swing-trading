@@ -628,3 +628,42 @@ The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 17
 **Owed, banked here for the merge gate:** the a2_77 rename (deviation 7) and cell 3's `v40` fixture rename (both separate renames), and the plan-text correction of section 0.3 / the review-form consumer row (deviation 4).
 
 **Open questions:** none.
+
+## Executing -- cell 5: T2.2-T2.4 and T4.3 (form C)
+
+**Commits this seat (shipped order):**
+| SHA | Item |
+|---|---|
+| `e0da2b39` | feat(web): T2.2-2.3 (D102) -- the entry form names the decision night (tests 2b-2g, 2i, 2j, both halves of 2k; the R1-3 census classifies the new callers) |
+| `4ffbbb4b` | feat(cli): T2.4 (D102) -- the CLI prefill names its night |
+| `37ecff18` | fix(web): T4.3 (D86) -- a refused entry anchor refuses the label, never the entry (form C, test 4h) |
+
+**RED/GREEN.**
+- T2.2-2.3: `tests/web/test_routes/test_decision_night_entry.py` 21 of 23 RED on `e836799d` (no chooser, no anchor, the POST ignored the choice and persisted the latest night); the two that passed are the 2k keeper half and 2f, whose chooser-absent assertion is vacuously true before a chooser exists. GREEN: 23. 2j (`tests/metrics/test_pattern_outcomes_decision_night.py`) RED with the `swing/web` diff stashed (the GET carried no anchor), GREEN: 2.
+- T2.4: `test_t24_the_prefill_line_names_the_night_it_used` RED (the line ended at the label), GREEN; `tests/cli` 791 passed.
+- T4.3: `tests/web/test_routes/test_d86_entry_raw_rung.py` 18 of 19 RED on `4ffbbb4b`: every UNCLAIMED shape stamped `pipeline_aplus` + today's candidate + the posted label (the handoff-2 RED, reproduced for six decodable shapes and the undecodable one); every CLAIMED shape was already honest-unset through the resolver and failed only on the new disposition warning; every recovery form replayed the rejected string. GREEN: 19, and the ext2 module (`test_22a_task10_entry_route_ext2.py`, all of it) and `test_entry_post_audit_columns.py` stay green.
+
+**Deviations from the plan's letter, each with its reason:**
+1. **The hidden `hypothesis_label` input is kept on the chooser path too** (plan T2.2: "kept for the anchor-less path only"). Existing readers parse it from the GET (`test_trade_entry_broad_watch_round_trip.py`, `test_trades_route.py`), and the POST IGNORES it whenever the decision anchor is present: the label persisted is the server's for the chosen night (`routes/trades.py`, the `hypothesis_label=` argument of `EntryRequest`).
+2. **The VM's `hypothesis_label` is the newest offered night's label** when nights are offered (no second cohort read); otherwise today's `lookup_active_recommendation_label` runs. Both sit inside the one `CohortReadRacedError` degrade.
+3. **A `decision_candidate_id` posted WITHOUT an anchor is ignored** (today's path), per the plan's "anchor ABSENT: today's path verbatim"; it is not a 400.
+4. **Rung (d) also refuses a claimed `evaluation_run_id` that differs from the server's for the chosen id**, with the "no longer offered" text (the form was altered).
+5. **Budget overrun at POST is not a separate refusal.** Read at the code: the web budget DEGRADES inside the breakdown (`tier2_excluded`), it does not raise, so the only raised failure is `CohortReadRacedError` (400). A degraded read that changes the label between GET and POST meets the label-changed gate.
+6. **2j discriminates by pattern class**: the earlier night's PE row is `vcp`, the later's `flat_base`, so `_count_reached_1r_hit_stop`'s per-class hit-stop count itself names the night (old POST: `(vcp, flat_base) = (0, 1)` for both trades). The fixture closes the trade by raw UPDATE of `state` and `realized_R_if_plan_followed` (the reader's only inputs); the web `seeded_db`/`test_cfg` fixtures are imported into `tests/metrics`.
+7. **Two existing tests follow the moved seam.** `test_trades_route.py::test_entry_form_renders_exact_hypothesis_label_in_hidden_input` reads the visible label from the SELECTED option instead of a span; `test_22b_hypothesis_prefill_race.py` plants the race at `_progress_reader` as well, the governed read the GET now reaches first.
+8. **Census (22-B R1-3).** `list_decision_nights` joins `_GOVERNED_NAMES`: its definition, the VM GET (`PREFILL_DEGRADED`) and the route POST (a NEW named disposition, `PREFILL_REFUSED`: a 400 that clears the anchor, never a 500). The VM's latest-night lookup line changed text and is re-keyed.
+9. **`build_sg_case(with_trade=False)`**: the nights and registry without trade 29 (the POST would otherwise meet the open trade 29 as a duplicate position).
+10. **T4.3 touches `swing/trades/entry.py`** (the plan's T4.3 was route-only, form A). Form C needs the SERVICE to refuse the label for an UNCLAIMED refused anchor, which carries no envelope into the request. `EntryRequest.anchor_refused_by_authority` (downgrade-only, default False) and one branch in `_record_entry_inner` beside `recognised_but_underivable`, with the site comment. `entry.py` is inside the brief's carve-out.
+11. **(iv) applies to the RECOVERY forms (every 400 re-render), not to the soft-warn confirm.** The confirm is the same submission's confirmation and round-trips the anchor (the hidden-anchor round-trip gotcha); dropping it would hand the force resubmit to the ordinary chain and stamp keys, the defect D86 closes. Pinned by `test_4h_the_soft_warn_resubmit_still_refuses_the_label`.
+
+**FLAGGED FOR RD (not changed; the orchestrator's encoding instruction keeps the ext2 module green):** a CLAIMED anchor that cannot be DECODED still gets the pre-existing claim-consistency 400 (`test_entry_post_audit_columns.py::test_c_malformed_anchor_with_claim_rejects_with_400`; ext2's `test_a_deeply_nested_envelope_does_not_500_the_ENTRY_route` asserts that 400). The authority refuses that document, so on the ruling's literal text ("a malformed, duplicate-key or otherwise refused anchor REFUSES THE LABEL, NEVER THE ENTRY") it is a refused anchor blocking an entry. The same pre-existing ladder 400s a claimed anchor that decodes to a non-object, lacks a required key, or carries invalid date/price/shares values. Those rungs guard the FILL-ORIGIN claim (`schwab_auto` provenance), not the cohort keys. Whether they are in the ruling's scope is RD's call.
+
+**Accepted limitation, stated:** the route re-derives the offered nights on its own connection, and `record_entry` derives the trade's origin later on another (the unreserved path). A run completing in that window could pair the chosen night's `candidate_id` with an origin derived from the newer run. The window is milliseconds, and the label-changed and not-offered gates bound it to a run landing after the route's read.
+
+**Gates at `37ecff18` (the code head; this ledger commit adds docs only).** Each was gated on the command's EXIT STATUS, written beside its output:
+- Full fast suite (`python -m pytest -m "not slow" -q -p no:cacheprovider -n 8`): `C:\Users\rwsmy\swing-data\review-transcripts\sg-label\exec-branch-suite.txt`, exit `0` in `exec-branch-suite.exit.txt`, HEAD in `exec-branch-suite.head.txt`. Tail: `15982 passed, 13 skipped, 1322 warnings, 26 subtests passed in 806.38s`.
+- `ruff check swing/`: `exec-branch-ruff.txt`, "All checks passed!", exit `0`.
+- Migrate-twice: `exec-branch-migrate-twice.txt`, 1k's two tests (`..._twice_is_noop`, `..._v42_is_head_...`), 2 passed, exit `0`.
+- Drift, both kinds: `exec-branch-drift.txt`, 1m's two tests plus the 0037 admission-tier comparator, 3 passed, exit `0`.
+
+**Not done here, routed separately (per the dispatch):** the a2_77 and `v40` renames, the plan-text correction from cell 4's deviation 4, the T5 runbook `--reason`. Reviewer A is not started; the orchestrator opens the rounds. Base of the executing diff for Reviewer A is still `b120a6eb`.
