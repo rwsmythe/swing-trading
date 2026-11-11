@@ -460,8 +460,11 @@ turn in a git worktree, resumed by session id (`codex exec resume <id>`); the dr
     OUTSIDE the worktree** (the review's own files there would read as a change); the
     driver refuses an `--out` at or under the worktree, so the note cannot be forgotten
     (CHARC 2c). The pass runs with
-    `PYTHONDONTWRITEBYTECODE=1` and `PYTEST_ADDOPTS=-p no:cacheprovider`, so a test run
-    does not change the ignored files compared. **Limitation: writes OUTSIDE the worktree
+    `PYTHONDONTWRITEBYTECODE=1`, `PYTEST_ADDOPTS=-p no:cacheprovider` and
+    `RUFF_NO_CACHE=true`, so the tools the allowance admits do not change the ignored
+    files compared; that writer set was closed by MEASUREMENT (CHARC C1: each tool run once
+    under the review env in a scratch worktree, the manifest diffed before and after), and
+    one test pins the manifest stable across the tool set. **Limitation: writes OUTSIDE the worktree
     are not caught.** A filesystem sandbox for `claude -p` is BANKED (owner CHARC); its
     trigger is the first dispatch where the reviewer needs a non-repo write, or the next
     lane arc, and its first step is a probe of what this Claude Code build supports.

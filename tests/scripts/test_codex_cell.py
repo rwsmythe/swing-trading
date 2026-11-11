@@ -25,6 +25,8 @@ import getpass
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -993,6 +995,71 @@ def test_the_review_process_env_carries_both_settings(tmp_path, monkeypatch, cap
     assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert seen["env"]["PYTEST_ADDOPTS"] == "-p no:cacheprovider"
     assert rc == 0
+
+
+def _review_tool_set(py: str) -> list[list[str]]:
+    """Each tool the reviewer's allowance admits, in the form a reviewer would run it here.
+
+    The same set, with the cell's REAL pytest command over the fast suite, was measured in
+    a scratch worktree (~/swing-data/review-transcripts/codex-lane/review/measure-c1-*.json);
+    grep, ls and timeout run only where the shell's tools are on PATH (none of them writes).
+    """
+    tools = [
+        ["git", "rev-parse", "HEAD"],
+        ["git", "status"],
+        ["git", "diff", "HEAD"],
+        ["git", "log", "-1"],
+        ["git", "show", "HEAD", "--stat"],
+        ["git", "cat-file", "-p", "HEAD"],
+        [py, "-c", "import mod"],
+        [py, "-m", "ruff", "check", "."],
+        [py, "-m", "pytest", "-q", "test_mod.py"],
+    ]
+    for name, rest in (("grep", ["-rn", "VALUE", "."]), ("ls", ["-la"])):
+        if shutil.which(name):
+            tools.append([shutil.which(name), *rest])
+    if shutil.which("timeout"):
+        tools.append([shutil.which("timeout"), "60", py, "-c", "pass"])
+    return tools
+
+
+def test_the_review_env_keeps_the_ignored_manifest_stable_across_the_tool_set(tmp_path) -> None:
+    """CHARC C1 closure (20261111T200824Z): under REVIEW_ENV no tool in the allowance writes
+    an ignored file, on a fresh repository AND over the caches a run without it leaves, so
+    the C1 manifest cannot fail a review that only ran them. The run without REVIEW_ENV is
+    the counterfactual: the same tools DO write (bytecode, the pytest cache, ruff's cache)."""
+    m = _load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shutil.copy(REPO_ROOT / ".gitignore", repo / ".gitignore")
+    (repo / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "test_mod.py").write_text(
+        "import mod\n\n\ndef test_value():\n    assert mod.VALUE == 1\n", encoding="utf-8"
+    )
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "init"]):
+        subprocess.run([*git, *args], check=True, capture_output=True)
+    plain = {
+        k: v for k, v in os.environ.items()
+        if k not in ("PYTHONDONTWRITEBYTECODE", "PYTEST_ADDOPTS", "RUFF_NO_CACHE")
+    }
+
+    def run_all(env: dict[str, str]) -> tuple[dict, dict]:
+        before = m.worktree_snapshot(str(repo))
+        for argv in _review_tool_set(sys.executable):
+            subprocess.run(argv, cwd=repo, env=env, capture_output=True)
+        return before, m.worktree_snapshot(str(repo))
+
+    review_env = {**plain, **m.REVIEW_ENV}
+    before, after = run_all(review_env)
+    assert before["ok"] and after["ok"]
+    assert after["ignored_files"] == before["ignored_files"] == {}
+    before, after = run_all(plain)
+    written = {p.split("/")[0] for p in set(after["ignored_files"]) - set(before["ignored_files"])}
+    assert {"__pycache__", ".pytest_cache", ".ruff_cache"} <= written
+    before, after = run_all(review_env)
+    assert after["ignored_files"] == before["ignored_files"]
+    assert after["status_ignored"] == before["status_ignored"]
 
 
 # CHARC 2c (2026-11-11T19:36:51Z): the review's own files inside the worktree would read as

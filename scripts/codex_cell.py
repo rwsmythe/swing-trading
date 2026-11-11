@@ -113,9 +113,16 @@ CLAUDE_ALLOWED = (
     "Bash(git cat-file:*),Bash(git rev-parse:*),Bash(python:*),Bash(grep:*),Bash(ls:*),"
     "Bash(timeout:*)"
 )
-# The review process writes no .pyc and no pytest cache, so the tests the reviewer runs
-# do not change the ignored files the post-check compares.
-REVIEW_ENV = {"PYTHONDONTWRITEBYTECODE": "1", "PYTEST_ADDOPTS": "-p no:cacheprovider"}
+# The review process writes no .pyc, no pytest cache and no ruff cache, so the tools the
+# reviewer runs do not change the ignored files the post-check compares. The writer set is
+# CLOSED BY MEASUREMENT (CHARC C1, 20261111T200824Z): each tool the allowance admits was
+# run once under this env in a scratch worktree and the C1 manifest diffed; ruff's cache
+# was the one writer the first two did not switch off.
+REVIEW_ENV = {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider",
+    "RUFF_NO_CACHE": "true",
+}
 CLAUDE_DISALLOWED = "Edit,Write,NotebookEdit,Agent,WebFetch,WebSearch"
 # Pathspecs left out of the review diff: none (no lock file; the lane writes no proofs folder).
 DIFF_EXCLUDES: tuple[str, ...] = ()
