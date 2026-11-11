@@ -464,10 +464,16 @@ turn in a git worktree, resumed by session id (`codex exec resume <id>`); the dr
     `RUFF_NO_CACHE=true`, so the tools the allowance admits do not change the ignored
     files compared; that writer set was closed by MEASUREMENT (CHARC C1: each tool run once
     under the review env in a scratch worktree, the manifest diffed before and after), and
-    one test pins the manifest stable across the tool set. **Limitation: writes OUTSIDE the worktree
-    are not caught.** A filesystem sandbox for `claude -p` is BANKED (owner CHARC); its
-    trigger is the first dispatch where the reviewer needs a non-repo write, or the next
-    lane arc, and its first step is a probe of what this Claude Code build supports.
+    one test pins the manifest stable across the tool set. **Limitation: writes OUTSIDE
+    the worktree are not caught.** **Declared limitation (CHARC C1, 20261111T200824Z): a
+    write inside the worktree that restores the size and mtime it overwrote is not seen by
+    the manifest.** A reviewer that restores mtimes is adversarial beyond this arc's
+    threat model; a content hash of every ignored file (measured at about 37 s per
+    snapshot on this worktree's 6,840 ignored files, about 73 s per review) is not paid
+    for it; the banked A3 filesystem sandbox is the form that closes it. A filesystem
+    sandbox for `claude -p` is BANKED (owner CHARC); its trigger is the first dispatch
+    where the reviewer needs a non-repo write, or the next lane arc, and its first step is
+    a probe of what this Claude Code build supports.
 
 ## Codex is replaceable
 
