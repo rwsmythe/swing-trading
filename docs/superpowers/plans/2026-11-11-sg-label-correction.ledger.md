@@ -530,3 +530,101 @@ The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 17
 6. Gates: full suite to `exec-branch-suite.txt`, ruff, migrate-twice (1k), drift (1m). Then RETURN before Reviewer A (the orchestrator opens the rounds).
 
 **Open questions:** none. FX-1 is ruled.
+
+## Executing -- cell 4: T1.2, T1.3, T2.1 and the mirror closure
+
+**Commits this seat (shipped order):**
+| SHA | Item |
+|---|---|
+| `1fa5c86f` | feat(trades): T1.2 (D104) -- the watch-fire relabel service (tests 1a, 1n, 1o, 1p, 1r, 1u; derivation history `2026-11-11.2`) |
+| `c2b13c30` | feat(cli): T1.3 (D104) -- `correct-cohort-provenance --cite-fire-candidate` (test 1q) |
+| `61bfd68e` | feat(recommendations): T2.1 (D102) -- per-night labels from the single prefill call site (tests 2a, 2k lister half; 2h unchanged) |
+| `7b6d5776` | test(data): mirror closure (D104) -- the 0037 admission-tier comparator reads both IN-lists |
+| `7f06cf1e` | test(metrics): T2.1 follow-up -- the R1-3 census roster names the memoized progress reader (COMMITTED RED: its classification lacked a named-disposition prefix) |
+| `c20bb128` | test(metrics): T2.1 follow-up -- the census classification keeps a named disposition prefix (fixes `7f06cf1e`) |
+
+**RED/GREEN.**
+- T1.2: `tests/trades/test_cohort_provenance_watch_fire.py` failed collection with `ImportError: correct_watch_fire_label` before any service code. GREEN: 29 tests. `tests/web/view_models/patterns/test_review_form_decision_night.py` (1u) needs the same import, so it is RED by the same ImportError; GREEN: 2. Kind-1 regression: `tests/trades` + `tests/cli` at the T1.2 tree, 3982 passed / 8 skipped. The only kind-1 tests that moved are the digest pins (history entry), the closure check (manifest), and `test_22a_task7_shared_derivation.py::test_the_gate_is_a_parameter_so_the_refusal_ORDER_is_preserved` (deviation 1).
+- T1.3: `tests/cli/test_correct_cohort_provenance_fire_mode.py` had 8 failures before the CLI change (`No such option: --cite-fire-candidate`). GREEN: 13. a2_77 is RED on the new manifest and GREEN after its body edit.
+- T2.1: `tests/recommendations/test_decision_nights.py` failed with `ImportError: DecisionNight` on the T1.3 tree, verified by stashing the prefill module. GREEN: 6. The census test (2h) and the existing prefill tests stay green (25 `-k prefill` tests across cli, web and recommendations).
+- Closure fix: the PRE-fix comparator, run under `PYTHONHASHSEED` 1-6, PASSED on 1 and 4 and FAILED on 2, 3, 5 and 6 (a hash-seed flake 0042 introduced). The fixed comparator passes on seeds 1-4.
+
+**Deviations from the plan's letter, each with its reason:**
+1. **Factorings, all verbatim moves.** Rungs 16-17 and the matcher call moved from `derive_cohort_keys_for_fire` into `_as_of_narrow_matches`, which returns a `_NarrowMatches` container. The exactly-one assertion and everything after it stay in `derive_cohort_keys_for_fire`. Rung 14a moved from `_derive`'s closure into `_same_session_creation_order_gate(anchors, *, fill_session)`, and its refusal text is unchanged. The dry-run SAVEPOINT machinery moved into `_within_preview_savepoint(conn, work)`, and the apply's BEGIN IMMEDIATE / ROLLBACK machinery into `_within_write_transaction(conn, work)`. These moved verbatim, comments included, so kind 2 runs under the same copy. `test_the_gate_is_a_parameter_so_the_refusal_ORDER_is_preserved` now reads `_as_of_narrow_matches`'s source, where the code lives. It also asserts that `derive_cohort_keys_for_fire` delegates with `gate=gate`.
+2. **F9: the manifest gained more than the plan listed.** The plan named the watch predicates, and they were already members. The closure walker from `_derive` demanded `_as_of_narrow_matches` and `_same_session_creation_order_gate`. Kind 2's own decision is now pinned too, because kind 2 writes the head version. That pin covers `_derive_watch_fire`, `_derive_last_fire`, `WATCH_FIRE_WINDOW_ROWS`, the three readers the walk uses (under their home modules), `_require_session_date` and `is_trading_session`. A SECOND closure root checks it (`test_the_kind2_closure_is_fully_accounted_for`). The exclusion list gains the two containers, `_without_terminal` and the three import aliases, each with its reason. `test_no_exclusion_is_stale` now reads the union of both roots. History `2026-11-11.2` = `8b75cbd0...e89e8a`.
+3. **The kind-2 dry run requires `--reason`, exactly as the kind-1 dry run does.** One authorization ladder serves both entry points, and `_reason_or_refuse` sits in it; every kind-1 CLI dry-run test passes `--reason`. **Consequence for T5's runbook:** the operator's dry-run step is `... 29 --cite-fire-candidate 15901 --reason "<text>" --dry-run`. Without `--reason` it refuses. A replay with no reason still returns the existing id.
+4. **1u PREMISE CORRECTION (a plan fact, not a ruling).** Plan section 0.3 bullet 2, and the consumer-table row for `review_form.py:438`, say a kind-2 correction shifts `_build_outcome_distribution`. Read at the code, that is false. The cohort is filtered by `PROVABLE_APLUS_PE_PREDICATE` (`review_form.py:415`, the aplus-isolation arc). A kind-2 correction moves a WATCH anchor to a WATCH fire, so neither SG PE row is in the cohort before or after it, and the reading is UNCHANGED. Only an aplus night can shift that reader, which means a T2-named night under an aplus latest run. 1u is therefore two tests:
+   - (i) the live shape: no shift before or after;
+   - (ii) a synthetic control: an aplus detection event planted on run 207 only, which shows the join FOLLOWS `trades.candidate_id`.
+   For RD/CHARC: the plan's 0.3 text needs this correction at merge, and the H2 read rule is unaffected.
+5. **Test mechanics the plan left open.** The latched 1n case substitutes `_resolve_latch_citation` at the name the service resolves. The E3 ambiguous-row case plants 15980 with the fire's criteria and substitutes a scratch `_capital_blocked_match` that matches that row, so the newest row has two narrow matches. `build_sg_case` gains a `criteria_results` knob, planted by the same raw INSERT (T16 rule (a), no guard seam). 1p's drift cases use the guard seam's kind 1 (a historical rewrite of a criteria row, for DETECTION).
+6. **The walk vs eligibility (e).** Eligibility (e) WRAPS `_assert_last_word_before_the_fill` and leaves it unchanged. The walk (`_derive_last_fire`) is a bounded SIBLING ranking with the same key. It validates every row's dates before ranking and applies no rung 14a gate. Step 8's derivation applies the gate, for the candidate anchor only.
+7. **a2_77** (`tests/cli/test_correct_cohort_provenance_command.py`): the manifest equality is now seven entries, and `cite_fire_candidate_id` is declared LAST so the manifest only appends. The NAME still says "exactly_six", and its rename is OWED as a separate change, like cell 3's `v40` fixture. The test is registered in `test_22b_composition_pin.py`'s `RE_SCOPED_SG_LABEL` with its own reason, `_REASON_SG_CLI`.
+8. **T2.1 shape.**
+   - `label_for_candidate(cand, *, registry, progress)` takes a MEMOIZED zero-argument progress callable, not precomputed summaries. That keeps the lookup's "cohort read only after a match" exactly, and avoids a second spelling of the baseline rule.
+   - The lister's window is the 5 newest complete-run rows, THEN filtered to the latest night's bucket. Limit-then-filter keeps it the same N rows the kind-2 walk reads.
+   - A row whose stamps do not parse is left out of the offer. The POST re-derives through the same function, so such a row can never be persisted.
+   - The tests live in `tests/recommendations/test_decision_nights.py`.
+   - `WATCH_FIRE_WINDOW_ROWS` landed in the T1.2 commit, because the service imports it.
+
+**What the mirror-closure read CAUGHT (beyond the planned sites):**
+- `tests/data/test_22a_task2_migration_0037.py::test_the_sql_and_python_admission_tier_enums_agree`: a hash-seed flake (fixed in `7b6d5776`, measured above).
+- Handoff 2's "nothing imports the tier set from `latched_origin`" was FALSE. The same test imports `PROVENANCE_ADMISSION_TIERS` through that re-export in a MULTI-LINE import, which a single-line grep cannot see. A multiline search over the whole worktree confirms it is the only consumer. The re-export is value-agnostic (it is the same object).
+- `_fill_anchor_drift`'s escalation compared `str(None)` (`'None'`) against an ISO session. `'N'` sorts after every digit, so every identity move of a kind-2 row would have reported a FALSE `CITATION INVALIDATED`. A NULL anchor is now skipped (`cohort_provenance_correction.py:4350`).
+- `_read_provenance_corrections_inner` crashed (`json.loads(None)`) on any kind-2 row. The recommendation drift is now kind-1 only (`:4452`ff).
+- `_authorize`'s replay compare raised `int(None)` on a kind-2 row. The kind is now compared first (`:2271`), and the refusal names the existing row's kind (`_existing_correction_refusal`, `:2331`).
+- The CLI's tier echo fell through to the latch rows for any non-`last_word` tier (`cli.py:3610-3619`).
+
+**Mirror closure -- CLOSED BY READ (each member grepped SEPARATELY over `swing/` and `tests/`, then every hit file READ at its sites). Method: per-member `grep -rn -w` over `swing/` (`.py`, `.sql`, `.j2`), plus a multiline search for re-export consumers. A grep bounds the family from below; each site below was read.**
+
+| Member / site | file:line | Verdict |
+|---|---|---|
+| `correction_kind` CHECK, coupling CHECK, five kind-CASE CHECKs, two `IS NULL OR` CHECKs, presence CHECK, citation trigger edits 0-3, update trigger `IS` lines | `0042_*.sql` (cell 3) | changed, pinned by 1b-1m, 1v |
+| Python constants (`PROVENANCE_CORRECTION_KIND_*`, `PROVENANCE_ADMISSION_TIERS` (4), `_BY_KIND`, `PROVENANCE_WATCH_FIRE_*`) | `models.py:3073-3118` | changed (cell 3); comparator 1m |
+| `ProvenanceCorrection.__post_init__` / `_require_value_envelope(kind=)` / snapshot bucket by kind (`"watch" if watch_fire else "aplus"`) | `models.py:3259-3290, 3484-3660, 3755` | changed (cell 3); 1b-1m |
+| repo `_COLUMNS` + `correction_kind` | `repos/provenance_corrections.py:24` | changed (cell 3); a2_24 |
+| `APLUS_BUCKET` gate | `cohort_provenance_correction.py:1155` | kind-1 only (in `_anchor_half`), unchanged |
+| `REQUIRED_RECOMMENDATION` | `:973, :1146` | kind-1 only, unchanged |
+| `UNSET_TRADE_ORIGIN` gate | `:927` | kind-1 only (`_gate_on_unset_state`), unchanged |
+| `_authorize` existing-row compare | `:2271-2283` | CHANGED (kind first) |
+| kind-1 inner already-applied `int(cited_daily_recommendation_id)` | `:3176` | safe: reached only via `_authorize`'s kind-1 `same` branch |
+| `_preview_from_existing` | `:2872-2888` | CHANGED: NULL-safe, carries kind |
+| `CohortProvenanceCorrectionPreview` / `Result` recommendation fields | `:1860, :2919` | CHANGED: `int / str \| None`, `correction_kind` field |
+| reader recommendation snapshot drift | `:4468-4473` | CHANGED: kind-1 only |
+| reader bucket + origin re-derivation | `:4151-4169` | CHANGED: kind-dispatched (`watch` / `pipeline_watch_manual` for kind 2) + `_last_fire_drift` (`:4217`) |
+| reader trade-triple re-read over `COHORT_CORRECTED_FIELDS` | `:4208` | value-agnostic: the kind-2 applied envelope carries all three keys (origin unchanged) |
+| reader fill-anchor escalation | `:4344-4350` | CHANGED: NULL recommendation anchor skipped |
+| tier-2 replay dispatch `== LATCH_TIER2` | `:4432, :4446`; `frozen_value_evidence.py:1305-1311, 1392-1397` | value-agnostic: tier2-only filters; `last_fire` correctly excluded |
+| `latched_origin.py` re-export | `:47, :103`; prose `:146-149, :469, :756, :790, :842` | value-agnostic; sole consumer `test_22a_task2_migration_0037.py` (multi-line import) |
+| `entry_intent_assignment.py` corrected-fields read | `:305-312` | value-agnostic: a set of `trades.<f>` strings; kind 2's two fields count as touched, which is correct |
+| `trg_eia_audit_trail` | `0040_*.sql:625-635` | value-agnostic (the same set membership in SQL) |
+| CLI `COHORT_FIELD_ORDER` | `cli.py:3587` | value-agnostic: kind-2 pre/post carry all three keys |
+| CLI tier echo | `cli.py:3606-3631` | CHANGED: `last_fire` branch + `correction kind` line |
+| CLI recommendation citation (dry run, apply, already-applied, reader) | `cli.py:3655, 3872, 3958, 3978, 4030-4040` | CHANGED: `(none: watch-fire relabel)` |
+| CLI options / mode check | `cli.py:3736, 3807` | CHANGED (T1.3) |
+| `db.py` version comment | `db.py:119-121` | prose, current |
+| web / metrics / templates | `grep -rln provenance_corrections swing` = cli, db, models, repo, the service, entry_intent_assignment, frozen_value_evidence, latched_origin | no web, metrics or template reader of the table |
+| tests: tier-set literals | `test_migration_0039_*.py:395` (a2_20, 0039's OWN header text: correct at 3), `:449-452`, `test_migration_0042_*.py:610-637`, `test_22a_task2_migration_0037.py` (fixed) | read |
+| **Comparator (mandatory member)** | `tests/data/test_migration_0042_watch_fire_relabel.py` 1m (both kinds) + `test_22a_task2_migration_0037.py` (both IN-lists) | green |
+
+## Executing -- handoff 4 (seat roll; written for a FRESH executing cell)
+
+**Head at this handoff:** `c20bb128` plus this ledger commit, branch `sg-label`. The tree is clean. Base of the executing diff for Reviewer A is still `b120a6eb`.
+
+**Full fast suite.** At `7b6d5776`: 1 failed / 15936 passed / 13 skipped (1025 s, `-n 8`). The failure was `tests/metrics/test_22b_r1_3_surfaces_census.py::test_census_roster_matches_the_grep_for_each_governed_name`: T2.1 moved the prefill's `build_recommendation_progress` call into `_progress_reader`, and the census keys each site by its stripped line text. Fixed in `7f06cf1e` + `c20bb128`; `7f06cf1e` itself was committed RED, because the commit gate read pytest's tail rather than its exit status, and it is recorded rather than rewritten. **At `c20bb128`: 15937 passed / 13 skipped, 0 failed (1039 s, `-n 8`). `ruff check swing/` clean.** Neither run is the gate file `exec-branch-suite.txt`, which belongs to the final gate.
+
+**Census note for T2.2-2.3:** `list_decision_nights` is a new consumer of the governed progress read through `_progress_reader`. Its web callers (the GET degrades, the POST refuses 400) must be classified in that census's roster in the T2.2-2.3 commit if the census walks them. Check `test_22b_r1_3_surfaces_census.py`'s governed-name list first.
+
+**What remains, in order (the next cell's):**
+1. **T2.2-T2.3** (one commit, `feat(web): T2.2-2.3 (D102) -- the entry form names the decision night`; tests 2b-2g, 2i, 2j, and the GET/POST halves of 2k). Re-ground every line before editing:
+   - VM `swing/web/view_models/trades.py`, around `:583-614`: the `lookup_active_recommendation_label` call inside `try/except CohortReadRacedError`. Add `decision_nights`, `decision_nights_anchor_json` and `selected_decision_candidate_id`; `hypothesis_label` stays as the newest night's label. OMIT the chooser when (a) `list_decision_nights` returns `[]`, or (b) the auto-fill envelope recognises an order AND `list_links_for_broker_order` returns a link (the latched entry). Any new base-layout VM field needs a safe default on EVERY base VM (gotcha), but this is the entry-form VM. Check whether it is base-layout first.
+   - Template `swing/web/templates/partials/trade_entry_form.html.j2`, around `:151-152`: the `<select name="decision_candidate_id">` and the hidden `decision_nights_anchor`. Option text must be ASCII (2i).
+   - POST `swing/web/routes/trades.py`, the entry POST (the `json.loads` of the auto-fill anchor sits around `:1215`; `_reject_anchor`, `_rerender_entry_form_with_error`). Build the 4-tier ladder on `decision_nights_anchor`, then the SERVER-STAMP. `list_decision_nights` must be RE-DERIVED at POST: the chosen id must be IN it and its label must equal the submitted label, else a 400 that clears the anchor. A `CohortReadRacedError` or budget overrun at POST is a 400 (never a 500). The soft-warn `form_values` dict (around `:1960-1985`) carries both new fields. Pass `candidate_id=<chosen>` and `hypothesis_label=<server label>` to `EntryRequest`: `record_entry` already honours a supplied id when the entry is not latched (`entry.py` ~`:2016`), so there is NO `entry.py` change.
+   - `list_decision_nights(conn, *, ticker, starting_equity, budget_seconds=None, n=None) -> list[DecisionNight]` and `DecisionNight` are in `swing/recommendations/hypothesis_prefill.py` (T2.1). `PREFILL_UNAVAILABLE_TEXT` is the GET degrade text.
+2. **T2.4** `feat(cli): T2.4 (D102) -- the CLI prefill names its night`. `swing trade entry` keeps the latest night and prints `eval <id>, session <date>` on the prefill line.
+3. **T4.3 in FORM C** (FX-1, ruled; see the block quote above). NO rung on the entry POST. Every D86 anchor shape `canonical_envelope_identity` refuses must refuse the LABEL (latch binding + cohort keys: `manual_off_pipeline`, NULL label, NULL `candidate_id`) where the service refuses the latch binding. The site comment must say "refuses the LABEL, not the ENTRY". Test 4h asserts (i)-(iv) per shape and must discriminate against BOTH a 400 and an admit-with-keys implementation. Handoff 2's RED: a duplicate-key anchor without a claim got 200 AND keys on the old code. The 16 tests in `tests/web/test_routes/test_22a_task10_entry_route_ext2.py` stay green. Do NOT apply `t43-parked-route.diff` (form A). The parked 4h test (`t43-parked-test_d86_entry_raw_rung.py`) is a starting point for the anchor shapes only, because its assertions are form A's.
+4. **Gates:** the full fast suite to `C:\Users\rwsmy\swing-data\review-transcripts\sg-label\exec-branch-suite.txt` (foreground, `-n 8`, tail only), `ruff check swing/`, migrate-twice (1k) and the drift test (1m). Then RETURN before Reviewer A.
+
+**Owed, banked here for the merge gate:** the a2_77 rename (deviation 7) and cell 3's `v40` fixture rename (both separate renames), and the plan-text correction of section 0.3 / the review-form consumer row (deviation 4).
+
+**Open questions:** none.
