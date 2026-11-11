@@ -97,9 +97,10 @@ block_if_running_within_seconds = 120     # concurrent-run rejection window
 staging_orphan_age_seconds = 3600          # delete .staging/ without manifest after 1h
 prev_dir_retention_days = 7                # delete .prev/ after N days
 chart_top_n_watch = 10                      # render charts for top-N tag-aware watchlist (chart-scope policy v2; was 5 pre-2026-04-28)
-# detect_watch_pool_cap is unset (None = uncapped) until the ranked fix merges: the lever
-# sorted by rs_rank, which is NULL on every live watch row, so pattern_detect raised on
-# runs 201 and 202 (CHARC ruling 2026-10-29). The operator restores 15 after the fix.
+# detect_watch_pool_cap is unset (None = uncapped) by RD ruling 2026-10-29 (operator-agreed):
+# a cap is set only from a measured cost (the observe wall approaching 1,800 s), stated in the
+# watch-standard with its RS-selection consequence. The lever ranks watch by
+# rs_return_12w_vs_spy desc (c84f21cd) if it is ever set.
 
 [export]
 # Briefing export (spec §6.4)
