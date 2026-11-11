@@ -747,6 +747,33 @@ def test_review_runs_tests_without_writing_bytecode_or_a_pytest_cache(
     assert "-p no:cacheprovider" in seen["env"]["PYTEST_ADDOPTS"]
 
 
+RECIPE = REPO_ROOT / "docs" / "implementer-dispatch-recipe.md"
+
+
+def test_recipe_states_the_claude_pass_verdict_line_and_the_two_transcript_rules() -> None:
+    """CHARC B1 (Codex R1-4b) and the R1-1 decline: the Claude pass's verdict line is
+    ``VERDICT: <token>`` with exactly one token, the bare tokens and the zero-ERROR
+    assertion are the Codex chain's transcript rules, and a Codex turn never fails on a
+    bare ERROR line. One clause of the recipe's other-model sentence, so nobody re-files
+    either finding."""
+    m = _load()
+    rows = [
+        ln
+        for ln in RECIPE.read_text(encoding="utf-8").splitlines()
+        if ln.startswith("**Two implementer lanes, one rule:")
+    ]
+    assert len(rows) == 1
+    for phrase in (
+        "`VERDICT: <token>`",
+        "exactly one distinct token",
+        "the CODEX CHAIN's transcript rules",
+        "never on a bare `ERROR` line",
+        "the `succeeded in` line",
+        *m.VERDICT_TOKENS,
+    ):
+        assert phrase in rows[0], phrase
+
+
 # ------------------------------------------- the cell's agent file (P3, the preamble) --
 AGENT_FILE = REPO_ROOT / ".claude" / "agents" / "implementer-codex-sol-high.md"
 
