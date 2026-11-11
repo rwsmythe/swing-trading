@@ -417,6 +417,33 @@ def test_claude_utilization_whose_pace_is_no_number_is_an_error_reading(
         assert "error" in parsed and "pace" not in parsed, util
 
 
+def test_a_boolean_usage_value_is_an_error_reading(tmp_path, monkeypatch, capsys):
+    """Codex R4-4: ``float()`` reads a JSON boolean as 0 or 1, so ``false`` became a valid
+    zero-usage reading that wins the lane comparison, and a boolean ``resetsAt`` a reset in
+    1970. A boolean is no number, in either readout."""
+    mod = _load("usage_codex")
+    for over in (
+        {"usedPercent": False},
+        {"usedPercent": True},
+        {"resetsAt": False},
+        {"resetsAt": True},
+    ):
+        result = _limits(_weekly(**over), None)
+        monkeypatch.setattr(mod, "read_rate_limits", lambda exe, timeout, r=result: r)
+        assert mod.main(["--exe", "codex.exe"]) == 1, over
+        parsed = json.loads(capsys.readouterr().out)
+        assert parsed["lane"] == "codex" and "error" in parsed and "pace" not in parsed, over
+    for util in (False, True):
+        def body(req, u=util):
+            b = {"seven_day": {"utilization": u, "resets_at": "2026-11-02T10:00:00+00:00"}}
+            return _Resp(json.dumps(b).encode("utf-8"))
+
+        rc, out, _ = _run_claude(tmp_path, monkeypatch, capsys, body)
+        assert rc == 1, util
+        parsed = json.loads(out)
+        assert "error" in parsed and "pace" not in parsed, util
+
+
 def test_codex_without_an_executable_is_no_reading(tmp_path, capsys):
     mod = _load("usage_codex")
     rc = mod.main(["--exe", str(tmp_path / "no-such-codex.exe"), "--timeout", "1"])

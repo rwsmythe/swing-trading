@@ -76,6 +76,13 @@ def pace_from(
     }
 
 
+def number(value: Any) -> float:
+    """``float(value)``, refusing a JSON boolean, which ``float`` reads as 0 or 1 (Codex R4-4)."""
+    if isinstance(value, bool):
+        raise ValueError("a boolean where a number belongs")
+    return float(value)
+
+
 def read_rate_limits(exe: str, timeout: float) -> dict[str, Any]:
     """Run the three JSON-RPC calls and return the ``account/rateLimits/read`` result."""
     proc = subprocess.Popen(
@@ -155,9 +162,9 @@ def main(argv: list[str] | None = None) -> int:
         if not weekly:
             raise ValueError("no 10080-minute (weekly) window in rateLimits")
         primary = weekly[0]
-        used = float(primary["usedPercent"])
-        window = float(primary["windowDurationMins"])
-        resets = float(primary["resetsAt"])
+        used = number(primary["usedPercent"])
+        window = number(primary["windowDurationMins"])
+        resets = number(primary["resetsAt"])
         # The reading is built INSIDE the guard, and a non-finite number is no reading
         # (Codex R1-9): a malformed body prints the JSON error, never a traceback or NaN.
         if not all(math.isfinite(x) for x in (used, window, resets)):

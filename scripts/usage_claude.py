@@ -98,9 +98,12 @@ def parse_usage(body: dict[str, Any], now_epoch: float) -> dict[str, Any]:
     Uses ``seven_day.utilization`` (percent) and ``seven_day.resets_at``
     (ISO 8601 with offset). Raises ``KeyError``/``ValueError`` on a body
     without them, and ``ValueError`` on a non-finite utilization (Codex R1-9) or a
-    negative one, or a pace that is not finite (Codex R2-3).
+    negative one, or a pace that is not finite (Codex R2-3), or a boolean one, which
+    ``float`` reads as 0 or 1 (Codex R4-4).
     """
     week = body["seven_day"]
+    if isinstance(week["utilization"], bool):
+        raise ValueError("a boolean utilization in seven_day")
     used = float(week["utilization"])
     if not math.isfinite(used):
         raise ValueError("a non-finite utilization in seven_day")
