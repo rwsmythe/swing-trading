@@ -39,6 +39,10 @@ from swing.trades.latched_origin import (
     PROBE_GUARD_KEYS,
     PROVENANCE_ADMISSION_TIERS,
 )
+from swing.data.models import (
+    PROVENANCE_ADMISSION_TIERS_BY_KIND,
+    PROVENANCE_CORRECTION_KIND_FILL_UNSET,
+)
 from tests.data._migration_text import head_create_statement
 from tests._latch_link_fixtures_22a import (
     BROKER_ORDER_ID,
@@ -821,8 +825,16 @@ def test_the_sql_and_python_admission_tier_enums_agree(conn) -> None:
     found = set(re.findall(
         r"admission_tier IN \(([^)]*)\)", sql))
     assert found, "no admission_tier CHECK enum in the live schema"
-    values = set(re.findall(r"'([^']+)'", found.pop()))
-    assert values == PROVENANCE_ADMISSION_TIERS
+    # sg-label (0042) added a SECOND `admission_tier IN (` list -- the
+    # kind-coupling CHECK's kind-1 arm -- so `found.pop()` picked one of two
+    # lists by SET ITERATION ORDER, which varies with PYTHONHASHSEED: a
+    # latent flake that passed or failed by process (mirror-closure read,
+    # cell 4). Each list is now compared to the set it mirrors.
+    lists = {frozenset(re.findall(r"'([^']+)'", body)) for body in found}
+    assert lists == {
+        frozenset(PROVENANCE_ADMISSION_TIERS),
+        PROVENANCE_ADMISSION_TIERS_BY_KIND[PROVENANCE_CORRECTION_KIND_FILL_UNSET],
+    }, lists
 
 
 def test_the_migrations_authorization_closure_list_matches_the_roster() -> None:
