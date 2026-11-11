@@ -359,3 +359,31 @@ Method: grep and targeted reads, not a reread end to end.
 - The R1-02 equality check reads a real field: `_FireKeys.hypothesis_id` exists (`cohort_provenance_correction.py:1438`).
 
 - **SS-1 (task-bearing; a residue of the R2-01 fix).** R2-01 moved `list_decision_nights` onto the POST path. On a raced cohort read, that function raises `CohortReadRacedError`. The GET degrades on it, but the POST has no stated behaviour. FIXED: the POST refuses with 400, clears the anchor and asks for a re-render; it never persists and never returns 500. Test 2d gains the raced-read case.
+
+## Executing -- handoff 1 (seat roll; written for a FRESH executing cell)
+
+**Head at this handoff:** `8405528b` on branch `sg-label` (worktree `.worktrees/sg-label`). Base of the executing diff for Reviewer A: `b120a6eb` (the plan's final plan-loop commit). Work order followed is the PLAN's (T3, T4, T1, T2), not the order of the dispatch's yield list.
+
+**Commits so far (shipped order):**
+| SHA | Item |
+|---|---|
+| `e8a6ff1c` | Step 0: CHARC's plan-stage amendment (`20261111T185452Z`) folded into T1.6 step 7 (validate AS THE WALK VISITS, newest first; STOP at the derived fire; rows older than it are not read) + test 1n's older/newer-unreadable pair. Docs-only pathspec commit. |
+| `063235a1` | T3 (D103): `hypothesis.py` baseline comment points at the AST census test; no test (brief). |
+| `7a2ed3ff` | T4.1 (D86): shape gate in `exit.py:_normalize_trade_event_date_to_iso`. |
+| `8405528b` | T4.2 (D86): finite-price refusal at `record_exit` (`check_exit_preconditions`) and `record_entry`. |
+
+**RED/GREEN evidence (T4.1-T4.2), file `tests/trades/test_d86_input_domain.py`:** on the pre-change tree 11 failed / 11 passed (RED: 4a compact, 4c week, 4d compact-T on exit; 4b/4c on entry; 4e exit `inf`; 4f entry `inf`/`-inf`/`nan`/`0`/`-1` -- the old code wrote `inf` rows, hit an `IntegrityError` at the NOT NULL for `nan`, and gave the stop-comparison text for `0`/`-1`; GREEN keepers: 4g canonical date, T-form, microsecond and `HH:MM`, tz-aware and calendar-invalid refusals, 4d on entry which the old `"T" in` guard already refused). After T4.1: 6 failed (the price tests only). After T4.2: 22 passed. Related suites (`test_exit`, `test_entry`, `test_d79_exit_preconditions`, `test_22f_exit_price_guard`, `test_22f_exit_post`, `test_22f_cli_typed_refusals`, `test_22f_{entry,exit}_auto_fill_guards`) 146 passed at `8405528b`. `ruff check swing/` clean. The FULL fast suite has NOT been run yet.
+
+**Deviations from the plan's letter, each with its reason (for the merge gate):**
+1. T4.1 regexes use ASCII `[0-9]` and `re.fullmatch`, not `\d` and `^...$`: `\d` matches every Unicode digit and `$` matches before a trailing newline.
+2. T4.1 keeps two pre-existing refusal texts instead of one generic message: a canonical body carrying `Z`/`+hh:mm` is refused by the existing "timezone-aware" text (via `_CANONICAL_DATETIME_TZ_RE`, ahead of the shape gate), and a malformed T-form keeps "contains 'T' but is not a valid ISO datetime" with the canonical form appended. Reason: `test_exit.py::test_record_exit_rejects_timezone_aware_iso_datetime` and `::test_record_exit_rejects_malformed_exit_date_with_t` pin those texts, and they are the more informative messages. The post-parse tz branch stays as the belt (now unreachable). Date-only non-canonical input gets the plan's text verbatim.
+3. T4.2 exit side is two checks, not one `isfinite and > 0` conjunction: the old `> 0` check runs first with its old text, then `math.isfinite` with "exit price must be a finite number > 0". Reason: D79's `test_t7a_iv_each_refusal_keeps_its_existing_text` pins the `0.0`/`nan` texts exactly. The refused set is identical to the plan's conjunction. Entry side is the plan's single conjunction and text.
+4. `tests/trades/test_22f_exit_price_guard.py::test_A6f_*` (a BOUND pin whose docstring said it would be inverted) is inverted and renamed `test_A6f_bound_pin_inverted_by_d86_inf_price_is_refused`; the module docstring sentence updated.
+
+**What remains (all of it is the successor's):**
+- **T4.3** (plan T4.3, test 4h, file `tests/web/test_routes/test_d86_entry_raw_rung.py`): extract `_raw_anchor_is_refused(raw)` from `swing/web/routes/trades.py:_exit_raw_anchor_is_refused` (keep the exit name as an alias) and add the rung BEFORE the entry POST's `json.loads` (~`:1215`), routed to the EXISTING `_reject_anchor(_ENTRY_RAW_ANCHOR_UNREADABLE_TEXT)` with every `submitted_*` anchor `None`. Not started. Re-ground the line numbers (they drift).
+- **T1** (plan T1.0-T1.7, tests 1a-1v + 1q, three commits per the plan; schema manifest regenerated in the migration commit; the amended step 7 walk). Not started. No mirror-closure reads done yet -- the closure list is entirely open (the plan's "Mirror closure" paragraph is the site list; grep each member separately).
+- **T2** (plan T2.1-T2.4, tests 2a-2k). Not started.
+- Then the gates: full fast suite to `C:\Users\rwsmy\swing-data\review-transcripts\sg-label\exec-branch-suite.txt` (foreground), ruff, migrate-twice, drift test both kinds, Reviewer A `strong` to convergence (transcripts under `...\sg-label\exec\`, round ledger in the worktree's `.copowers-findings.md` with a depth column the orchestrator fills).
+
+**Open questions:** none. The scratch copy of the full D86 test file used to split the T4.1/T4.2 commits sits in the departing cell's session scratchpad and is not needed (the committed file is complete).
