@@ -42,7 +42,9 @@ This script pins the three operations so no seat improvises the flags:
     The sandbox protects ``.git``, so the cell cannot commit. This reads the
     return file's ``FILES CHANGED`` block and ``COMMIT`` subject and commits
     exactly those paths by pathspec with the attribution footer naming the
-    model (owner-approved form, 2026-10-27).
+    model (owner-approved form, 2026-10-27). Each entry must be ONE file inside
+    the worktree (``check_files_changed``); one bad entry stages nothing, and git
+    runs with ``--literal-pathspecs`` (Codex R1-2).
 
 ``review``
     The Claude reviewer pass for the Codex lane (Reviewer A between turns, run
@@ -378,15 +380,43 @@ def cmd_turn(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def check_files_changed(files: list[str], worktree: str) -> list[str]:
+    """Problems with a FILES CHANGED list; empty when every entry is ONE worktree file.
+
+    The entries are model-written text (Codex R1-2). Each must be relative (no drive, no
+    leading ``/``), carry no ``..`` or ``.git`` segment and no leading ``:`` (git pathspec
+    magic), stay inside the worktree, and not name a directory (which selects a subtree).
+    A deleted file passes: it no longer exists, and git stages the deletion. The commit
+    also runs git with ``--literal-pathspecs``.
+    """
+    root = pathlib.Path(worktree).resolve()
+    problems: list[str] = []
+    for f in files:
+        parts = pathlib.PurePosixPath(f).parts
+        if not f or f.startswith(("/", ":")) or re.match(r"^[A-Za-z]:", f):
+            problems.append(f"{f}: absolute, drive-qualified or pathspec magic")
+        elif any(p == ".." for p in parts) or any(p.lower() == ".git" for p in parts):
+            problems.append(f"{f}: a '..' or '.git' segment")
+        elif (root / f).is_dir():
+            problems.append(f"{f}: a directory, not one file")
+        elif not (root / f).resolve().is_relative_to(root):
+            problems.append(f"{f}: resolves outside the worktree")
+    return problems
+
+
 def cmd_commit(args: argparse.Namespace) -> int:
-    """Commit the turn's FILES CHANGED by pathspec with the model's footer."""
+    """Commit the turn's FILES CHANGED by literal pathspec with the model's footer."""
     ret = parse_return(pathlib.Path(args.return_file).read_text("utf-8", errors="replace"))
     files = ret["files_changed"]
     subject = args.subject or ret["commit_subject"]
     if not files or not subject:
         print(json.dumps({"error": "no FILES CHANGED block or COMMIT subject", **ret}))
         return 1
-    git = ["git", "-C", args.worktree]
+    problems = check_files_changed(files, args.worktree)
+    if problems:
+        print(json.dumps({"error": "FILES CHANGED refused; nothing staged", "problems": problems}))
+        return 1
+    git = ["git", "-C", args.worktree, "--literal-pathspecs"]
     subprocess.run([*git, "add", "--", *files], check=True)
     subprocess.run(
         [*git, "commit", "-q", "-m", subject, "-m", args.footer, "--", *files], check=True

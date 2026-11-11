@@ -420,6 +420,71 @@ def test_turn_passes_on_the_unelevated_identity(tmp_path, monkeypatch, capsys) -
     assert rc == 0
 
 
+# ------------------------------------------- the commit's FILES CHANGED gate (R1-2) --
+def _commit(m, tmp_path, monkeypatch, capsys, entries: list[str]):
+    """Run ``commit`` on a return file listing ``entries``; git calls are recorded, not run
+    (no real git, so the test stays outside the sandbox's git-family residue)."""
+    wt = tmp_path / "wt"
+    (wt / "sub").mkdir(parents=True)
+    ret = tmp_path / "return-1.md"
+    block = "".join(f"- {e}\n" for e in entries)
+    ret.write_text(f"Done.\n\nFILES CHANGED:\n{block}COMMIT: feat(x): y\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    class _Done:
+        stdout = "abc1234\n"
+        returncode = 0
+
+    def fake_run(cmd, *a, **k):
+        calls.append(list(cmd))
+        return _Done()
+
+    monkeypatch.setattr(m.subprocess, "run", fake_run)
+    rc = m.main(["commit", "--worktree", str(wt), "--return-file", str(ret)])
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    return rc, out, calls
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ":(glob)**",
+        ":!src",
+        "sub",
+        "../outside.txt",
+        "a/../../outside.txt",
+        "C:/Users/x/file.py",
+        "/etc/passwd",
+        ".git/config",
+        "pkg/.GIT/hooks/pre-commit",
+    ],
+)
+def test_commit_refuses_an_entry_that_is_not_one_worktree_file(
+    tmp_path, monkeypatch, capsys, bad
+) -> None:
+    """Codex R1-2: an entry is model-written text. Pathspec magic, a directory, a path
+    outside the worktree or into .git would commit files the turn never reported. The WHOLE
+    list is checked before anything is staged, so a good entry beside it stages nothing."""
+    m = _load()
+    rc, out, calls = _commit(m, tmp_path, monkeypatch, capsys, ["src/ok.py", bad])
+    assert rc == 1
+    assert calls == []
+    assert out["problems"] and bad in out["problems"][0]
+
+
+def test_commit_stages_and_commits_with_literal_pathspecs(tmp_path, monkeypatch, capsys):
+    m = _load()
+    rc, out, calls = _commit(m, tmp_path, monkeypatch, capsys, ["src/ok.py", "tests/t.py"])
+    assert rc == 0
+    assert out["files"] == ["src/ok.py", "tests/t.py"]
+    add, commit = calls[0], calls[1]
+    for c in (add, commit):
+        assert c[:4] == ["git", "-C", str(tmp_path / "wt"), "--literal-pathspecs"]
+        assert c[-3:] == ["--", "src/ok.py", "tests/t.py"]
+    assert add[4] == "add" and commit[4] == "commit"
+    assert m.CODEX_FOOTER in commit
+
+
 # ---------------------------------------- completion evidence in the exit rule (R1-1) --
 def test_turn_aborted_after_the_witness_fails(tmp_path, monkeypatch, capsys) -> None:
     """Codex R1-1: banner and identity right, then an abort -- no footer. The footer is
