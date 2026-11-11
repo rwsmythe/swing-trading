@@ -4,7 +4,7 @@ Pins the things a service-level test structurally CANNOT see:
 
   - the commands are REGISTERED on the flat `journal` group;
   - FREE-TYPING A COHORT KEY IS UNREPRESENTABLE -- the click parameter
-    manifest is READ and asserted to be exactly six entries, which a grep for
+    manifest is READ and asserted to be exactly seven entries, which a grep for
     `"--label"` could never establish (a grep bounds the family from below and
     would miss `--hypothesis-label` or any other spelling);
   - `--reason` is NOT `required=True` at the parser. Click rejects a missing
@@ -75,11 +75,18 @@ def test_a2_77_the_click_parameter_manifest_is_exactly_six_entries() -> None:
 
     22-A2 (Task 8) added the SIXTH, `frozen_value_evidence`, declared LAST.
     It is a SELECTION -- a path to a file naming where the record is -- and
-    carries no cohort value (F9). PRE: five entries -> the equality fails."""
+    carries no cohort value (F9). PRE: five entries -> the equality fails.
+
+    sg-label T1.3 (D104) added the SEVENTH, `cite_fire_candidate_id`,
+    declared after it: a ROW ID the service only confirms against the last
+    fire it derives, never a value. The test NAME still says six; its rename
+    is owed as a separate change (the version-mirror rule's reason: a rename
+    in the commit that moves the assertion obscures the diff)."""
     cmd = main.commands["journal"].commands["correct-cohort-provenance"]
     assert [p.name for p in cmd.params] == [
         "trade_id", "cited_candidate_id", "cited_recommendation_id",
         "reason", "dry_run", "frozen_value_evidence",
+        "cite_fire_candidate_id",
     ]
     assert "help" not in {p.name for p in cmd.params}
     for param in cmd.params:

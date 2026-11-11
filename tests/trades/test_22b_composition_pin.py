@@ -392,6 +392,8 @@ def _source_sha(module_path: str, fn_name: str) -> str:
 # post-re-scope sha, so a further edit is still a visible drift.
 _REASON_SG = ("re-scoped sg-label (0042), reason: HEAD moved to 0042; "
               "ledger 'Executing -- cell 3', class 3")
+_REASON_SG_CLI = ("re-scoped sg-label T1.3, reason: the CLI manifest gained "
+                  "--cite-fire-candidate; ledger 'Executing -- cell 4'")
 RE_SCOPED_SG_LABEL: dict[str, tuple[tuple[str, str], str, str]] = {
     "A2-10": ((_M4, "test_a2_10_three_edits_of_the_v38_stored_ddl_equal_the_v39_stored_ddl"),
               "701a850b276f78df58c6b896116780ed4b2c8f22cd08665000ec3363f9a3dc83", _REASON_SG),
@@ -407,6 +409,9 @@ RE_SCOPED_SG_LABEL: dict[str, tuple[tuple[str, str], str, str]] = {
               "798240c3e8e1df84e94a209b81dca40e721a5ab3bd7496748ccc850b61d1b5eb", _REASON_SG),
     "A2-31": ((_M4, "test_a2_31_the_tier2_row_is_append_only"),
               "ad340cc4e2b16c48e95479ef8cb292e649d944c5f55bf53ecee26fde5199d9a1", _REASON_SG),
+    "A2-77": ((_M1, "test_a2_77_the_click_parameter_manifest_is_exactly_six_entries"),
+              "7ce186263c14ebc7eb009214c76de6900f76537572634cfb24bf19d0da1859cb",
+              _REASON_SG_CLI),
 }
 
 
@@ -436,7 +441,7 @@ def test_the_22a2_case_functions_are_byte_unchanged_except_three_re_scoped_b22_1
     assert not drifted, drifted
     assert not set(RE_SCOPED_SG_LABEL) & set(RE_SCOPED_22B)
     for rid, (key, sha, reason) in RE_SCOPED_SG_LABEL.items():
-        assert reason == _REASON_SG
+        assert reason in (_REASON_SG, _REASON_SG_CLI)
         assert implementing[rid] == key, (rid, implementing[rid])
         assert _source_sha(*key) == sha, rid
         assert BASE_PINS_22A2[key] != sha, (rid, "re-scope changed nothing")
