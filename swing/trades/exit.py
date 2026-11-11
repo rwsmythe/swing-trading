@@ -22,6 +22,7 @@ through ``_rollback_or_raise`` (the S-D39 template in the D73 shape).
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -96,6 +97,38 @@ class ExitResult:
     fully_closed: bool
 
 
+# D86 (sg-label T4.1): the SHAPE gate ahead of each parse. Python 3.11+'s
+# ``date.fromisoformat`` ACCEPTS the compact ``20261019`` and the week date
+# ``2026-W01-1`` (measured: -> 2025-12-29), and ``datetime.fromisoformat``
+# ACCEPTS ``20261019T160000``; the helper stores the RAW string as the prefix,
+# so a lenient parse persisted a non-canonical value. ASCII ``[0-9]`` (never
+# ``\d``, which matches every Unicode digit).
+_CANONICAL_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_CANONICAL_DATETIME_BODY = (
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,6})?)?"
+)
+_CANONICAL_DATETIME_RE = re.compile(_CANONICAL_DATETIME_BODY)
+# A canonical body carrying an offset: refused by its OWN (pre-D86) message,
+# the more useful one, rather than by the generic shape refusal.
+_CANONICAL_DATETIME_TZ_RE = re.compile(
+    _CANONICAL_DATETIME_BODY + r"(Z|[+-][0-9]{2}:[0-9]{2}(:[0-9]{2})?)"
+)
+
+
+def _non_canonical_date_error(field_name: str, raw: str) -> ValueError:
+    return ValueError(
+        f"{field_name} {raw!r} is not in the canonical form YYYY-MM-DD "
+        f"(or YYYY-MM-DDTHH:MM[:SS[.ffffff]])"
+    )
+
+
+def _tz_aware_error(field_name: str, raw: str) -> ValueError:
+    return ValueError(
+        f"{field_name} {raw!r} is timezone-aware; Phase 7 stores naive "
+        f"ISO datetimes — strip the offset before persisting"
+    )
+
+
 def _normalize_trade_event_date_to_iso(raw: str, *, field_name: str = "date") -> str:
     """Validate + canonicalize a trade-event date string to ISO-8601 datetime.
 
@@ -123,6 +156,14 @@ def _normalize_trade_event_date_to_iso(raw: str, *, field_name: str = "date") ->
     if not isinstance(raw, str) or not raw:
         raise ValueError(f"{field_name} must be a non-empty string; got {raw!r}")
     if "T" in raw:
+        if _CANONICAL_DATETIME_TZ_RE.fullmatch(raw) is not None:
+            raise _tz_aware_error(field_name, raw)
+        if _CANONICAL_DATETIME_RE.fullmatch(raw) is None:
+            raise ValueError(
+                f"{field_name} {raw!r} contains 'T' but is not a valid ISO "
+                f"datetime in the canonical form YYYY-MM-DDTHH:MM[:SS[.ffffff]] "
+                f"(or a date-only YYYY-MM-DD)"
+            )
         try:
             parsed = datetime.fromisoformat(raw)
         except ValueError as exc:
@@ -133,12 +174,12 @@ def _normalize_trade_event_date_to_iso(raw: str, *, field_name: str = "date") ->
         # values would break the lexicographic-ordering invariant that
         # fills.py:list_fills_for_trade ORDER BY relies on, and tos_import's
         # substr(fill_datetime, 1, 10) date prefix becomes ambiguous.
+        # D86: unreachable after the shape gate; kept as the belt.
         if parsed.tzinfo is not None:
-            raise ValueError(
-                f"{field_name} {raw!r} is timezone-aware; Phase 7 stores naive "
-                f"ISO datetimes — strip the offset before persisting"
-            )
+            raise _tz_aware_error(field_name, raw)
         return raw
+    if _CANONICAL_DATE_RE.fullmatch(raw) is None:
+        raise _non_canonical_date_error(field_name, raw)
     try:
         date.fromisoformat(raw)
     except ValueError as exc:
