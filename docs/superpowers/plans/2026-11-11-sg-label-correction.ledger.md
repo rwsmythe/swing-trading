@@ -492,6 +492,12 @@ After `tests/data`, run the FULL fast suite once with the patch applied, to find
 >
 > The claim-consistency ladder is a different guard over a different assertion. It refuses the operator's explicit FILL-ORIGIN CLAIM (fill_origin_at_form_render says the date, price and shares came from the selected Schwab order) when the anchor that would evidence the claim is empty, undecodable, not an object, missing a required key, or carries invalid values. It predates the cohort keys, it is the standing 400-and-clear ladder, and it is not a cohort-bookkeeping guard. FX-1 does not reach it.
 
+### The entry-refusal rule (RD, item A, `20261112T001157Z`, msg-id `af8788d3b0003df7`; verbatim, binding)
+
+**Ruling seat:** RD. **Courier:** the orchestrator (relayed to executing cell 6). RD's words on it: "THE RULE THIS ADDS TO THE FX-1 BOUNDARY (record it beside the FX-1 and FX-2 block quotes, verbatim)" and "The FX-1 boundary text I wrote for FX-2 lists candidate_id among the cohort keys without this distinction. Read literally it would reach T2's 400. This rule is the correction of that text, and it is mine." The full ruling is under "Rulings after round 1".
+
+> "A guard may refuse the ENTRY only when BOTH hold: (1) the value it protects is one the operator EXPLICITLY ASSERTED on this submission (the fill-origin claim; the named decision night), and (2) the write WOULD USE that value. A guard over a value the system derives, or over a value the write is about to discard, refuses the LABEL and never the entry. Every entry-refusing guard must hand back a form from which the entry is recordable."
+
 ## Executing -- cell 3: the T1.1 fan-out, class by class (how each was closed)
 
 The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 171 failed / 10 errors (as handoff 2 recorded). Closed as follows (each class READ at its failing sites, not sampled):
@@ -715,6 +721,12 @@ The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 17
 
 > "The harm FX-1 exists to prevent is not present. The 400 re-renders the form with a FRESH anchor and the six core values (ticker, date, price, shares, stop, rationale/notes); the thirteen pre-trade answers are NOT preserved at this rung and must be re-entered. The entry remains recordable from the recovery form: a resubmit with the answers re-entered writes the trade. The cost of this 400 is retyping, not an unjournaled position."
 
+### The entry-refusal rule (RD, item A, `20261112T001157Z`, msg-id `af8788d3b0003df7`; verbatim, binding)
+
+**Ruling seat:** RD. **Courier:** the orchestrator (relayed to executing cell 6). RD's words on it: "THE RULE THIS ADDS TO THE FX-1 BOUNDARY (record it beside the FX-1 and FX-2 block quotes, verbatim)" and "The FX-1 boundary text I wrote for FX-2 lists candidate_id among the cohort keys without this distinction. Read literally it would reach T2's 400. This rule is the correction of that text, and it is mine." The full ruling is under "Rulings after round 1".
+
+> "A guard may refuse the ENTRY only when BOTH hold: (1) the value it protects is one the operator EXPLICITLY ASSERTED on this submission (the fill-origin claim; the named decision night), and (2) the write WOULD USE that value. A guard over a value the system derives, or over a value the write is about to discard, refuses the LABEL and never the entry. Every entry-refusing guard must hand back a form from which the entry is recordable."
+
 ## Executing -- cell 6: FX-2's condition -- the round trip FAILS (stopped, returned to RD)
 
 **Existing test searched first.** No test performs the round trip. Search: every test module containing `fill_origin_at_form_render` AND `400` was grepped for `resubmit|recovery|replay|re-post`, and every `def test_` under `tests/web` and `tests/integration` matching `round_trip|roundtrip|resubmit|recover` was read by name. The hits are soft-warn confirm round trips (200 -> `force=true`), D79 exit replays, and the 4h "never replayed" checks (`test_d86_entry_raw_rung.py:224`, which asserts the 400 and the fresh anchor but never resubmits). The two pins of the claimed-undecodable 400 (`test_entry_post_audit_columns.py::test_c_malformed_anchor_with_claim_rejects_with_400`, ext2 `::test_a_deeply_nested_envelope_does_not_500_the_ENTRY_route`) stop at the 400.
@@ -784,3 +796,62 @@ The round ran 38 exec blocks. Findings: 0 critical, 2 major, 6 minor, all new. E
 - R1-8 is service-prevented in reach; whether it falls inside CHARC's amendment is flagged to CHARC.
 
 No round 2 was started.
+
+## Rulings after round 1 (verbatim, binding)
+
+### RD, item A (R1-1 + R1-2) = B, `20261112T001157Z`, msg-id `af8788d3b0003df7`, subject "RULING item A (R1-1, R1-2) = B; entry-refusal rule added"
+
+**Ruling seat:** RD. **Courier:** the orchestrator (relayed to executing cell 6; quoted here from the delivered file `comms/orchestrator/read/20261112T001157Z-rd-ruling-item-a-r1-1-r1-2-b-entry-refusal.md`, body in full).
+
+> ITEM A (R1-1 + R1-2) = B. A is refused. C is refused. Item B is CHARC's; I say nothing on it.
+>
+> Premise read by me on sg-label @ e25dc397, swing/web/routes/trades.py:1824-1893 and the EntryRequest construction under it, not taken from the query.
+>
+> THE RULE THIS ADDS TO THE FX-1 BOUNDARY (record it beside the FX-1 and FX-2 block quotes, verbatim):
+>
+> "A guard may refuse the ENTRY only when BOTH hold: (1) the value it protects is one the operator EXPLICITLY ASSERTED on this submission (the fill-origin claim; the named decision night), and (2) the write WOULD USE that value. A guard over a value the system derives, or over a value the write is about to discard, refuses the LABEL and never the entry. Every entry-refusing guard must hand back a form from which the entry is recordable."
+>
+> The FX-1 boundary text I wrote for FX-2 lists candidate_id among the cohort keys without this distinction. Read literally it would reach T2's 400. This rule is the correction of that text, and it is mine.
+>
+> APPLIED:
+>
+> R1-1 (anchor refused by the authority): the decision-night ladder MUST NOT 400. record_entry discards the candidate and the label in that case, so clause (2) fails. The entry is written honest-unset exactly as form C already does. Log one warning that the submitted night choice was not evaluated because the anchor was refused; a malformed decision anchor on this path is named in that warning and blocks nothing.
+>
+> R1-2 (latched admission): the ladder MUST NOT 400 an entry the latch admits. The latch keeps latched.candidate_id, so clause (2) fails. The ladder's verdict is taken only after the latch outcome is known and only for a non-latched entry. If a latched entry also carried a night choice that differs from the latched candidate, log it; the latch wins, as built.
+>
+> Everything else (non-latched, anchor not refused, the operator named a night): T2's 400 STANDS, tests 2b-2g stand. Both clauses hold there. Why not C: recording such an entry unset would silently discard an explicit choice and leave an UNANCHORED row, and a row with a NULL candidate_id is the one class the kind-2 correction cannot repair (banked in my state file: an H2 fire recorded honest-unset has no relabel instrument). A refusal that returns the fresh offer costs a resubmit; C costs a cohort row for good. That is FX-2's reasoning, point 1.
+>
+> Why not A: in R1-1 and R1-2 the 400 buys nothing. It blocks an entry over a value the entry will not use, at the price of the D47-companion retyping. That is the 09-01 class.
+>
+> WHERE the deferred verdict lives (route or entry.py) is a form question for the cell and CHARC. I rule only the outcomes above.
+>
+> CONDITIONS (tests; the FX-2 lesson applied before it is needed):
+>   1. R1-1: per refused-anchor shape already in 4h, with a decision anchor present AND with a stale or malformed one -> 200, the trade written, (manual_off_pipeline, None, None), the warning logged. RED on e25dc397 for the stale and malformed cases.
+>   2. R1-2: a latch-admissible entry carrying a stale night offer -> 200 on the FIRST post, latched.candidate_id kept. RED on e25dc397.
+>   3. The 400 that stays, ROUND TRIP: non-latched, anchor accepted, the named night no longer offered -> 400 -> a resubmit built from the 400's own form (answers re-entered, per the D47 companion) -> the trade written with the night the recovery form shows. If this resubmit fails, stop and return to me: clause "recordable from the form it hands back" rests on it.
+>
+> For my own read, no ruling: the realistic trigger of the standing 400 is a form rendered before the nightly completes and posted after it. Rare, and honest. That is a further reason the D47 companion ranks where I put it.
+>
+> No change to the H2 read rule or to my witness.
+
+### CHARC, item B (R1-8) = inside the amendment, keep as built, `20261112T001142Z`, msg-id `4c9477fea501d088`, subject "SG R1-8 RULED: inside the amendment, keep as built; docstring + AL entry"
+
+**Ruling seat:** CHARC. **Courier:** the orchestrator (relayed to executing cell 6; quoted here from the delivered file `comms/orchestrator/read/20261112T001142Z-charc-sg-r1-8-ruled-inside-the-amendment-keep.md`, body in full).
+
+> ITEM B (R1-8) RULED: INSIDE the amendment. Keep as built; no code change. Item A: I hold as CC.
+>
+> Read at this seat: sg-label, swing/trades/cohort_provenance_correction.py:3360-3444 (_derive_last_fire).
+>
+> The amendment bounded the READ that can refuse for a reason an older row cannot change: the as-of matcher read (no pipeline bound, a clock-margin decline, a missing status interval, two or more matches). As built, that read walks newest first and stops at the first single-match row (:3410-3438); rows past the stop never reach _as_of_narrow_matches. That is the amendment, honoured.
+>
+> The date validation at :3399-3406 is a different act: it is what RANKS the rows. A row whose action_session_date or run_ts cannot be parsed has no position in the order, so it cannot be shown to be OLDER than the derived fire; 'rows older than the derived fire are not read' presupposes the row is known to be older. Dropping or skipping an unparseable row would be the lexical-or-silent exclusion D38 names (a malformed row filtered before any validator sees it, failing toward permissive). So refusing on an unrankable row anywhere in the ticker's rows is the amendment's own rule applied to a row that might be newer, not a deviation from it. The same holds for eligibility (e).
+>
+> I decline the narrower form (refuse only when the unparseable row cannot be proven older by its other field): it is per-shape handling of a state the single writer prevents (repos/candidates.py:17 from naive datetime.now(); 0 of 197 live), and the refusal it would avoid is loud, typed and names the row.
+>
+> Two things to land with the minors (docs-level, no round on their own):
+> 1. The docstring's last sentence says rows older than the stop are 'never read'. Make it say what is true: never passed to the matcher; every row's dates are parsed first because an unparsed row cannot be ranked. One sentence, by replacement.
+> 2. Add this to Reviewer A's round-2 accepted-limitations list WITH the reason above and the invitation to challenge it, so it is not re-found.
+>
+> Transcribe as a block quote in the exec ledger (CHARC author, you courier).
+>
+> For the D47-companion record: 15 typed values, not 13 (event_handling and gap_risk_handling too) -- taken; I correct the row at its next touch.
