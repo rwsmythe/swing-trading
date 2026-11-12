@@ -967,10 +967,12 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 from swing.recommendations.hypothesis_prefill import (
                     PREFILL_UNAVAILABLE_TEXT,
                 )
+                _night: list = []
                 try:
                     prefilled = lookup_active_recommendation_label(
                         conn, ticker=ticker.upper(),
                         starting_equity=cfg.account.starting_equity,
+                        night_out=_night,
                     )
                 except CohortReadRacedError:
                     click.echo(PREFILL_UNAVAILABLE_TEXT)
@@ -978,19 +980,14 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                     if prefilled is not None:
                         hypothesis = prefilled
                         # D102 T2.4 (F7 = A): the CLI keeps the LATEST night
-                        # (no chooser; banked) and NAMES it on the line --
-                        # the same run the lookup reads.
-                        from swing.web.view_models.dashboard import (
-                            latest_evaluation_run_id as _latest_eval,
-                        )
-                        _night_eval = _latest_eval(conn)
-                        _night_row = conn.execute(
-                            "SELECT action_session_date FROM evaluation_runs"
-                            " WHERE id = ?", (_night_eval,)).fetchone()
+                        # (no chooser; banked) and NAMES it on the line: the
+                        # night the LOOKUP read, handed back by it (Codex
+                        # R1-6), never a second read of "the latest".
+                        _night_eval, _night_session = _night[0]
                         click.echo(
                             f"Pre-filled --hypothesis: {prefilled} "
                             f"(eval {_night_eval}, session "
-                            f"{_night_row[0] if _night_row else 'unknown'})")
+                            f"{_night_session or 'unknown'})")
 
             # NEW (Task 7): sector/industry candidate-row lookup via the canonical
             # helper, mirroring the entry-form VM (Task 6) for cross-surface

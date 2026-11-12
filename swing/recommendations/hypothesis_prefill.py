@@ -116,10 +116,17 @@ def _progress_reader(conn, registry, *, starting_equity, budget_seconds):
 def lookup_active_recommendation_label(
     conn: sqlite3.Connection, *, ticker: str, starting_equity: float,
     budget_seconds: float | None = None,
+    night_out: list | None = None,
 ) -> str | None:
     """Return the suggested hypothesis label for ``ticker`` from the latest
     completed pipeline run's active hypothesis match, or ``None`` if there
     is no run / no candidate / no match.
+
+    ``night_out`` (Codex R1-6): when a list is passed, the night this lookup
+    READ is appended to it as ``(evaluation_run_id, action_session_date)``
+    whenever a run was found, so a caller naming the night names THIS read's
+    night rather than re-reading "the latest" (a run landing in between
+    would pair one night's label with another night's id).
 
     22-A2 Task 10: the prefill CONSUMES the cohort read (the prioritizer's
     N) and renders no count, so it renders nothing of it (RD G-T10-2);
@@ -136,6 +143,12 @@ def lookup_active_recommendation_label(
     eval_id = latest_evaluation_run_id(conn)
     if eval_id is None:
         return None
+    if night_out is not None:
+        session_row = conn.execute(
+            "SELECT action_session_date FROM evaluation_runs WHERE id = ?",
+            (eval_id,)).fetchone()
+        night_out.append(
+            (eval_id, None if session_row is None else session_row[0]))
     candidates = fetch_candidates_for_run(conn, eval_id)
     cand = next((c for c in candidates if c.ticker == ticker), None)
     if cand is None:
