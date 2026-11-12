@@ -956,4 +956,26 @@ Both owed fixes touch 0042 and the manifest.
 
 - **R2-1: BANKED on D65** per the ruling above; no 0042 change.
 - **R2-2: FIXED service-side, `fc5f8374`**, confined to the service (no SQL, no manifest). `_gate_watch_fire_eligibility` (`swing/trades/cohort_provenance_correction.py`, eligibility (c)) refuses a stored `trades.hypothesis_label` containing NUL with a typed `CohortProvenanceCorrectionError` naming the source. The preview and apply entry points share the ladder, so both refuse first. Test `test_1n_a_nul_in_the_stored_label_is_refused_by_eligibility_c[preview|apply]` on Codex's exact shape `"\u0000x"`: RED before the fix on BOTH entry points (each reached SQL and died with `IntegrityError` on the 0042 kind-2 CHECK -- the preview too, inside its SAVEPOINT -- rather than the typed refusal), GREEN after. File 31/31 green.
-- **Final-head gates (on `fc5f8374`):** `ruff check swing/` clean. Full fast suite, migrate-twice and drift: recorded below when read.
+- **Final-head gates (on `fc5f8374`):** `ruff check swing/` clean. Full fast suite **16097 passed / 13 skipped / 0 failed, EXIT=0** (801.96 s; `~/swing-data/review-transcripts/sg-label/exec-branch-suite-final-fc5f8374.txt`). Migrate-twice (1k, two tests) and drift (1m, two tests): 4 passed, exit 0 (`exec-final-1k-1m-fc5f8374.txt`).
+
+## Reviewer B (the orchestrator's; charter section 2.9, harness "THE B GATE"; CHARC's zero-read rule)
+
+Evidence: `~/swing-data/review-transcripts/sg-label/reviewer-b/`. Tree reviewed: `828f0085` (production code = `fc5f8374`; `828f0085` adds only this ledger). Profile `fast`, codex-cli 0.166.0.
+
+- **Attempt 1 -- DOES NOT COUNT.** One pass over the whole production diff (`f1eb4051..HEAD -- swing/`, 337,544 bytes). The model spent its two reads on whole-file `cat`s (CLAUDE.md, orchestrator-context, the full ledger) and a wide `rg`, saw its output truncated, and issued NO verdict token ("I can't issue a reliable review verdict ... No verdict token issued."). Footer present (106,628), `^ERROR` 0, both verdict tokens 0: the footer-without-verdict shape. Preserved as `b-*-attempt1*`.
+- **The re-run: two halves on the same tree,** each with a reading rule (slices of at most 250 lines, no whole-file `cat`, no CLAUDE.md or orchestrator-context, named ledger slices only) and named files to open.
+
+| Pass | Scope (appended diff) | model / effort | `^ERROR` | footer | verdict (anchored) | repo reads | spend |
+|---|---|---|---|---|---|---|---|
+| B1 | swing/data minus migrations, `cohort_provenance_correction.py`, `cli.py` (104,139 B); 0042 read FROM DISK | gpt-6-luna / medium | 0 | 1 | `NO_NEW_CRITICAL_MAJOR` (2, the double emission), other 0 | 13 exec blocks | 99,317 |
+| B2 | `entry.py`, `exit.py`, swing/web, swing/recommendations (67,110 B) | gpt-6-luna / medium | 0 | 1 | `NO_NEW_CRITICAL_MAJOR` (2), other 0 | 8 exec blocks | 76,460 |
+
+The prompts name both tokens mid-line only; the anchored counts read the model's output. **B1's coverage of 0042, stated exactly:** lines 1-1490 (header, the new table, every CHECK, the row copy, the sequence, drop/rename, the unchanged objects, the update trigger, the first 580 lines of the citation-graph trigger) and 2470-2517 were read in slices; lines 1490-2469 of the citation-graph trigger were read ONLY through an `rg -n` of every `WHEN NOT`, `COALESCE(`, `watch_fire_relabel` and `last_fire` line in the file. B1 also read the 0042 tests, the models mirrors, the repo and the service's ladder entry points. **B2** read the entry service around the latch resolution and the verdict, the route, `list_decision_nights`, the view model and template, `origin.py`, `repos/trades.py` and the T4 tests.
+
+**B verdict: CLEAN on both halves; no findings to disposition.** Spend B1 99,317 + B2 76,460 (+ the void attempt 106,628).
+
+## Merge-gate housekeeping (separate commits; never in a version-bump commit)
+
+- `085547bf`: the stale `v40` fixture in `tests/data/test_22f_d39_apply_migration.py` renamed `pre_head_db` (10/10 green; no hash pin covers that file).
+- `a95a9d93`: plan section 0.3 bullet 2 and the `review_form.py:438` consumer row corrected per cell 4's deviation 4 (a kind-2 relabel does NOT move `_build_outcome_distribution`; only a T2-named aplus night does; 1u is two tests, verified at `tests/web/view_models/patterns/test_review_form_decision_night.py:115,125`); the T5 dry run carries `--reason`.
+- **HELD for CHARC, not done: the `test_a2_77_..._exactly_six_entries` rename.** It is not a plain rename. The function is hash-pinned by `tests/trades/test_22b_composition_pin.py` twice: in `BASE_PINS_22A2` (keyed by name, "captured at base `e61dad27`") and in `RE_SCOPED_SG_LABEL` (name + post-re-scope sha + a reason that must be one of two strings). Renaming re-keys a base-captured record and needs a third allowed reason -- an edit to a frozen instrument, which is CHARC's call, not housekeeping.
