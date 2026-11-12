@@ -603,8 +603,12 @@ CREATE TABLE provenance_corrections__0042 (
                    = cited_candidate_id
            AND json_type(applied_value_json, '$."trades.hypothesis_label"')
                    = 'text'
+           -- Codex R1-7: the whitespace set is PYTHON's (`str.isspace`,
+           -- the reader's `.strip()`), not SQLite's default (spaces
+           -- only), so a label the model refuses is refused here too.
            AND length(trim(json_extract(
-                   applied_value_json, '$."trades.hypothesis_label"'))) > 0
+                   applied_value_json, '$."trades.hypothesis_label"'),
+                   char(9, 10, 11, 12, 13, 28, 29, 30, 31, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0
            -- the origin is UNCHANGED by a fire relabel: the watch-manual
            -- origin both sides (the trigger binds it to the trade).
            AND json_extract(applied_value_json, '$."trades.trade_origin"')
@@ -630,8 +634,10 @@ CREATE TABLE provenance_corrections__0042 (
                    = 'pipeline_watch_manual'
            AND json_type(pre_value_json, '$."trades.hypothesis_label"')
                    = 'text'
+           -- Codex R1-7: Python's whitespace set, as on the applied arm.
            AND length(trim(json_extract(
-                   pre_value_json, '$."trades.hypothesis_label"'))) > 0
+                   pre_value_json, '$."trades.hypothesis_label"'),
+                   char(9, 10, 11, 12, 13, 28, 29, 30, 31, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288))) > 0
            AND json_type(pre_value_json, '$."trades.candidate_id"')
                    = 'integer'
            -- a relabel that does not MOVE the anchor is not a fire relabel

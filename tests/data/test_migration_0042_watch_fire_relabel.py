@@ -761,3 +761,50 @@ def test_sg_fixture_reads_trade_29_live_shape(tmp_path: Path) -> None:
     assert t == ("SG", "pipeline_watch_manual", "hypothesis_test_by_design",
                  "Broad-watch baseline (watch); failed: proximity_20ma, "
                  "tightness", 15980)
+
+
+# Codex R1-7 (sg-label exec round 1): the kind-2 label arms' whitespace set is
+# PYTHON's (`str.strip()`, i.e. `str.isspace`), so a raw insert the model would
+# refuse while hydrating is refused at the table first. Every code point is
+# enumerated from Python itself, so the comparator cannot drift from the
+# reader it mirrors.
+_PY_WHITESPACE = "".join(
+    chr(c) for c in range(0x110000) if chr(c).isspace())
+
+
+def _with_label(raw: str, label: str) -> str:
+    env = json.loads(raw)
+    env["trades.hypothesis_label"] = label
+    return json.dumps(env, sort_keys=True)
+
+
+@pytest.mark.parametrize("column", ["applied_value_json", "pre_value_json"])
+@pytest.mark.parametrize("label", [pytest.param(ch, id=f"U+{ord(ch):04X}")
+                                   for ch in _PY_WHITESPACE]
+                         + [pytest.param(_PY_WHITESPACE, id="all")])
+def test_r1_7_a_python_whitespace_kind_2_label_is_refused_by_the_table(
+        tmp_path: Path, column: str, label: str) -> None:
+    assert label.strip() == "", "the premise: Python refuses this label"
+    payload = _truthful(tmp_path)
+    broken = dict(payload, **{column: _with_label(payload[column], label)})
+    c = _bare_table()
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            _insert(c, broken)
+    finally:
+        c.close()
+
+
+def test_r1_7_a_padded_kind_2_label_is_not_refused_by_the_table(
+        tmp_path: Path) -> None:
+    """The counterfactual: the widened set refuses only whitespace-ONLY
+    labels; the truthful payload and a label with inner text still pass."""
+    payload = _truthful(tmp_path)
+    padded = dict(payload, applied_value_json=_with_label(
+        payload["applied_value_json"], "\tx　"))
+    for row in (payload, padded):
+        c = _bare_table()
+        try:
+            _insert(c, row)
+        finally:
+            c.close()
