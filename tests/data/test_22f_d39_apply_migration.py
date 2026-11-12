@@ -41,13 +41,13 @@ from tests._22f_proxies import FailingVerbsConn, open_connection_returning
 
 # HEAD-tracking (sg-label, 0042): the instrument needs exactly ONE migration to
 # apply -- R1-06's nothing-in-flight pins read the version AFTER the first
-# commit, so a two-migration walk would stop one short of HEAD.  The fixture
-# name `v40` is now stale; its rename is a separate change from this bump.
+# commit, so a two-migration walk would stop one short of HEAD. The fixture
+# `pre_head_db` (named `v40` until the sg-label merge gate) is one migration below HEAD.
 _V_BEFORE = EXPECTED_SCHEMA_VERSION - 1
 
 
 @pytest.fixture
-def v40(tmp_path: Path) -> Path:
+def pre_head_db(tmp_path: Path) -> Path:
     assert EXPECTED_SCHEMA_VERSION == _V_BEFORE + 1
     path = tmp_path / "swing.db"
     c = open_connection(path)
@@ -83,19 +83,19 @@ def _ensure(path: Path, tmp_path: Path):
     return ensure_schema(path, backup_dir=tmp_path / "bak")
 
 
-def test_c2_21_a_both_fail_raises_cleanup_chained(v40, tmp_path, monkeypatch,
+def test_c2_21_a_both_fail_raises_cleanup_chained(pre_head_db, tmp_path, monkeypatch,
                                                   caplog):
     built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
         real, fail_executescript=sqlite3.OperationalError, fail_rollback=True))
     with caplog.at_level(logging.ERROR):
         with pytest.raises(sqlite3.OperationalError) as info:
-            _ensure(v40, tmp_path)
+            _ensure(pre_head_db, tmp_path)
     assert _mig(built).calls["rollback"] >= 1
     assert "cannot rollback" in str(info.value)
     assert isinstance(info.value.__cause__, sqlite3.OperationalError)
     assert "planted on executescript" in str(info.value.__cause__)
     assert len(_records(caplog)) == 1
-    assert _version(v40) == _V_BEFORE
+    assert _version(pre_head_db) == _V_BEFORE
 
 
 class _TxAtClose(FailingVerbsConn):
@@ -107,41 +107,41 @@ class _TxAtClose(FailingVerbsConn):
         return super().close()
 
 
-def test_c2_21_b_f2_twin_interrupt_rolls_back(v40, tmp_path, monkeypatch):
+def test_c2_21_b_f2_twin_interrupt_rolls_back(pre_head_db, tmp_path, monkeypatch):
     built = open_connection_returning(monkeypatch, lambda real: _TxAtClose(
         real, fail_executescript=KeyboardInterrupt))
     try:
         with pytest.raises(KeyboardInterrupt):
-            _ensure(v40, tmp_path)
+            _ensure(pre_head_db, tmp_path)
         assert _mig(built).calls["rollback"] == 1  # did-it-fire
         assert _mig(built).calls["close"] == 1  # R3-06: the close ran
         assert _mig(built).calls["open_tx_at_close"] == 0  # rolled back
     finally:
         for p in built:
             p._real.close()
-    assert _version(v40) == _V_BEFORE
+    assert _version(pre_head_db) == _V_BEFORE
 
 
-def test_c2_21_c_single_failure_reraised_pin(v40, tmp_path, monkeypatch,
+def test_c2_21_c_single_failure_reraised_pin(pre_head_db, tmp_path, monkeypatch,
                                              caplog):
     built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
         real, fail_executescript=sqlite3.OperationalError))
     with caplog.at_level(logging.ERROR):
         with pytest.raises(sqlite3.OperationalError,
                            match="planted on executescript"):
-            _ensure(v40, tmp_path)
+            _ensure(pre_head_db, tmp_path)
     assert _mig(built).calls["rollback"] >= 1
     assert _records(caplog) == []
-    assert _version(v40) == _V_BEFORE
+    assert _version(pre_head_db) == _V_BEFORE
 
 
-def test_c2_21_d_control_migrates(v40, tmp_path, monkeypatch):
+def test_c2_21_d_control_migrates(pre_head_db, tmp_path, monkeypatch):
     built = open_connection_returning(monkeypatch,
                                       lambda real: FailingVerbsConn(real))
-    conn = _ensure(v40, tmp_path)
+    conn = _ensure(pre_head_db, tmp_path)
     conn.close()
     assert _mig(built).calls["rollback"] == 0
-    assert _version(v40) == EXPECTED_SCHEMA_VERSION
+    assert _version(pre_head_db) == EXPECTED_SCHEMA_VERSION
 
 
 # -- R1-06 (Reviewer A round 1): the `finally` PRAGMA restores when an error
@@ -167,29 +167,29 @@ def _restore_records(caplog):
     (_LEGACY_RESTORE, "PRAGMA foreign_keys=ON"),
 ])
 def test_r1_06_restore_fails_while_script_error_in_flight(
-        prefix, other, v40, tmp_path, monkeypatch, caplog):
+        prefix, other, pre_head_db, tmp_path, monkeypatch, caplog):
     built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
         real, fail_executescript=sqlite3.OperationalError,
         fail_sql_prefix=prefix))
     with caplog.at_level(logging.ERROR):
         with pytest.raises(sqlite3.OperationalError) as info:
-            _ensure(v40, tmp_path)
+            _ensure(pre_head_db, tmp_path)
     mig = _mig(built)
     assert mig.calls["failed_sql"] == 1
     assert "planted on executescript" in str(info.value)
     assert other in mig.sql_log
     assert len(_restore_records(caplog)) == 1
-    assert _version(v40) == _V_BEFORE
+    assert _version(pre_head_db) == _V_BEFORE
 
 
 def test_r1_06_restore_fails_while_cleanup_error_in_flight(
-        v40, tmp_path, monkeypatch, caplog):
+        pre_head_db, tmp_path, monkeypatch, caplog):
     built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
         real, fail_executescript=sqlite3.OperationalError, fail_rollback=True,
         fail_sql_prefix=_FK_RESTORE))
     with caplog.at_level(logging.ERROR):
         with pytest.raises(sqlite3.OperationalError) as info:
-            _ensure(v40, tmp_path)
+            _ensure(pre_head_db, tmp_path)
     mig = _mig(built)
     assert mig.calls["failed_sql"] == 1
     assert mig.calls["rollback"] >= 1
@@ -200,7 +200,7 @@ def test_r1_06_restore_fails_while_cleanup_error_in_flight(
 
 
 def test_r1_06_restore_fails_with_nothing_in_flight_raises_pin(
-        v40, tmp_path, monkeypatch, caplog):
+        pre_head_db, tmp_path, monkeypatch, caplog):
     """PIN (both trees): the script commits, the restore fails -> the
     restore's error is raised (B-04's trigger), nothing logged here."""
     built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
@@ -208,10 +208,10 @@ def test_r1_06_restore_fails_with_nothing_in_flight_raises_pin(
     with caplog.at_level(logging.ERROR):
         with pytest.raises(sqlite3.OperationalError,
                            match="planted on PRAGMA FOREIGN_KEYS=ON"):
-            _ensure(v40, tmp_path)
+            _ensure(pre_head_db, tmp_path)
     assert _mig(built).calls["failed_sql"] == 1
     assert _restore_records(caplog) == []
-    assert _version(v40) == EXPECTED_SCHEMA_VERSION
+    assert _version(pre_head_db) == EXPECTED_SCHEMA_VERSION
 
 
 # -- R2-03 (Reviewer A round 2; CHARC's class ruling): an INTERRUPT from a
@@ -222,14 +222,14 @@ def test_r1_06_restore_fails_with_nothing_in_flight_raises_pin(
 # still attempted, and the interrupt is re-raised CHAINED from the in-flight
 # error -- never swallowed, never retyped.
 def test_r2_03_interrupt_from_first_restore_is_chained_and_second_runs(
-        v40, tmp_path, monkeypatch, caplog):
+        pre_head_db, tmp_path, monkeypatch, caplog):
     built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
         real, fail_executescript=sqlite3.OperationalError,
         fail_sql_prefix=_FK_RESTORE, raise_on_sql=KeyboardInterrupt))
     try:
         with caplog.at_level(logging.ERROR):
             with pytest.raises(KeyboardInterrupt) as info:
-                _ensure(v40, tmp_path)
+                _ensure(pre_head_db, tmp_path)
         mig = _mig(built)
         assert mig.calls["failed_sql"] == 1  # did-it-fire
         assert "PRAGMA legacy_alter_table=OFF" in mig.sql_log
@@ -239,21 +239,21 @@ def test_r2_03_interrupt_from_first_restore_is_chained_and_second_runs(
     finally:
         for p in built:
             p._real.close()
-    assert _version(v40) == _V_BEFORE
+    assert _version(pre_head_db) == _V_BEFORE
 
 
 def test_r2_03_interrupt_from_restore_with_nothing_in_flight_pin(
-        v40, tmp_path, monkeypatch):
+        pre_head_db, tmp_path, monkeypatch):
     """PIN (both trees): nothing in flight -> the restore's interrupt is
     raised as it always was (bare, B-04's trigger class)."""
     built = open_connection_returning(monkeypatch, lambda real: FailingVerbsConn(
         real, fail_sql_prefix=_FK_RESTORE, raise_on_sql=KeyboardInterrupt))
     try:
         with pytest.raises(KeyboardInterrupt) as info:
-            _ensure(v40, tmp_path)
+            _ensure(pre_head_db, tmp_path)
         assert _mig(built).calls["failed_sql"] == 1
         assert info.value.__cause__ is None
     finally:
         for p in built:
             p._real.close()
-    assert _version(v40) == EXPECTED_SCHEMA_VERSION
+    assert _version(pre_head_db) == EXPECTED_SCHEMA_VERSION
