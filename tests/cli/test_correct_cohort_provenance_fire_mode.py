@@ -234,3 +234,25 @@ def test_r1_4_an_out_of_range_fire_id_is_a_typed_refusal(
     _assert_ascii(r.output)
     assert _rows(db) == []
     assert _keys(db) == (SG_BASELINE_LABEL, 15980)
+
+
+@pytest.mark.parametrize("trade_id", [2 ** 63, 2 ** 64])
+def test_r2_3_an_out_of_range_trade_id_is_a_typed_refusal(
+        tmp_path, monkeypatch, trade_id) -> None:
+    """Codex exec R2-3: the positional trade id is bound before any range
+    check, so an id outside SQLite's signed 64-bit range escaped as an
+    OverflowError traceback. The R1-4 fix covered only the fire id. (A
+    negative positional parses as a click option, a usage error already.)"""
+    runner, cfg, db = _setup(tmp_path, monkeypatch)
+    _seed_sg(db)
+    r = runner.invoke(main, [
+        "--config", str(cfg), "journal", "correct-cohort-provenance",
+        str(trade_id), "--cite-fire-candidate", str(SG_FIRE_CANDIDATE_ID),
+        "--reason", REASON])
+    assert r.exit_code == 1, r.output
+    assert "Error:" in r.output
+    assert "Traceback" not in r.output
+    assert "64-bit" in r.output
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+    _assert_ascii(r.output)
+    assert _rows(db) == []

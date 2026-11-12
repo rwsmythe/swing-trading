@@ -912,6 +912,13 @@ class _Derived:
 
 
 def _load_trade_or_refuse(conn: sqlite3.Connection, trade_id: int) -> Any:
+    # Codex exec R2-3: SQLite's INTEGER is signed 64-bit; an id outside it
+    # raises an unbound OverflowError when bound. Both kinds load here.
+    if (isinstance(trade_id, int) and not isinstance(trade_id, bool)
+            and not (-(2 ** 63) <= trade_id < 2 ** 63)):
+        raise _refuse(
+            f"trade id {trade_id} is outside SQLite's signed 64-bit INTEGER "
+            "range, so it names no trade.")
     trade = get_trade(conn, trade_id)
     if trade is None:
         raise _refuse(f"trade {trade_id} not found.")
