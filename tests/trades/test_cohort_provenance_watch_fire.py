@@ -190,6 +190,33 @@ def test_1n_a_null_candidate_is_refused_by_eligibility_d(tmp_path) -> None:
     conn.close()
 
 
+@pytest.mark.parametrize("entry_point", ["preview", "apply"])
+def test_1n_a_nul_in_the_stored_label_is_refused_by_eligibility_c(
+        tmp_path, entry_point) -> None:
+    """Codex exec R2-2 (CHARC-ruled 2026-11-12: fix on the SERVICE side only).
+
+    A stored label carrying NUL (Codex's exact shape, ``"\\u0000x"``) passes
+    Python's nonempty check, but SQLite's ``json_extract`` on the kind-2
+    envelope RAISES on it -- so before this refusal a preview approved what
+    the apply's CHECK refused (authorize-then-abort). The service must refuse
+    FIRST, typed, naming the label's source. Pre-fix this case reaches the
+    ladder's later steps (preview returns; apply fails in SQL, not with the
+    eligibility (c) message)."""
+    conn = _sg(tmp_path, hypothesis_label="\u0000x")
+    before = _trade_keys(conn)
+    call = (preview_watch_fire_label if entry_point == "preview"
+            else correct_watch_fire_label)
+    with pytest.raises(CohortProvenanceCorrectionError) as exc:
+        call(conn, trade_id=SG_TRADE_ID,
+             fire_candidate_id=SG_FIRE_CANDIDATE_ID, reason=REASON)
+    message = str(exc.value)
+    for fragment in ("eligibility (c)", "NUL", "trades.hypothesis_label"):
+        assert fragment in message, (fragment, message)
+    assert _row_count(conn) == 0
+    assert _trade_keys(conn) == before
+    conn.close()
+
+
 def test_1n_the_by_design_pair_runs_both_modes(tmp_path) -> None:
     """The SAME fixture, intent the only difference: standard refuses (b),
     by-design applies -- so the intent gate is what decides."""

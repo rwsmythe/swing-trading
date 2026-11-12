@@ -3547,6 +3547,16 @@ def _gate_watch_fire_eligibility(trade: Any) -> None:
         raise _refuse(
             f"eligibility (c): trade {tid} carries no hypothesis_label "
             f"({label!r}); there is no batch-night label to correct.")
+    if "\x00" in label:
+        # Codex exec R2-2 (CHARC-ruled 2026-11-12, service side only): SQLite
+        # cannot read a NUL-bearing label out of the kind-2 envelope, so the
+        # 0042 CHECK would refuse what this ladder had authorized. The
+        # trigger's predicates must be a subset of the service's admission
+        # predicates -- refuse here, first, typed.
+        raise _refuse(
+            f"eligibility (c): trade {tid}'s stored trades.hypothesis_label "
+            f"contains a NUL character ({label!r}); the correction envelope "
+            "cannot carry it. Repair the stored label before relabelling.")
     if getattr(trade, "candidate_id", None) is None:
         raise _refuse(
             f"eligibility (d): trade {tid} carries no candidate_id; there is "
