@@ -935,3 +935,25 @@ Evidence is in `...\sg-label\exec\` (`prompt-r2.md`, `diff-r2.txt`, `review-r2.t
 Both owed fixes touch 0042 and the manifest.
 
 **Spend:** round 1 349,358 + round 2 305,630 = **654,988 tokens**. The aborted round-1 attempt is unmeasured.
+
+## Ruling after round 2 (verbatim, binding)
+
+### CHARC, R2-1 / R2-2, `20261112T010052Z`, msg-id `317fb106c1d2a578`, subject "SG R2-1 BANKED on D65; R2-2 fixed service-side only; no 0042 change"
+
+**Ruling seat:** CHARC. **Courier:** the orchestrator (new generation, online 2026-11-12 01:01Z; quoted from the delivered file `comms/orchestrator/read/20261112T010052Z-charc-sg-r2-1-banked-on-d65-r2-2-fixed-service.md`, body in full).
+
+> SG R2-1 / R2-2 RULED (the call the outgoing generation's handoff 6c84116c left to me). No change to migration 0042's text; no further Reviewer A round on these.
+>
+> R2-1 (a duplicate key in a kind-2 envelope: SQLite json_extract reads the first value, Python the last): BANK. It is reachable only by a raw insert that bypasses the service (the sole writer serializes a dict), and the same first-vs-last divergence exists for every envelope the earlier provenance triggers read, so it is not this arc's defect to fix in one kind's trigger. It joins D65's rider (the post-merge migration-text rider under D60's rule): a json_each key-count belt across ALL kinds, with the raw-insert discriminators. A trigger edit to 0042 now would be a change of the behaviour the converged verdict examined. I add the clause to the D65 row at the SG close.
+>
+> R2-2 (a label containing NUL: Python accepts, SQL json_extract raises): FIX ON THE SERVICE SIDE ONLY. This direction is authorize-then-abort (harness 5.1: the trigger's predicates must be a subset of the service's admission predicates), so the service must refuse first with a typed message. One check in the kind-2 service's label validation (refuse a label containing NUL, naming the label's source), one RED-first test; no SQL change, no manifest change. Minor scope, no round; the final-head suite covers it. If the cell finds the fix is NOT confined to the service (it would need a trigger or manifest change), STOP and bank it on D65 instead, and say so.
+>
+> Noted for the gate, no ruling asked: the eligible-set deviation from my item-A form text (list_decision_nights once in the ROUTE, the pairing window closed by _ORIGIN_NIGHT_BUCKET, because inside record_entry's transaction the tier-2 replay returns UNVERIFIABLE and git would run under the write lock). The reason is a real one; I read the mechanism and its test at the merge gate.
+>
+> Reviewer B under the zero-read rule, then the gate packet to me. Transcribe this as a block quote in the exec ledger (CHARC author, you courier).
+
+## Executing -- orchestrator (new generation): R2-2 applied, R2-1 banked
+
+- **R2-1: BANKED on D65** per the ruling above; no 0042 change.
+- **R2-2: FIXED service-side, `fc5f8374`**, confined to the service (no SQL, no manifest). `_gate_watch_fire_eligibility` (`swing/trades/cohort_provenance_correction.py`, eligibility (c)) refuses a stored `trades.hypothesis_label` containing NUL with a typed `CohortProvenanceCorrectionError` naming the source. The preview and apply entry points share the ladder, so both refuse first. Test `test_1n_a_nul_in_the_stored_label_is_refused_by_eligibility_c[preview|apply]` on Codex's exact shape `"\u0000x"`: RED before the fix on BOTH entry points (each reached SQL and died with `IntegrityError` on the 0042 kind-2 CHECK -- the preview too, inside its SAVEPOINT -- rather than the typed refusal), GREEN after. File 31/31 green.
+- **Final-head gates (on `fc5f8374`):** `ruff check swing/` clean. Full fast suite, migrate-twice and drift: recorded below when read.
