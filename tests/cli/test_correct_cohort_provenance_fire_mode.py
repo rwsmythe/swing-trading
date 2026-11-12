@@ -213,3 +213,24 @@ def test_1q_the_watch_fire_service_accepts_no_cohort_value() -> None:
         expected)
     assert set(inspect.signature(preview_watch_fire_label).parameters) == (
         expected)
+
+
+@pytest.mark.parametrize("extra", [("--dry-run",), ()])
+@pytest.mark.parametrize("candidate", [2 ** 63, -(2 ** 63) - 1])
+def test_r1_4_an_out_of_range_fire_id_is_a_typed_refusal(
+        tmp_path, monkeypatch, extra, candidate) -> None:
+    """Codex R1-4 (sg-label exec round 1): an id outside SQLite's signed
+    64-bit INTEGER range is refused BEFORE it is bound (an unbound
+    OverflowError would escape as a traceback)."""
+    runner, cfg, db = _setup(tmp_path, monkeypatch)
+    _seed_sg(db)
+    r = runner.invoke(main, _fire(cfg, "--reason", REASON, *extra,
+                                  candidate=candidate))
+    assert r.exit_code == 1, r.output
+    assert "Error:" in r.output
+    assert "Traceback" not in r.output
+    assert "64-bit" in r.output
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+    _assert_ascii(r.output)
+    assert _rows(db) == []
+    assert _keys(db) == (SG_BASELINE_LABEL, 15980)

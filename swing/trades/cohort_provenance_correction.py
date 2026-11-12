@@ -3563,6 +3563,12 @@ def _authorize_watch_fire(
             f"fire_candidate_id must be an int row id; got "
             f"{fire_candidate_id!r}. The cited fire is the idempotency KEY, "
             "so it is required even on a replay.")
+    # Codex R1-4: SQLite's INTEGER is signed 64-bit; a Python int outside it
+    # raises an unbound OverflowError when the walk binds it.
+    if not (-(2 ** 63) <= fire_candidate_id < 2 ** 63):
+        raise _refuse(
+            f"fire_candidate_id {fire_candidate_id} is outside SQLite's "
+            "signed 64-bit INTEGER range, so it names no candidates row.")
 
     # Step 2 -- SELECT-first.
     existing = get_correction_for_trade(conn, trade_id)

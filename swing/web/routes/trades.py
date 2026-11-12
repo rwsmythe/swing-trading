@@ -498,6 +498,12 @@ _DECISION_NIGHTS_UNAVAILABLE_TEXT = (
 _DECISION_ANCHOR_KEYS = ("candidate_id", "evaluation_run_id", "label")
 
 
+def _in_sqlite_int_range(value: int) -> bool:
+    """Codex R1-4: SQLite's INTEGER is signed 64-bit; binding a Python int
+    outside it raises ``OverflowError`` (a 500), so the ladder refuses it."""
+    return -(2 ** 63) <= value < 2 ** 63
+
+
 def _decision_anchor_refusal(raw: str, chosen_raw: str, *, ticker: str,
                              conn) -> tuple[str | None, int | None, dict]:
     """D102 T2.3 -- the 4-tier ladder over the decision-night anchor.
@@ -532,14 +538,19 @@ def _decision_anchor_refusal(raw: str, chosen_raw: str, *, ticker: str,
         cid, run_id, label = (entry[k] for k in _DECISION_ANCHOR_KEYS)
         if (not isinstance(cid, int) or isinstance(cid, bool)
                 or not isinstance(run_id, int) or isinstance(run_id, bool)
+                or not _in_sqlite_int_range(cid)
+                or not _in_sqlite_int_range(run_id)
                 or not (label is None or isinstance(label, str))):
-            return _no("carries an invalid value (ids must be integers, "
-                       "the label text or null)")
+            return _no("carries an invalid value (ids must be integers in "
+                       "SQLite's signed 64-bit range, the label text or null)")
         offered[cid] = entry
     try:
         chosen = int(chosen_raw.strip())
     except (TypeError, ValueError):
         return _no(f"choice {chosen_raw.strip()[:40]!r} is not an integer")
+    if not _in_sqlite_int_range(chosen):
+        return _no(f"choice {str(chosen)[:40]} is outside SQLite's signed "
+                   "64-bit integer range")
     if chosen not in offered:
         return _no(f"choice {chosen} is not in the offered set")
     row = conn.execute(
