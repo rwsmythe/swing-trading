@@ -910,3 +910,28 @@ Inside the reserve path's `BEGIN IMMEDIATE`, the label could therefore differ fr
 - Live incidence (read `mode=ro`, 2026-11-11): 0 timezone-aware and 0 unparseable `run_ts` among 197 evaluation runs.
 
 **Measured besides:** RD's condition 3 (the standing 400's round trip) passed on the FIRST run, before and after `81b905c3`, so the clause "recordable from the form it hands back" holds. The test reaches the not-offered refusal by altering the named night's evaluation run in the posted anchor (the "form was altered" branch of the same text); a real newer-run push-out was not simulated.
+
+## Executing -- cell 6 (continued): Reviewer A round 2 -- CONVERGED
+
+**Round 2** (`strong`, `b120a6eb..d432e5a0`). The five assertions:
+
+| Assertion | Result |
+|---|---|
+| model / effort vs the profile | gpt-6.1-sol / high, equal to the profile |
+| `^ERROR` | 0 |
+| footer and process | one `^tokens used`, 305,630; exit 0; process exited |
+| verdict | NO_NEW_CRITICAL_MAJOR (emitted twice); the other token 0 |
+| line-initial tokens in the prompt | 0 |
+
+The round ran 21 exec blocks. Findings: 0 critical, 0 major, 3 minor. **Converged.**
+
+Evidence is in `...\sg-label\exec\` (`prompt-r2.md`, `diff-r2.txt`, `review-r2.txt`, `exit-r2.txt`, `run-r2.sh`, `copowers-findings-after-r2.md`). The round table and the adjudication are in the worktree's `.copowers-findings.md`; the depth cell is left EMPTY for the orchestrator.
+
+**Post-convergence minors:**
+- **R2-3 fixed, `92dcb641`.** An out-of-range trade id is a typed refusal on both kinds. It is the R1-4 class, which that fix had closed only as an instance.
+- **R2-1 owed.** Duplicate keys in a kind-2 value envelope: SQLite reads the first value, Python the last. Service-prevented: the dict-serializing writer cannot produce one, and 0 kind-2 rows exist.
+- **R2-2 owed.** A NUL-bearing pre label is accepted by Python and refused by SQL; on SQLite 3.50.4 `json_extract` raises `malformed JSON`. Service-prevented: 0 live labels contain NUL.
+
+Both owed fixes touch 0042 and the manifest.
+
+**Spend:** round 1 349,358 + round 2 305,630 = **654,988 tokens**. The aborted round-1 attempt is unmeasured.
