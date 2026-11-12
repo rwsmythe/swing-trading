@@ -41,7 +41,7 @@ Every H2 decision read reports all four and a sensitivity excluding (3).
 ### 0.3 The two `candidate_id` readers whose reading shifts (CHARC: one sentence and one test each)
 
 - `swing/metrics/pattern_outcomes.py:_count_reached_1r_hit_stop` attributes a non-latched aplus trade to the PE row of the night the operator NAMED at T2, not the fill night's PE row. This only shifts for aplus nights, because the reader carries the aplus-only PE predicate. Test 2j.
-- `swing/web/view_models/patterns/review_form.py:_build_outcome_distribution` counts a trade's hit-stop and 1R outcome on the PE row of the decision night, not on the fill night's PE row. Both a T2-named night and a kind-2 correction cause this shift. Test 1u.
+- `swing/web/view_models/patterns/review_form.py:_build_outcome_distribution` counts a trade's hit-stop and 1R outcome on the PE row its `candidate_id` names, inside a cohort filtered by `PROVABLE_APLUS_PE_PREDICATE` (`review_form.py:415`). Only an aplus night can shift it, so only a T2-named night under an aplus latest run moves this reading; a kind-2 correction moves a WATCH anchor to a WATCH fire and leaves it UNCHANGED. Test 1u is two tests: (i) the live shape, no shift before or after; (ii) a synthetic aplus control on run 207 showing the join follows `trades.candidate_id`. *(Corrected at the merge gate, 2026-11-12: this bullet first said a kind-2 correction also shifts the reader. Cell 4 found that false at the code; ledger 'Executing -- cell 4', deviation 4.)*
 
 ### 0.4 The fill against the cited fire's pivot: RECORDED EVIDENCE, NOT A GATE (RD item 4; R1 ruled by RD `20261111T183327Z` and accepted by CHARC `20261111T183404Z`)
 
@@ -484,7 +484,7 @@ Commits: `feat(recommendations): T2.1 (D102) -- per-night labels from the single
 
 ## T5 -- NOT this cell's: the operator's witnessed post-merge step
 
-Sequence (brief section 2; the version guard makes a live run between merge and migration UNRUNNABLE): merge -> stop `swing web` -> exclusive-lock probe (plain `sqlite3`, `BEGIN EXCLUSIVE; ROLLBACK`) -> backup (the gate writes `pre-sg-label`; the pre-image is opened only as a COPY) -> `swing db-migrate` -> version 42 read `mode=ro` -> restart web -> `swing journal correct-cohort-provenance 29 --cite-fire-candidate 15901 --dry-run` (one step per message) -> the same with `--reason` -> the row read back `mode=ro` (`correction_kind='watch_fire_relabel'`, `admission_tier='last_fire'`, label, `candidate_id=15901`) -> RD's witness against eval 193 and the H2 count 4 -> 5. The cell proves the path on `build_sg_case` only.
+Sequence (brief section 2; the version guard makes a live run between merge and migration UNRUNNABLE): merge -> stop `swing web` -> exclusive-lock probe (plain `sqlite3`, `BEGIN EXCLUSIVE; ROLLBACK`) -> backup (the gate writes `pre-sg-label`; the pre-image is opened only as a COPY) -> `swing db-migrate` -> version 42 read `mode=ro` -> restart web -> `swing journal correct-cohort-provenance 29 --cite-fire-candidate 15901 --reason "<text>" --dry-run` (one step per message; the dry run requires `--reason`, test 1a) -> the same without `--dry-run` -> the row read back `mode=ro` (`correction_kind='watch_fire_relabel'`, `admission_tier='last_fire'`, label, `candidate_id=15901`) -> RD's witness against eval 193 and the H2 count 4 -> 5. The cell proves the path on `build_sg_case` only.
 
 ---
 
@@ -499,7 +499,7 @@ Method: `grep -rlw candidate_id swing --include=*.py` -> 36 files. The brief sai
 | `trades/cohort_provenance_correction.py` | reads (gate, envelopes, reader) | kind 1 unchanged; kind 2 MOVES it to the fire |
 | `web/view_models/journal.py:359,505` | reads -> `candidates.bucket` (`aplus_bucket` column) | changes only if the nights' buckets differ; T2 restricts offered nights to the origin night's bucket `[F6 = A, ruled]`, kind 2 is watch->watch: reading UNCHANGED |
 | `metrics/pattern_outcomes.py:127` | `LEFT JOIN trades t ON t.candidate_id = c.id` under `PROVABLE_APLUS_PE_PREDICATE` | aplus PEs only; watch-origin trades never join either way: UNCHANGED for kind 2 and for watch nights. An aplus non-latched trade choosing an earlier aplus night would attribute to that night's PE -- the night the operator acted on (more correct); section 0.3, test 2j |
-| `web/view_models/patterns/review_form.py:438` | `LEFT JOIN trades t ON t.candidate_id = c.id` (per-PE hit-stop counts) | a trade's outcome attributes to the DECISION night's PE row instead of the fill night's -- CHANGES, toward the night the operator acted on; section 0.3, test 1u |
+| `web/view_models/patterns/review_form.py:438` | `LEFT JOIN trades t ON t.candidate_id = c.id` (per-PE hit-stop counts) | aplus PEs only (`PROVABLE_APLUS_PE_PREDICATE`, `:415`): CHANGES only for a T2-named aplus night (toward the night the operator acted on); a kind-2 watch relabel is UNCHANGED; section 0.3 (corrected at the merge gate), test 1u (i)+(ii) |
 | `trades/reconciliation_auto_correct.py:232` | lists `("trades","candidate_id")` as a coupled cohort surface the corrector refuses | unchanged (refusal is value-agnostic) |
 | `latches/service.py:229` | prose (nullable FK reasoning) | none |
 | `latches/identity.py:12` | prose | none |
