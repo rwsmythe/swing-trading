@@ -674,7 +674,7 @@ The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 17
 
 **FLAGGED FOR RD (not changed; the orchestrator's encoding instruction keeps the ext2 module green):** a CLAIMED anchor that cannot be DECODED still gets the pre-existing claim-consistency 400 (`test_entry_post_audit_columns.py::test_c_malformed_anchor_with_claim_rejects_with_400`; ext2's `test_a_deeply_nested_envelope_does_not_500_the_ENTRY_route` asserts that 400). The authority refuses that document, so on the ruling's literal text ("a malformed, duplicate-key or otherwise refused anchor REFUSES THE LABEL, NEVER THE ENTRY") it is a refused anchor blocking an entry. The same pre-existing ladder 400s a claimed anchor that decodes to a non-object, lacks a required key, or carries invalid date/price/shares values. Those rungs guard the FILL-ORIGIN claim (`schwab_auto` provenance), not the cohort keys. Whether they are in the ruling's scope is RD's call.
 
-**Accepted limitation, stated:** the route re-derives the offered nights on its own connection, and `record_entry` derives the trade's origin later on another (the unreserved path). A run completing in that window could pair the chosen night's `candidate_id` with an origin derived from the newer run. The window is milliseconds, and the label-changed and not-offered gates bound it to a run landing after the route's read.
+**The night-to-origin pairing (as of cell 6, `81b905c3`; this paragraph REPLACES the cell-5 two-connection limitation, per CHARC's form ruling):** the route reads the offered nights once, on its own connection, and `record_entry` derives the trade's origin on another. A run completing between those reads can no longer pair the chosen night's `candidate_id` with an origin from a different latest run. `_record_entry_inner` refuses a validated night whose bucket disagrees with the origin it derived (`_ORIGIN_NIGHT_BUCKET`, `swing/trades/entry.py:559`), and that refusal is T2's 400. When the buckets agree, the origin value is the same whichever run produced it. What remains is benign: the night written is one the server offered at the route's read, milliseconds earlier.
 
 **Gates at `37ecff18` (the code head; this ledger commit adds docs only).** Each was gated on the command's EXIT STATUS, written beside its output:
 - Full fast suite (`python -m pytest -m "not slow" -q -p no:cacheprovider -n 8`): `C:\Users\rwsmy\swing-data\review-transcripts\sg-label\exec-branch-suite.txt`, exit `0` in `exec-branch-suite.exit.txt`, HEAD in `exec-branch-suite.head.txt`. Tail: `15982 passed, 13 skipped, 1322 warnings, 26 subtests passed in 806.38s`.
@@ -869,3 +869,44 @@ No round 2 was started.
 > Transcribe as a block quote in the exec ledger (CHARC author, you courier).
 >
 > For the D47-companion record: 15 typed values, not 13 (event_handling and gap_risk_handling too) -- taken; I correct the row at its next touch.
+
+## Executing -- cell 6 (continued): the fix set after round 1
+
+**Commits:**
+
+| SHA | Item |
+|---|---|
+| `d2fda930` | docs: RD item A, the entry-refusal rule (also beside FX-1 and FX-2), and CHARC item B, transcribed |
+| `7b9c5fed` | docs: CHARC's form ruling for item A, transcribed beside RD's |
+| `81b905c3` | fix(web): R1-1/R1-2. The decision-night verdict refuses the entry only where the write would use it (RD's conditions 1-3 in `tests/web/test_routes/test_entry_refusal_rule_decision_night.py`) |
+| `c55bfa04` | fix(web): R1-3. `EntryInputDomainError` and the route's 400 |
+| `65fab509` | fix(cli): R1-6. The prefill line names the night the lookup read (`night_out`) |
+| `04ef567b` | fix(web): R1-4. Ids bounded to the signed 64-bit range, on the web ladder and the CLI fire citation |
+| `c003379a` | fix(trades): R1-3 follow-up. `c55bfa04` put a `try` in `record_entry`'s own body, and the 22-A4 AST pin (`test_k3a_the_window_is_closed_on_both_branches_and_the_gate_is_split`) requires exactly one there. The check moved into `_entry_date_to_iso`. **`c55bfa04` was committed RED on that pin** (found by the `tests/trades` + `tests/web/test_routes` + `tests/cli` run; recorded, not rewritten). |
+| `3d9646e6` | docs(trades): R1-8. CHARC's docstring sentence, plus the derivation history entry `2026-11-12.1`, because `_derive_last_fire` is a manifest member and the guard hashes source |
+| `68c6588e` | fix(data): R1-7. Python's whitespace set on both kind-2 label arms; manifest regenerated (one changed line, the `provenance_corrections` table, 0 deletions) |
+
+**Item A, the form choice (CHARC asked which case was found).** The route does NOT hold the latch outcome.
+- The ONE latch resolution is `resolve_latched_provenance` at `swing/trades/entry.py:2148`, inside `_record_entry_inner` under `if reserve:`.
+- The route computes only `anchor_refused_by_authority` (`swing/web/routes/trades.py:977`), from the identity authority, with no latch read.
+
+So the verdict is ENFORCED in `entry.py` (`_record_entry_inner`, the block at `:2296`), after the latch outcome:
+- **latched:** a differing choice is logged and the latch wins;
+- **refused** (`latched.recognised_but_underivable` or the existing `anchor_refused_by_authority` flag; no second detection): logged, blocks nothing;
+- **ordinary:** `DecisionNightRefusedError` (`:513`), which is not a `ValueError` so the route's generic handler can never 500 it. The route maps it to T2's 400 at `routes/trades.py:2446`.
+
+**ONE DEVIATION FROM CHARC'S FORM TEXT, flagged for the merge gate.** The eligible set (`list_decision_nights`, called once at `routes/trades.py:1881`) is read in the ROUTE, not inside `record_entry`'s transaction. The ruling's incidental fact, that the read can run inside that transaction, does not hold:
+- The progress read inside `list_decision_nights` (`_progress_reader` -> `build_recommendation_progress`) runs the tier-2 replay.
+- That replay returns `VERDICT_UNVERIFIABLE` / `caller_holds_transaction` under a caller-held transaction (`swing/trades/frozen_value_evidence.py:1330-1331`).
+- `swing/metrics/cohort.py`'s `assert_intent_exclusion_disjoint` docstring says a bracket "would turn every admitted tier-2 trade into a false exclusion".
+- CHARC's own G-T7 Q1 principle forbids a git subprocess inside a held transaction (`frozen_value_evidence.py:201`).
+
+Inside the reserve path's `BEGIN IMMEDIATE`, the label could therefore differ from the one the GET showed. That is a false label-changed 400, and the git run would hold the write lock. The ruling's purpose, closing the night-to-origin pairing window, is met instead by the bucket refusal (see the replaced paragraph in cell 5's section). The verdict, the one latch resolution and the typed refusal are all as ruled.
+
+**R1-5 stays SERVICE-PREVENTED (writer citation).**
+- Single INSERT: `swing/data/repos/candidates.py:17` (`insert_evaluation_run`), found by `grep -rn "INTO evaluation_runs" swing`.
+- Callers: `swing/cli.py:650` and `swing/pipeline/runner.py:1675`, found by `grep -rn "insert_evaluation_run(" swing`.
+- Both build `run_ts` at `swing/evaluation/orchestration.py:308` (`run_now.isoformat(timespec="seconds")`) from a naive `datetime.now()` (`cli.py:599`, `runner.py:612`).
+- Live incidence (read `mode=ro`, 2026-11-11): 0 timezone-aware and 0 unparseable `run_ts` among 197 evaluation runs.
+
+**Measured besides:** RD's condition 3 (the standing 400's round trip) passed on the FIRST run, before and after `81b905c3`, so the clause "recordable from the form it hands back" holds. The test reaches the not-offered refusal by altering the named night's evaluation run in the posted anchor (the "form was altered" branch of the same text); a real newer-run push-out was not simulated.
