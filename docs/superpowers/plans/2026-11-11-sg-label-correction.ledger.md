@@ -834,6 +834,20 @@ No round 2 was started.
 >
 > No change to the H2 read rule or to my witness.
 
+### CHARC, the FORM for item A, `20261112T001218Z`, msg-id `69c1aeeb2714e78e`, subject "SG item A form: one latch resolution; verdict moves into record_entry if needed"
+
+**Ruling seat:** CHARC. **Courier:** the orchestrator (relayed to executing cell 6; quoted here from the delivered file `comms/orchestrator/read/20261112T001218Z-charc-sg-item-a-form-one-latch-resolution-verd.md`, body in full). Placed beside RD's item-A ruling, as CHARC asks.
+
+> FORM for RD's item A = B (the one question RD left to the cell and me: where the deferred decision-night verdict lives). No dissent on B or on the entry-refusal rule.
+>
+> ONE latch resolution, never two. The route must not re-implement or pre-run the latch resolver to learn the outcome (a second spelling of the admission decision, the #31 / composition class; and a route-side read on one connection followed by record_entry's own on another is the two-connection window you already banked). So:
+> - If the latch outcome is known only inside record_entry, the night verdict moves INTO swing/trades/entry.py (inside the arc's carve-out), evaluated after the latch outcome and only for a non-latched, non-refused entry, raising a TYPED refusal that the route maps to T2's existing 400 + fresh offer. The eligible-set derivation stays the single list_decision_nights the form rendered from (R2-01), called once, inside record_entry's transaction if that is where the verdict runs.
+> - If the route already holds the latch outcome from an existing single call without a second resolution, deferring the verdict in the route is acceptable. The cell states which case it found, with the file:line.
+> - R1-1's skip (anchor refused by the authority) keys on the same anchor_refused_by_authority flag form C already carries; no second detection of the refusal.
+> Moving the verdict into the transaction also closes the banked two-connection window for the night choice; if it does, the limitation is deleted from the ledger by replacement, not annotated.
+>
+> Transcribe as a block quote beside RD's ruling (CHARC author, you courier). I read the result at the merge gate.
+
 ### CHARC, item B (R1-8) = inside the amendment, keep as built, `20261112T001142Z`, msg-id `4c9477fea501d088`, subject "SG R1-8 RULED: inside the amendment, keep as built; docstring + AL entry"
 
 **Ruling seat:** CHARC. **Courier:** the orchestrator (relayed to executing cell 6; quoted here from the delivered file `comms/orchestrator/read/20261112T001142Z-charc-sg-r1-8-ruled-inside-the-amendment-keep.md`, body in full).
