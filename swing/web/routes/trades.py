@@ -21,6 +21,7 @@ from swing.recommendations.sizing import SizingResult, compute_shares, zero_shar
 from swing.trades.entry import (
     DecisionNightRefusedError,
     DuplicateOpenPositionError,
+    EntryInputDomainError,
     EntryRationale,
     EntryRequest,
     HardCapError,
@@ -2437,6 +2438,20 @@ def entry_post(
                 # item A = B). Nothing was written.
                 return _reject_decision_anchor(
                     exc.text or _DECISION_NIGHT_NOT_OFFERED_TEXT)
+            except EntryInputDomainError as exc:
+                # D86 / Codex R1-3: the service's input-domain refusal (a
+                # subclass of `ValueError`, so ABOVE the generic handler, which
+                # re-raises) is the standing 400 with the form handed back.
+                return _rerender_entry_form_with_error(
+                    request=request, templates=templates, cfg=cfg, cache=cache,
+                    executor=executor, ticker=ticker, entry_date=entry_date,
+                    entry_price=entry_price, shares=shares,
+                    initial_stop=initial_stop, rationale=rationale, notes=notes,
+                    error_message=f"Trade entry rejected: {exc}",
+                    origin=origin_coerced,
+                    **_anchor_replay(),
+                    submitted_decision_candidate_id=decision_candidate_id,
+                )
             except PatternEvaluationAnchorError as exc:
                 # 22-A EXT-2 — THE RELOCATED GUARD'S REFUSAL, RENDERED AS THE
                 # SAME 400 THIS ROUTE USED TO MAKE (review 22A-R9-03).

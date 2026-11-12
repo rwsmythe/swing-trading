@@ -480,6 +480,14 @@ class DuplicateOpenPositionError(Exception):
     """Already an open trade for this ticker."""
 
 
+class EntryInputDomainError(ValueError):
+    """D86 (sg-label T4): an entry date or price outside the trade-event
+    input domain (a non-canonical or full-datetime ``entry_date``; a price
+    that is not finite and > 0). A ``ValueError`` so every existing caller
+    and pin is unchanged; TYPED so the web route renders it as its 400 with
+    the form handed back rather than re-raising it as a 500 (Codex R1-3)."""
+
+
 class DecisionNightRefusedError(Exception):
     """D102 T2.3's 400, ENFORCED HERE after the latch outcome (RD item A = B,
     CHARC's form ruling, 2026-11-12).
@@ -1236,15 +1244,18 @@ def record_entry(
     # happens via the shared helper after the date-only guard.
     from swing.trades.exit import _normalize_trade_event_date_to_iso
     if "T" in req.entry_date:
-        raise ValueError(
+        raise EntryInputDomainError(
             f"entry_date {req.entry_date!r} must be YYYY-MM-DD only "
             f"(not a full ISO datetime); the trades.entry_date column is "
             f"date-only and downstream consumers (advisory, journal, "
             f"briefing, CLI hold-duration) call date.fromisoformat on it"
         )
-    entry_iso = _normalize_trade_event_date_to_iso(
-        req.entry_date, field_name="entry_date",
-    )
+    try:
+        entry_iso = _normalize_trade_event_date_to_iso(
+            req.entry_date, field_name="entry_date",
+        )
+    except ValueError as exc:
+        raise EntryInputDomainError(str(exc)) from exc
     req_view["pre_trade_locked_at"] = entry_iso
     missing = validate_for_operation(req_view, op="entry_create", current_state=None)
     if missing:
@@ -1255,7 +1266,7 @@ def record_entry(
     # IntegrityError at the NOT NULL). After the date normalisation, so the
     # branch order is unchanged for every input the old code accepted.
     if not (math.isfinite(req.entry_price) and req.entry_price > 0):
-        raise ValueError(
+        raise EntryInputDomainError(
             f"entry price must be a finite number > 0; got {req.entry_price!r}"
         )
     if req.initial_stop >= req.entry_price:
