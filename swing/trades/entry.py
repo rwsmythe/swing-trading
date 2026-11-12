@@ -488,6 +488,28 @@ class EntryInputDomainError(ValueError):
     the form handed back rather than re-raising it as a 500 (Codex R1-3)."""
 
 
+def _entry_date_to_iso(entry_date: str) -> str:
+    """The entry date's domain (D86), refused as ``EntryInputDomainError``.
+
+    A separate function, not a ``try`` in ``record_entry``'s own body: that
+    body's single guarded region is pinned by AST
+    (``test_22a4_clause2_settlement.py::test_k3a_...``).
+    """
+    from swing.trades.exit import _normalize_trade_event_date_to_iso
+    if "T" in entry_date:
+        raise EntryInputDomainError(
+            f"entry_date {entry_date!r} must be YYYY-MM-DD only "
+            f"(not a full ISO datetime); the trades.entry_date column is "
+            f"date-only and downstream consumers (advisory, journal, "
+            f"briefing, CLI hold-duration) call date.fromisoformat on it"
+        )
+    try:
+        return _normalize_trade_event_date_to_iso(
+            entry_date, field_name="entry_date")
+    except ValueError as exc:
+        raise EntryInputDomainError(str(exc)) from exc
+
+
 class DecisionNightRefusedError(Exception):
     """D102 T2.3's 400, ENFORCED HERE after the latch outcome (RD item A = B,
     CHARC's form ruling, 2026-11-12).
@@ -1242,20 +1264,7 @@ def record_entry(
     # remain YYYY-MM-DD only at the API boundary; reject T-form before
     # storing. Synthesis of T16:00:00 for fill_datetime / pre_trade_locked_at
     # happens via the shared helper after the date-only guard.
-    from swing.trades.exit import _normalize_trade_event_date_to_iso
-    if "T" in req.entry_date:
-        raise EntryInputDomainError(
-            f"entry_date {req.entry_date!r} must be YYYY-MM-DD only "
-            f"(not a full ISO datetime); the trades.entry_date column is "
-            f"date-only and downstream consumers (advisory, journal, "
-            f"briefing, CLI hold-duration) call date.fromisoformat on it"
-        )
-    try:
-        entry_iso = _normalize_trade_event_date_to_iso(
-            req.entry_date, field_name="entry_date",
-        )
-    except ValueError as exc:
-        raise EntryInputDomainError(str(exc)) from exc
+    entry_iso = _entry_date_to_iso(req.entry_date)
     req_view["pre_trade_locked_at"] = entry_iso
     missing = validate_for_operation(req_view, op="entry_create", current_state=None)
     if missing:
