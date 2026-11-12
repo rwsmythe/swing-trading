@@ -468,6 +468,13 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
     # this head; the two live rows keep their own versions.
     ("2026-11-11.2",
      "8b75cbd0124150fbade4088fb527afb0962f5202c03d3083ae720f7001e89e8a"),
+    # sg-label exec R1-8 (CHARC, ruled inside the amendment): a DOCSTRING-only
+    # edit in `_derive_last_fire` (a manifest member) -- rows older than the
+    # stop are never passed to the MATCHER, and every row's dates are parsed
+    # first because an unparsed row cannot be ranked. No behaviour changed;
+    # the guard hashes SOURCE. Appended, never edited.
+    ("2026-11-12.1",
+     "b8a4e795a1c0ff643dfccde8e8b8cf7ab02d684c7d7f15590d2bad38b6187a5d"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
@@ -3380,9 +3387,11 @@ def _derive_last_fire(
     bound, a clock-margin decline, a missing status interval) REFUSES: it
     could have been the last fire. A row with two or more matches REFUSES
     (E3): it is AMBIGUOUS, and a newer ambiguous row is never passed over to
-    reach an older fire. Rows OLDER than the stop are never read -- an older
-    row cannot be the LAST fire once a newer single-match row exists, so an
-    unreadable older row cannot block a correction it cannot change.
+    reach an older fire. Rows OLDER than the stop are never passed to the
+    matcher (an older row cannot be the LAST fire once a newer single-match
+    row exists, so its matcher read cannot change the correction); every
+    row's dates are parsed first, because a row whose dates do not parse
+    cannot be ranked (CHARC, R1-8).
     """
     from swing.data.repos.candidates import list_candidates_for_ticker
     from swing.recommendations.hypothesis_prefill import WATCH_FIRE_WINDOW_ROWS
