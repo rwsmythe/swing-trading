@@ -480,6 +480,59 @@ class DuplicateOpenPositionError(Exception):
     """Already an open trade for this ticker."""
 
 
+class DecisionNightRefusedError(Exception):
+    """D102 T2.3's 400, ENFORCED HERE after the latch outcome (RD item A = B,
+    CHARC's form ruling, 2026-11-12).
+
+    Raised only for a NON-latched entry whose auto-fill anchor the identity
+    authority did not refuse, i.e. only where the write WOULD USE the night
+    the operator named (RD's entry-refusal rule, clause 2). ``text`` is the
+    route-composed refusal, or None for "no longer offered". Deliberately NOT
+    a ``ValueError``: the route's generic ``except ValueError`` re-raises, and
+    this refusal must never become a 500.
+    """
+
+    def __init__(self, text: str | None) -> None:
+        super().__init__(text or "the named decision night is no longer offered")
+        self.text = text
+
+
+@dataclass(frozen=True)
+class DecisionNightVerdict:
+    """The route's reading of the operator's named decision night (D102 T2.3),
+    computed BEFORE ``record_entry`` and ENFORCED inside it, after the ONE
+    latch resolution (CHARC's form ruling).
+
+    ``refusal`` is the ladder's refusal text (a malformed or stale anchor, a
+    night the server no longer offers, a changed label, an unavailable
+    re-read), or None when the named night was validated; then
+    ``candidate_id``/``label``/``bucket`` are the SERVER's for that night.
+    ``chosen_id`` is the posted choice as parsed (None if unparseable), kept
+    for the latch-wins log.
+    """
+
+    refusal: str | None
+    chosen_id: int | None = None
+    candidate_id: int | None = None
+    label: str | None = None
+    bucket: str | None = None
+
+    def describe(self) -> str:
+        if self.refusal is not None:
+            return f"decision anchor refused: {self.refusal}"
+        return f"named night candidate {self.candidate_id}"
+
+
+# The bucket the derived origin implies (the row `derive_trade_origin` read).
+# A validated night whose bucket disagrees came from a different latest run
+# than the origin did: refused as "no longer offered" rather than paired.
+_ORIGIN_NIGHT_BUCKET = {
+    "pipeline_aplus": "aplus",
+    "pipeline_watch_manual": "watch",
+    "pipeline_watch_hyp_recs": "watch",
+}
+
+
 @dataclass(frozen=True)
 class EntryRequest:
     ticker: str
@@ -571,6 +624,11 @@ class EntryRequest:
     # honest-unset cohort keys and is NEVER refused for it. A downgrade-only
     # flag: True can only remove keys a request would otherwise carry.
     anchor_refused_by_authority: bool = False
+    # D102 T2.3 under RD's entry-refusal rule (item A = B): the operator's
+    # named decision night, read by the route and ENFORCED in
+    # `_record_entry_inner` after the latch outcome. None = no chooser posted
+    # (the CLI, bare cURL, a latched form): today's path.
+    decision_night: DecisionNightVerdict | None = None
 
     def __post_init__(self) -> None:
         from swing.data.models import (
@@ -2204,6 +2262,42 @@ def _record_entry_inner(
         derived_origin = "manual_off_pipeline"
         resolved_candidate_id = None
         hypothesis_label = None
+
+    # D102 T2.3, THE NAMED DECISION NIGHT, ENFORCED AFTER THE ONE LATCH
+    # RESOLUTION (RD item A = B; CHARC's form ruling, 2026-11-12). RD's
+    # entry-refusal rule: a guard may refuse the ENTRY only when the operator
+    # EXPLICITLY ASSERTED the value (here he named the night) AND the write
+    # WOULD USE it. So the night's verdict refuses the entry ONLY on the
+    # ordinary path below; where the latch keeps its own candidate, or the
+    # refused anchor discards the keys, the choice is logged and refuses
+    # NOTHING. The refused branch keys on the flag form C already carries
+    # (and on the resolver's own recognised-and-refused outcome), never on a
+    # second detection.
+    _night = getattr(req, "decision_night", None)
+    if _night is not None:
+        if latched.admitted:
+            if (_night.chosen_id is not None
+                    and _night.chosen_id != latched.candidate_id):
+                log.warning(
+                    "D102: the submitted decision night (candidate %s) "
+                    "differs from the latched fire %s for %s; THE LATCH WINS "
+                    "-- the night choice is not evaluated on a latched entry",
+                    _night.chosen_id, latched.candidate_id, req.ticker)
+        elif (latched.recognised_but_underivable
+                or getattr(req, "anchor_refused_by_authority", False)):
+            log.warning(
+                "D102: the submitted decision night choice was NOT evaluated "
+                "for %s: the auto-fill anchor was refused, so the entry "
+                "records honest-unset cohort keys and the choice would be "
+                "discarded; it blocks nothing (%s)",
+                req.ticker, _night.describe())
+        else:
+            if _night.refusal is not None:
+                raise DecisionNightRefusedError(_night.refusal)
+            if _ORIGIN_NIGHT_BUCKET.get(derived_origin) != _night.bucket:
+                raise DecisionNightRefusedError(None)
+            resolved_candidate_id = _night.candidate_id
+            hypothesis_label = _night.label
 
     if (latched.admitted or latched.recognised_but_underivable
             or getattr(req, "anchor_refused_by_authority", False)):

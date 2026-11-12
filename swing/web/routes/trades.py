@@ -19,6 +19,7 @@ from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import get_trade, list_open_trades
 from swing.recommendations.sizing import SizingResult, compute_shares, zero_share_line
 from swing.trades.entry import (
+    DecisionNightRefusedError,
     DuplicateOpenPositionError,
     EntryRationale,
     EntryRequest,
@@ -1823,42 +1824,37 @@ def entry_post(
     # branch needed here.
 
     # D102 T2.3 -- THE DECISION NIGHT. Anchor ABSENT (bare cURL, CLI tests, a
-    # latched form, the F6 edge): today's path verbatim -- no candidate id
-    # is supplied and the posted hypothesis_label stands. Anchor PRESENT:
-    # the 4-tier ladder (`_decision_anchor_refusal`), then the SERVER-STAMP.
-    # The submitted set is the operator's CLAIM about what he saw, never the
+    # latched form, the F6 edge): today's path verbatim -- no verdict is
+    # passed and the posted hypothesis_label stands. Anchor PRESENT: the
+    # 4-tier ladder (`_decision_anchor_refusal`), then the SERVER-STAMP. The
+    # submitted set is the operator's CLAIM about what he saw, never the
     # authority on what is eligible (Codex R2-01): the eligible set is
-    # RE-DERIVED here through the same function that rendered the form, at
-    # POST time because `record_entry` derives the trade's origin at POST
-    # time from the same latest complete run. The chosen row is validated
-    # AS THAT ROW (the TOCTOU gotcha), never re-picked as a "latest", and
-    # its label is the SERVER's; a label differing from the one the
-    # operator saw is refused rather than recorded under him.
+    # RE-DERIVED here through the same function that rendered the form, ONCE.
+    # The chosen row is validated AS THAT ROW (the TOCTOU gotcha), never
+    # re-picked as a "latest", and its label is the SERVER's.
     #
-    # Every refusal here is a 400 that CLEARS the decision anchor (the
-    # re-render carries the fresh offer and the default night) and keeps
-    # the auto-fill anchors, which were not what failed.
-    decision_candidate_value: int | None = None
-    decision_label_value: str | None = None
+    # THE VERDICT IS READ HERE AND ENFORCED IN `record_entry` (RD item A = B,
+    # CHARC's form ruling, 2026-11-12). The route does NOT refuse: the latch
+    # outcome exists only inside `record_entry` (`_record_entry_inner` ->
+    # `resolve_latched_provenance`, the ONE latch resolution), and RD's
+    # entry-refusal rule lets the night refuse the ENTRY only where the write
+    # would use it -- a non-latched entry whose anchor the identity authority
+    # did not refuse. There the service raises `DecisionNightRefusedError`,
+    # mapped below to this same 400 (fresh offer, decision anchor cleared,
+    # auto-fill anchors kept). The eligible set is read HERE, outside the
+    # service's transaction, because the progress read inside it runs the
+    # tier-2 replay, which refuses under a caller-held transaction
+    # (`frozen_value_evidence.py`, REASON_CALLER_HOLDS_TRANSACTION) and must
+    # not run git inside one; the service closes the pairing window instead
+    # by refusing a night whose bucket disagrees with the origin it derived.
+    decision_verdict = None
     decision_anchor_present = bool(decision_nights_anchor.strip())
     if decision_anchor_present:
-        def _reject_decision_anchor(error_message: str) -> HTMLResponse:
-            return _rerender_entry_form_with_error(
-                request=request, templates=templates, cfg=cfg,
-                cache=cache, executor=executor,
-                ticker=ticker, entry_date=entry_date,
-                entry_price=entry_price, shares=shares,
-                initial_stop=initial_stop, rationale=rationale, notes=notes,
-                error_message=error_message,
-                origin=origin_coerced,
-                **_anchor_replay(),
-                submitted_decision_candidate_id=None,
-            )
-
         from swing.metrics.cohort import CohortReadRacedError
         from swing.recommendations.hypothesis_prefill import (
             list_decision_nights,
         )
+        from swing.trades.entry import DecisionNightVerdict
         from swing.trades.frozen_value_evidence import (
             WEB_REPLAY_BUDGET_SECONDS,
         )
@@ -1879,20 +1875,42 @@ def entry_post(
                     refusal = _DECISION_NIGHTS_UNAVAILABLE_TEXT
         finally:
             _conn.close()
+        try:
+            parsed_choice = int(decision_candidate_id.strip())
+        except (TypeError, ValueError):
+            parsed_choice = None
+        if refusal is None:
+            server_by_id = {n.candidate_id: n for n in server_nights}
+            if (chosen_id not in server_by_id
+                    or offered_claim[chosen_id]["evaluation_run_id"]
+                    != server_by_id[chosen_id].evaluation_run_id):
+                refusal = _DECISION_NIGHT_NOT_OFFERED_TEXT
+            elif offered_claim[chosen_id]["label"] != (
+                    server_by_id[chosen_id].label):
+                refusal = _DECISION_NIGHT_LABEL_CHANGED_TEXT.format(
+                    date=server_by_id[chosen_id].action_session_date)
         if refusal is not None:
-            return _reject_decision_anchor(refusal)
-        server_by_id = {n.candidate_id: n for n in server_nights}
-        if (chosen_id not in server_by_id
-                or offered_claim[chosen_id]["evaluation_run_id"]
-                != server_by_id[chosen_id].evaluation_run_id):
-            return _reject_decision_anchor(_DECISION_NIGHT_NOT_OFFERED_TEXT)
-        night = server_by_id[chosen_id]
-        if offered_claim[chosen_id]["label"] != night.label:
-            return _reject_decision_anchor(
-                _DECISION_NIGHT_LABEL_CHANGED_TEXT.format(
-                    date=night.action_session_date))
-        decision_candidate_value = night.candidate_id
-        decision_label_value = night.label
+            decision_verdict = DecisionNightVerdict(
+                refusal=refusal, chosen_id=parsed_choice)
+        else:
+            night = server_by_id[chosen_id]
+            decision_verdict = DecisionNightVerdict(
+                refusal=None, chosen_id=chosen_id,
+                candidate_id=night.candidate_id, label=night.label,
+                bucket=night.bucket)
+
+    def _reject_decision_anchor(error_message: str) -> HTMLResponse:
+        return _rerender_entry_form_with_error(
+            request=request, templates=templates, cfg=cfg,
+            cache=cache, executor=executor,
+            ticker=ticker, entry_date=entry_date,
+            entry_price=entry_price, shares=shares,
+            initial_stop=initial_stop, rationale=rationale, notes=notes,
+            error_message=error_message,
+            origin=origin_coerced,
+            **_anchor_replay(),
+            submitted_decision_candidate_id=None,
+        )
 
     req = EntryRequest(
         ticker=ticker.upper(),
@@ -1911,13 +1929,14 @@ def entry_post(
         # documents the contract.
         # D102 T2.3: on the anchored path the SERVER's label for the chosen
         # night (possibly None) replaces the posted hidden label.
+        # D102 T2.3: on the anchored path the label and the candidate are the
+        # SERVER's for the named night, set by `record_entry` from
+        # `decision_night` on the ordinary path only (the latch's own, or
+        # honest-unset, everywhere else); the posted hidden label is ignored.
         hypothesis_label=(
-            decision_label_value if decision_anchor_present
-            else (hypothesis_label or None)),
-        # D102 T2.3: the chosen decision night's candidate row. None on the
-        # anchor-less path, where `record_entry` resolves today's candidate
-        # exactly as before; a latched admission overrides it there.
-        candidate_id=decision_candidate_value,
+            None if decision_anchor_present else (hypothesis_label or None)),
+        candidate_id=None,
+        decision_night=decision_verdict,
         # D86 T4.3 (form C): a refused anchor refuses the LABEL in
         # `record_entry` (honest-unset keys); the ENTRY is written.
         anchor_refused_by_authority=anchor_refused_by_authority,
@@ -2412,6 +2431,12 @@ def entry_post(
                     {"error_message": str(exc)},
                     status_code=400,
                 )
+            except DecisionNightRefusedError as exc:
+                # D102 T2.3's 400, raised by `record_entry` after the latch
+                # outcome, only where the write would use the named night (RD
+                # item A = B). Nothing was written.
+                return _reject_decision_anchor(
+                    exc.text or _DECISION_NIGHT_NOT_OFFERED_TEXT)
             except PatternEvaluationAnchorError as exc:
                 # 22-A EXT-2 — THE RELOCATED GUARD'S REFUSAL, RENDERED AS THE
                 # SAME 400 THIS ROUTE USED TO MAKE (review 22A-R9-03).
