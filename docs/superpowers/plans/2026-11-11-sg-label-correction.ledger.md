@@ -754,3 +754,33 @@ The patch `t1.1-wip.patch` applied clean on `a36aaf67`. `tests/data` with it: 17
 > BANKED, as its own pre-arc item, CHARC to register and prioritise: "_rerender_entry_form_with_error drops the thirteen pre-trade answers on every early-validation 400 that calls it; only the missing-field re-render (trades.py:2028-2080) keeps them."
 >
 > Reviewer A may open once the reworked test is green and committed. No change to the H2 read rule or to my witness.
+
+
+## Executing -- cell 6 (continued): the FX-2 test green, the gate, Reviewer A round 1, STOP on a design packet
+
+**Commits (after the re-ruling):** `2096f9c1` (the re-ruling transcribed; the old point 2 struck beside the FX-2 block quote and the corrected point 2 placed under it); `7f53fb79` `test(web): FX-2 condition -- ...` (`tests/web/test_routes/test_fx2_claimed_undecodable_round_trip.py`).
+
+**The FX-2 test, RD's three steps.** Step 1: the claimed undecodable anchor (every pre-trade field filled) gets the 400, and the recovery form carries the fresh anchor (`FRESH-ORDER-123`), not the rejected one. Step 2: the thirteen required pre-trade fields render EMPTY on the recovery form; the assertion message names `D47 companion (entry-form early-400 draft loss)` (CHARC's register name, `b3a1abcc`). Step 3: the recovery form's own serialized state, with only those thirteen answers retyped, returns 200 and writes ONE trade. **The keys the fresh anchor earns, read at the code:** the fresh envelope is canonical and names an order no latch is bound to, so the ordinary chain runs (`entry.py`, the unreserved branch). The trade is written `pipeline_aplus` (FTRE is `aplus` in TODAY's run, eval 900), `candidate_id` is today's row (the chooser's default selection on the recovery form), and `hypothesis_label` is the SERVER's label for that night, which is `None` here. The matcher finds no hypothesis for eval 900's row in this world; the option reads "(no hypothesis match)", and the labelled night is the earlier eval 121. The test pins that offer explicitly. The fill is `schwab_auto` with the recovery form's anchor persisted verbatim, because the submitted date/price/shares equal the fresh anchor's. **Measured besides:** the recovery form also drops `event_handling` and `gap_risk_handling` (15 typed values in all). Those two are required only when their risk is present, so they are not among RD's thirteen.
+
+**Gates at `7f53fb79`:** the related route modules (the FX-2 file, `test_d86_entry_raw_rung.py`, ext2, `test_entry_post_audit_columns.py`, `test_decision_night_entry.py`) passed 89, exit 0. The full fast suite (`-n 8`) went to `C:\Users\rwsmy\swing-data\review-transcripts\sg-label\exec-branch-suite-fx2.txt`, exit `0` (`.exit.txt`), HEAD in `.head.txt`; the tail reads `15983 passed, 13 skipped, 1322 warnings, 26 subtests passed in 920.17s`.
+
+**Reviewer A round 1 (`strong`, the WSL chain, on `b120a6eb..7f53fb79`).** All five assertions passed:
+
+| Assertion | Result |
+|---|---|
+| model / effort vs the profile | gpt-6.1-sol / high = the profile file |
+| `^ERROR` | 0 |
+| footer and process | one `^tokens used`, 349,358; exit 0; process exited |
+| verdict | NEW_CRITICAL_MAJOR_FOUND (emitted twice); the other token 0 |
+| line-initial tokens in the prompt | 0 |
+
+The round ran 38 exec blocks. Findings: 0 critical, 2 major, 6 minor, all new. Evidence is in `...\sg-label\exec\` (`prompt-r1.md`, `diff-r1.txt`, `review-r1.txt`, `exit-r1.txt`, `run-r1.sh`, `copowers-findings-after-r1.md`). The round table, the verbatim findings and the adjudication are in the worktree's `.copowers-findings.md`, section "EXECUTING LOOP", and the depth cell is left EMPTY for the orchestrator. An earlier attempt was aborted by me before its footer, on a misread of two timestamp-prefixed refresh-timeout lines; its anchored `^ERROR` count was 0. It is not a round, and its tokens are unmeasured.
+
+**Dispositions.**
+- R1-1 and R1-2 (major) are CONFIRMED by read and ROUTED as one design packet: does the decision-night ladder, a guard over cohort keys, refuse the ENTRY when its output is not consumed (the authority already refused the label; a latch would override the choice)? Branches: (A) keep it; (B) skip or defer it when it is not consumed; (C) make it refuse the label, never the entry.
+- R1-3, R1-4 and R1-6 are CONFIRMED minors. Their fixes are owed to the post-ruling fix set.
+- R1-5 is SERVICE-PREVENTED (writer enumeration plus 0 of 197 live runs), a minor with no fix.
+- R1-7 is a confirmed mirror divergence and service-prevented; its fix is owed.
+- R1-8 is service-prevented in reach; whether it falls inside CHARC's amendment is flagged to CHARC.
+
+No round 2 was started.
