@@ -305,3 +305,57 @@ From the boundary the parity ledger's `decision_r_attested` (`swing/latches/clas
 - **The query text in the boundary note is literally what ran, but `ta_highlow52w_b0to25h` does not bind at 25%.** On the widened rows the evaluator's own TT7 distance reads <= 10%: 560, 10..25%: 202, 25..40%: 52, > 40% or `na`: 166; 219 of 980 rows do not pass TT7 against 8 of 446 on evals 176..187. Archive spot-checks show real 252-bar highs (WING 284.66, EPAM 221.40, ZS 331.29, DOCS 63.99). Most likely the token is not a value Finviz honors and the filter is ignored. **CONFIRMED 2026-11-11 by direct read-only calls on the operator's go: the live token returns the unfiltered count (74 = 74); of the within-N% presets only `b0to10h` and `b0to5h` bind; no clean 25% token exists (study section 6).** **So stage 1 as applied was "price cap lifted + no near-high filter".** A reader partitioning the widened population treats the 52-week-high dimension as UNFILTERED at the screen from call 156, with TT7 (not an allowed miss) doing the whole check at the gate; no bucket was wrong.
 - **Class yields, for any later read that conditions on admission:** old-screen rows 26.4% watch, price-cap-lifted rows 26.7% watch (41% risk-flagged), more-than-10%-off-high rows 6.7% watch. Risk non-pass rows: 122 on evals 188..197 (108 `skip`, 14 `watch`, 0 `aplus`), zero on 186..187: the D84 flag is populated from the widening, not from the D84 merge night.
 - **Stage 2 is RECOMMENDED** (perf 13w 30% -> 10%) with the near-high filter settled in the same edit; it gets its own boundary note (v2.6) on the first run that evaluates the new CSV. Until the operator edits the query nothing changes.
+
+## Version 2.6 — 2026-11-14 (the Finviz screen widening, stage 2: the epoch boundary note; and THE H2 READ RULE, owed at the SG merge)
+
+**RD-authored 2026-11-14 afternoon HST on the operator's go. SUPPLEMENTS v2.5; nothing else changes.** Both halves were owed earlier (the boundary note on the 11-12 nightly, the read rule at the SG merge `ce7a61a7`) and are paid late: this seat sat idle across the 11-11..11-13 nightlies. Every number below was read at my seat on the live DB mode=ro (schema 42), `pipeline_step_timings`, the SXC price archive and `exports/research/health/latest.json` (2026-11-14T03:34Z).
+
+### The stage-2 boundary
+- **What changed (user-config `screen_query`, applied 2026-11-11 ~08:30 HST on the operator's word; backup `~/swing-data/user-config.toml.pre-stage2-2026-11-11.bak`):** `ta_perf_13w30o` -> `ta_perf_13w10o`, and the non-binding `ta_highlow52w_b0to25h` REMOVED (v2.5 addendum 2). The live filter set is `sh_avgvol_o1000, sh_price_o5, ta_perf_13w10o, ta_sma20_sa50, ta_sma50_pa`: no near-high filter at the screen, TT7 doing that check at the gate.
+- **First stage-2 fetch:** `finviz_api_calls.call_id` **167** (2026-11-11 17:30 HST, **287 rows**; call 166 the night before returned 83 on the old text). Calls 168 and 169: 270 and 311 rows. `signature_hash` is unchanged (`ebeb5fc9...`, the column set), so as in v2.5 **the DB-readable boundary is the `screen_query` TEXT at call 167**.
+- **First stage-2 EVALUATION is `pipeline_runs.id` 213 / `evaluation_runs.id` 199** (data_asof 2026-11-12, action session 2026-11-13), evaluating `finviz12Nov2026.csv` from call 167: **287 candidates, `aplus` 1 / `watch` 33 / `skip` 252 / excluded 1 / error 0.** Run 212/198 (11-11) still evaluated the old-screen CSV (83 rows, 0 / 11 / 71 / 1). Run 214/200 (11-13): 270 candidates, 0 / 39 / 230 / 1. The screen went 83 -> 287 rows (3.5x) and the watch pool 11 -> 33 -> 39.
+- **A new shape in the watch pool:** `rs_rank` is non-null on 10 of 33 watch rows on eval 199 and 13 of 39 on eval 200. Through stage 1 it was NULL on every watch row (`fallback_spy`). Stage 2 admits RS-universe members; `rs_return_12w_vs_spy` stays non-null on all of them, so the ranked key (unused, cap unset) has no `None` to place.
+- **Detections (`pattern_detection_events` rows / tickers by run):** 211: 55/11, 212: 55/11, **213: 170/34, 214: 195/39.** The detect pool equals aplus + watch each night (uncapped). D101's check #8 read GREEN on run 213 (170 over a pool of 34).
+- **Walls (`pipeline_step_timings`, ms):**
+
+| run | rows | `evaluate` | `pattern_detect` | `pattern_observe` | all steps |
+|---|---|---|---|---|---|
+| stage-1 range, 203..212 | 65..136 | 71,106..150,960 | 20,811..66,033 | 50,910..83,441 | 204,672..364,872 |
+| 213 | 287 | 127,901 | 46,438 | 66,588 | 308,339 |
+| 214 | 270 | 99,531 | 61,445 | 59,830 | 293,722 |
+
+  **Cost does not bind.** Every stage-2 wall sits INSIDE the stage-1 range; the pre-stated 8 to 10 minute estimate was wrong (about 5 minutes end to end). Detect is 1.4 to 1.6 s per name on 34 and 39 names. Nothing is near the 1,800 s re-open trigger. **`detect_watch_pool_cap` stays UNSET.** The `ta_highlow52w_b0to10h` fallback is not needed.
+- **Monitor rates on the first stage-2 artifact (overall GREEN):** `invalid_ohlc` 71 of 1838 signals = 3.86% (71 flat since stage 1); `insufficient_forward_depth` 0.3%; `missing_observations` 2.5% (46; it was 0.4% at the stage-1 boundary, so the two-week read looks at it); 0 post-baseline non-finite OHLC of 462,644; 0 coverage gaps; run 200: 0 actionable null-pivot, 0 error-bucket.
+
+### The first A+ fire since 2026-09-02: SXC, eval 199, and it is STAGE-2-ADMITTED
+- `candidates.id` **16595** (SXC, Coking Coal), eval 199, action session 2026-11-13: all 18 criteria pass or `na` (TT8 `na`, fallback excess +15.29% vs SPY 12w; TT7 -5.0% from the 52-week high; risk_feasibility PASS, so this is NOT the risk-flagged A+ fire v2.4 still waits for). Recommendation 329: buy-stop 11.60, 15 sh, 35.85 risk.
+- **Admission class:** 13-week performance about +14.0% at the 11-12 close (65-bar return on the archive), i.e. between 10 and 30 percent. The old screen (`ta_perf_13w30o`) would not have returned it. It is the first A+ row of the stage-2-only class.
+- **It did not trigger and no trade exists.** The 11-13 bar's high was 10.77 against the 11.60 pivot. On eval 200 it is back on `watch` (two misses: `ma_short_rising`, `tightness`). Trades table: no row after 29.
+- One fire is one fire. It carries no expectancy reading; it is recorded because any later A+ read must partition by admission class from call 167.
+
+### RD reads owed on this boundary (standing)
+- **The two-week stage-2 read, from 2026-11-12, due about 2026-11-26:** one-miss rows per night and their miss criterion; A+ fires; H2 and H4 fires and whether each name is stage-2-admitted (13-week performance between 10 and 30 percent); the cost series above; `missing_observations`. **NOT expectancy:** the widened eras are unreadable before about mid-December.
+- v2.4's and v2.5's standing reads are unchanged (the first risk-flagged A+ fire; read #6 in December is the QUARTERLY + T10).
+
+### THE H2 READ RULE (binding on every H2 decision read from the SG merge `ce7a61a7`, schema 42)
+
+**Why:** from this merge an H2 trade's cohort keys can reach `trades` by three different routes (the form's default night, a night the operator named, a kind-2 correction), and they do not carry the same evidence. A read that pools them reports one n for three populations.
+
+**Every H2 decision read splits n into FIVE lines, classified in this order (first match wins), and reports all five:**
+1. **KIND-2 CORRECTED.** The trade has a `provenance_corrections` row of kind `watch_fire_relabel` (tier `last_fire`). The fire night was DERIVED by the service as the ticker's last narrow-rule fire among its five newest rows at or before the fill; the operator's cited id only confirms it.
+2. **LAST-WORD ENTRY.** `trades.candidate_id` belongs to the last complete evaluation at or before the entry fill: the form's default night, nothing named.
+3. **OPERATOR-NAMED, STRICTLY EARLIER NIGHT.** `trades.candidate_id` belongs to an evaluation strictly earlier than the last-word one, chosen on the entry form (D102), with no kind-2 row. The label is the server's for that night; the choice of night is the operator's.
+4. **AFTER-FILL RESIDUAL (the LQDA class).** `trades.candidate_id` belongs to an evaluation after the fill session.
+5. **UNANCHORED.** `trades.candidate_id` is NULL. Counted in none of the four above and in no expectancy; reported as a count.
+
+**Sensitivity, mandatory:** every H2 statistic is reported a second time EXCLUDING line 3. Line 3 is the only line where a human chose the evidence night; if a conclusion changes when it is dropped, the conclusion is not made.
+
+**The five-row window:** a fill more than five of the ticker's candidate rows after its fire is NOT an H2 fire and kind 2 refuses it. A resting hyp-rec order older than about a week of briefings stops counting; the operator was told (2026-11-11).
+
+**Reach and gates:** kind 2 reaches H2 only (H4 is aplus-only since D84) and only a trade ALREADY `hypothesis_test_by_design` (my intent gate, enforced in SQL by 0042). Kind 2 does not move the review form's outcome distribution: that cohort is filtered to provable A+ (`review_form.py`), and only an operator-named aplus night does.
+
+**Origin note:** SG (trade 29) is the first H2 row of origin `pipeline_watch_manual`; trades 14, 21, 22, 26 are all `pipeline_watch_hyp_recs`. Kind 2 moves the label and the anchor and NEVER the origin, so an H2 read that conditions on origin sees SG in a class of its own.
+
+**Live state at the rule's landing (2026-11-14):** five trades carry the H2 label (14 BULZ, 21 LQDA, 22 ORKA, 26 NRIX, 29 SG). The programme tally is 4 of 10: it counts CLOSED trades and SG is open. Line 1: SG (correction 3, candidate 15901, eval 193, rule `2026-11-12.1`; the pre-image anchor 15980 / eval 194 is in the row's `pre_value_json`). Line 4: LQDA. Line 5: 0 of 5. The classifier and its test are banked to the first H2 reader change (CHARC, 2026-11-11); until then the split is done by hand at the read.
+
+**What still makes line 5 rows (the entry-refusal rule, RD 2026-11-11/12, block-quoted in `docs/superpowers/plans/2026-11-11-sg-label-correction.ledger.md`):** an entry whose anchor the identity authority refuses is WRITTEN with honest-unset keys (`manual_off_pipeline`, NULL label, NULL candidate). A guard may refuse the ENTRY only over a value the operator explicitly asserted on that submission and the write would use (the fill-origin claim; a named decision night on a non-latched entry). **Banked limitation:** an H2 fire recorded honest-unset has NO relabel instrument (kind 2 needs an existing by-design label), so a line-5 row stays line 5.
