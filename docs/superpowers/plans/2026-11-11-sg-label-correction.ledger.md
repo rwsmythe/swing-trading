@@ -1025,3 +1025,20 @@ The prompts name both tokens mid-line only; the anchored counts read the model's
 7. Read-back `mode=ro`: `integrity_check` ok, `foreign_key_check` empty, `sqlite_sequence` 3, 3 rows. Row 3: `watch_fire_relabel` / `last_fire`, cited candidate 15901, eval 193, pipeline run 207, hypothesis 2 / status row 6, cited session 2026-11-05 <= fill session 2026-11-06, rule `2026-11-12.1`, pre `{candidate_id 15980, label 'Broad-watch baseline (watch); failed: proximity_20ma, tightness', origin pipeline_watch_manual}`, applied `{candidate_id 15901, label 'Near-A+ defensible: extension test (watch); failed: proximity_20ma', origin pipeline_watch_manual}`. Trade 29: the H2 label, candidate 15901, `pipeline_watch_manual`, `hypothesis_test_by_design`.
 
 Next: RD's witness (against eval 193; the H2 count 4 -> 5). CHARC closes D102/D103/D104 at T5 and D86 at the merge.
+
+## RD's witness (verbatim, binding)
+
+### RD, `20261114T234042Z`, msg-id `4af99f6fdd670794`, subject "RD WITNESS PASSED: trade 29 on live v42; H2 tally stays 4 closed"
+
+**Ruling seat:** RD. **Courier:** the orchestrator (quoted from the delivered file `comms/orchestrator/read/20261114T234042Z-rd-rd-witness-passed-trade-29-on-live-v42-h.md`, body in full). RD's wording correction supersedes the "H2 count 4 -> 5" phrasing in the T5 section above: five trades CARRY the H2 label; the programme tally of CLOSED trades stays 4 of 10 until SG closes.
+
+> RD WITNESS, trade 29 (SG): PASSED. Read by me on the live database, plain sqlite3 mode=ro, 2026-11-14 ~13:45 HST.
+>
+> - schema 42 (max(version) from schema_version); integrity_check ok; foreign_key_check empty.
+> - trade 29: hypothesis_label = 'Near-A+ defensible: extension test (watch); failed: proximity_20ma'; candidate_id = 15901; trade_origin = pipeline_watch_manual (unchanged); entry_intent = hypothesis_test_by_design; state managing.
+> - correction 3: trade 29, kind watch_fire_relabel, tier last_fire, cited candidate 15901 / evaluation run 193 / pipeline run 207 / hypothesis 2, rule 2026-11-12.1. Its pre_value_json holds the old anchor (15980, the Broad-watch baseline label) and corrected_fields_json names the label and the candidate only.
+> - candidate 15901 is SG, bucket watch, evaluation run 193; 15980 is SG, watch, run 194. Corrections 1 and 2 are kind fill_unset_provenance with tiers last_word and latch_ladder_tier2, as before.
+>
+> ONE WORDING CORRECTION to "the H2 count 4 -> 5". Five trades now CARRY the H2 label (14 BULZ, 21 LQDA, 22 ORKA, 26 NRIX, 29 SG). The programme tally stays 4 of 10: it counts CLOSED trades, and SG is open. SG becomes the fifth when it closes, and it will be the first H2 row of origin pipeline_watch_manual and the first on line 1 of the read rule (kind-2 corrected).
+>
+> Owed by me next, on the operator's word (a file edit): the five-line H2 read rule in the watch-standard. Nothing is asked of either of you.
