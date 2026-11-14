@@ -1013,3 +1013,15 @@ The prompts name both tokens mid-line only; the anchored counts read the model's
 ## Merged
 
 - `git merge --no-ff 7e17a83c` -> `ce7a61a7`, tree `8471fa30` (equal to the dry-merge tree named in the gate packet). Merged-head fast suite **16252 passed / 13 skipped / 0 failed, EXIT=0** (750.75 s; `~/swing-data/review-transcripts/sg-label/merged-head-suite-ce7a61a7.txt`). The a2_77 rename is a post-merge rider per CHARC (b). Next: the operator's witnessed v41 -> v42 migration and T5, then RD's witness.
+
+## T5 -- the operator's witnessed live migration and the SG correction (2026-11-14, step by step)
+
+1. `swing web` stopped by the operator; verified by the orchestrator (no listener on 8080/8081, no `swing web` process).
+2. Exclusive-lock probe (plain `sqlite3`, `BEGIN EXCLUSIVE; ROLLBACK`): `LOCK_PROBE OK -- no holder`.
+3. `swing db-migrate`: backup gate wrote `C:\Users\rwsmy\swing-data\backups\swing-pre-sg-label-migration-20261114T233229Z.db` (integrity-verified, 2,193,047,552 bytes); schema version 42.
+4. Read-back `mode=ro`: schema 42, `integrity_check` ok, `foreign_key_check` empty, `sqlite_sequence` 2, rows 1 (trade 23, kind 1, `last_word`) and 2 (trade 25, kind 1, `latch_ladder_tier2`); trade 29 unchanged.
+5. `swing journal correct-cohort-provenance 29 --cite-fire-candidate 15901 --reason "..." --dry-run`: cited 15901 / eval 193 / pipeline run 207 / fill 60 (F = 2026-11-06) / hypothesis 2, status-history row 6 / rule 2026-11-12.1 / `watch_fire_relabel` / `last_fire`; label and candidate_id move as CHARC's live-copy pre-run predicted; origin unchanged. Read-back: nothing written.
+6. The same without `--dry-run`: **provenance correction 3 applied to trade 29.**
+7. Read-back `mode=ro`: `integrity_check` ok, `foreign_key_check` empty, `sqlite_sequence` 3, 3 rows. Row 3: `watch_fire_relabel` / `last_fire`, cited candidate 15901, eval 193, pipeline run 207, hypothesis 2 / status row 6, cited session 2026-11-05 <= fill session 2026-11-06, rule `2026-11-12.1`, pre `{candidate_id 15980, label 'Broad-watch baseline (watch); failed: proximity_20ma, tightness', origin pipeline_watch_manual}`, applied `{candidate_id 15901, label 'Near-A+ defensible: extension test (watch); failed: proximity_20ma', origin pipeline_watch_manual}`. Trade 29: the H2 label, candidate 15901, `pipeline_watch_manual`, `hypothesis_test_by_design`.
+
+Next: RD's witness (against eval 193; the H2 count 4 -> 5). CHARC closes D102/D103/D104 at T5 and D86 at the merge.
