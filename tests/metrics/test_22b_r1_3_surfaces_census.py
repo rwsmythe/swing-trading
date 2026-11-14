@@ -50,6 +50,10 @@ _GOVERNED_NAMES: tuple[str, ...] = (
     "build_hypothesis_progress_card_vm",
     "lookup_active_recommendation_label",
     "build_recommendation_progress",
+    # sg-label T2.2-2.3 (D102): the per-night lister reads the governed
+    # progress through the same memoized reader, so its callers are one-hop
+    # consumers of a governed read and are classified here.
+    "list_decision_nights",
 )
 
 # One-hop caller -> classification, by (path, stripped call-line TEXT). A
@@ -61,7 +65,9 @@ _GOVERNED_NAMES: tuple[str, ...] = (
 # ClickException) or degrades-at-200 (the 3 metrics pages), unchanged /
 # fixed by this arc's own commits. "SECONDARY_CONTAINED": item 1 (i) --
 # contains CohortReadRacedError, degrades a panel, page renders.
-# "PREFILL_DEGRADED": item 2. "DEFINITION": the function's own `def` line
+# "PREFILL_DEGRADED": item 2. "PREFILL_REFUSED": sg-label T2.3 -- a POST
+# that cannot validate an operator choice refuses 400 (never 500, never a
+# persisted unvalidated night). "DEFINITION": the function's own `def` line
 # (not a call site; present in the source so the grep count is exact).
 _ONE_HOP_CALLERS: dict[str, list[tuple[str, str, str]]] = {
     "compute_hypothesis_progress_breakdown": [
@@ -158,8 +164,32 @@ _ONE_HOP_CALLERS: dict[str, list[tuple[str, str, str]]] = {
         ),
         (
             "swing/web/view_models/trades.py",
-            "resolved_hypothesis_label = lookup_active_recommendation_label(",
-            "PREFILL_DEGRADED (web entry-form GET)",
+            "lookup_active_recommendation_label(",
+            "PREFILL_DEGRADED (web entry-form GET; since sg-label T2.2 it "
+            "runs only when list_decision_nights offers no night, inside the "
+            "same CohortReadRacedError degrade)",
+        ),
+    ],
+    "list_decision_nights": [
+        (
+            "swing/recommendations/hypothesis_prefill.py",
+            "def list_decision_nights(",
+            "DEFINITION",
+        ),
+        (
+            "swing/web/view_models/trades.py",
+            "decision_nights = tuple(list_decision_nights(",
+            "PREFILL_DEGRADED (web entry-form GET: a raced read renders no "
+            "chooser, no label and the PREFILL_UNAVAILABLE_TEXT line; the "
+            "entry proceeds)",
+        ),
+        (
+            "swing/web/routes/trades.py",
+            "server_nights = list_decision_nights(",
+            "PREFILL_REFUSED (web entry POST, decision-anchor server-stamp: "
+            "a raced read is a 400 that clears the decision anchor and "
+            "re-renders -- never a 500, never a night it could not "
+            "validate; plan self-sweep SS-1)",
         ),
     ],
     "build_recommendation_progress": [
@@ -182,9 +212,15 @@ _ONE_HOP_CALLERS: dict[str, list[tuple[str, str, str]]] = {
         ),
         (
             "swing/recommendations/hypothesis_prefill.py",
-            "_, progress_summaries = build_recommendation_progress(",
-            "the DEFINITION of lookup_active_recommendation_label -- its "
-            "own one-hop dependency, not a second call site",
+            "_, summaries = build_recommendation_progress(",
+            "the DEFINITION of lookup_active_recommendation_label's (and, "
+            "since sg-label T2.1 / D102, list_decision_nights') shared "
+            "memoized `_progress_reader` -- their own one-hop dependency, not "
+            "a second call site. Both raise "
+            "CohortReadRacedError through it exactly as before; "
+            "list_decision_nights' callers (the entry-form GET degrades, the "
+            "POST refuses 400) are classified under list_decision_nights "
+            "below",
         ),
     ],
 }
@@ -229,6 +265,7 @@ def test_every_classification_is_one_of_the_named_dispositions() -> None:
         "GOVERNED_PAGE",
         "SECONDARY_CONTAINED",
         "PREFILL_DEGRADED",
+        "PREFILL_REFUSED",
         "the DEFINITION of",
         "inside compute_hypothesis_progress_breakdown",
     )

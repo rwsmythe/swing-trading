@@ -967,17 +967,27 @@ def trade_entry_cmd(ctx, ticker, entry_date, entry_price, shares, initial_stop,
                 from swing.recommendations.hypothesis_prefill import (
                     PREFILL_UNAVAILABLE_TEXT,
                 )
+                _night: list = []
                 try:
                     prefilled = lookup_active_recommendation_label(
                         conn, ticker=ticker.upper(),
                         starting_equity=cfg.account.starting_equity,
+                        night_out=_night,
                     )
                 except CohortReadRacedError:
                     click.echo(PREFILL_UNAVAILABLE_TEXT)
                 else:
                     if prefilled is not None:
                         hypothesis = prefilled
-                        click.echo(f"Pre-filled --hypothesis: {prefilled}")
+                        # D102 T2.4 (F7 = A): the CLI keeps the LATEST night
+                        # (no chooser; banked) and NAMES it on the line: the
+                        # night the LOOKUP read, handed back by it (Codex
+                        # R1-6), never a second read of "the latest".
+                        _night_eval, _night_session = _night[0]
+                        click.echo(
+                            f"Pre-filled --hypothesis: {prefilled} "
+                            f"(eval {_night_eval}, session "
+                            f"{_night_session or 'unknown'})")
 
             # NEW (Task 7): sector/industry candidate-row lookup via the canonical
             # helper, mirroring the entry-form VM (Task 6) for cross-surface
@@ -3604,11 +3614,23 @@ def _echo_admission_tier(view) -> None:
     signs that would otherwise be natural here.
     """
     tier = getattr(view, "admission_tier", "last_word")
+    kind = getattr(view, "correction_kind", "fill_unset_provenance")
+    click.echo(f"  correction kind               {kind}")
     click.echo(f"  admission tier                {tier}")
     if tier == "last_word":
         click.echo(
             "                                (the framework's LAST WORD "
             "before the fill; no accepted latch order)")
+        return
+    # sg-label T1.3 (D104): a kind-2 `last_fire` row cites NO latch -- every
+    # latch column is NULL by 0042's citation trigger -- so it must not fall
+    # through to the latch rows below, which would print it as a latch
+    # admission with four `None`s.
+    if tier == "last_fire":
+        click.echo(
+            "                                (the ticker's LAST narrow-rule "
+            "fire before the fill; no accepted latch order; no "
+            "recommendation cited)")
         return
     click.echo(
         f"  cited latch link              {view.cited_latch_link_id} "
@@ -3640,10 +3662,25 @@ def _echo_tier2_note(view) -> None:
         click.echo(f"  NOTE: {note}")
 
 
+def _recommendation_citation(kind, rec_id, rec_date) -> str:
+    """The recommendation half of a citation, by KIND (sg-label T1.3).
+
+    A kind-2 (`watch_fire_relabel`) row cites NO daily_recommendations row
+    (0042's presence CHECK), and printing its NULLs would read as a citation
+    of row `None`. ASCII only."""
+    if kind == "watch_fire_relabel":
+        return "(none: watch-fire relabel)"
+    return f"{rec_id} (action session {rec_date})"
+
+
 @journal_group.command("correct-cohort-provenance")
 @click.argument("trade_id", type=int)
+# NOT `required=True` since sg-label T1.3: the command has TWO modes and the
+# body enforces exactly one -- (--cited-candidate AND --cited-recommendation)
+# XOR --cite-fire-candidate -- as a click.UsageError.
 @click.option(
-    "--cited-candidate", "cited_candidate_id", type=int, required=True,
+    "--cited-candidate", "cited_candidate_id", type=int, required=False,
+    default=None,
     help=(
         "The candidates.id this trade's cohort keys are DERIVED FROM. Must be "
         "an `aplus` row. WHICH row is admissible depends on the authority: "
@@ -3654,7 +3691,7 @@ def _echo_tier2_note(view) -> None:
 )
 @click.option(
     "--cited-recommendation", "cited_recommendation_id", type=int,
-    required=True,
+    required=False, default=None,
     help=(
         "The daily_recommendations.id cited. This CONFIRMS the today_decision "
         "row derived from the candidate's own evaluation run; it never "
@@ -3701,10 +3738,25 @@ def _echo_tier2_note(view) -> None:
         "record and checks them against the cited candidate row."
     ),
 )
+# sg-label T1.3 (D104). Declared LAST, after `--frozen-value-evidence`, so the
+# parameter manifest only APPENDS. Like the two citation ids it is a ROW ID,
+# never a value: the label is derived from the cited row, and the service
+# DERIVES the last fire itself -- this id only CONFIRMS it.
+@click.option(
+    "--cite-fire-candidate", "cite_fire_candidate_id", type=int,
+    required=False, default=None,
+    help=(
+        "WATCH-FIRE RELABEL mode (instead of --cited-candidate + "
+        "--cited-recommendation): the candidates.id of the watch fire this "
+        "pipeline_watch_manual, by-design trade was entered on. The service "
+        "DERIVES the ticker's last narrow-rule fire before the fill and "
+        "refuses unless this id IS that row; the label is the fire's own."
+    ),
+)
 @click.pass_context
 def journal_correct_cohort_provenance_cmd(
     ctx, trade_id, cited_candidate_id, cited_recommendation_id, reason,
-    dry_run, frozen_value_evidence,
+    dry_run, frozen_value_evidence, cite_fire_candidate_id,
 ):
     """Fill a trade's EMPTY cohort keys from the framework's own record.
 
@@ -3738,15 +3790,45 @@ def journal_correct_cohort_provenance_cmd(
 
     V1 records provenance ONCE per trade. There is no re-correction path, so
     the --dry-run reading is the decision point.
+
+    WATCH-FIRE RELABEL MODE (--cite-fire-candidate, migration 0042): for a
+    pipeline_watch_manual trade with entry intent hypothesis_test_by_design
+    whose label and candidate_id were stamped from the FILL night (the batch
+    night), moves both to the ticker's LAST narrow-rule fire before the fill.
+    The service derives that fire from the framework's record -- newest first
+    over the ticker's five newest rows at or before the fill -- and the id
+    given here only CONFIRMS it; a mismatch is refused naming both. No
+    recommendation is cited, the origin is unchanged, and --reason is
+    required on every path that is not a replay, --dry-run included. The
+    two-id options and --frozen-value-evidence do not combine with it.
     """
     from swing.config_overrides import apply_overrides
     from swing.data.db import connect
     from swing.trades.cohort_provenance_correction import (
         CohortProvenanceCorrectionError,
         correct_cohort_provenance,
+        correct_watch_fire_label,
         preview_cohort_provenance_correction,
+        preview_watch_fire_label,
     )
     from swing.trades.entry import ascii_safe
+
+    # EXACTLY ONE MODE, decided BEFORE any connection opens (sg-label T1.3).
+    fire_mode = cite_fire_candidate_id is not None
+    if fire_mode:
+        if cited_candidate_id is not None or cited_recommendation_id is not None:
+            raise click.UsageError(
+                "--cite-fire-candidate is its own mode; do not combine it with "
+                "--cited-candidate / --cited-recommendation.")
+        if frozen_value_evidence is not None:
+            raise click.UsageError(
+                "--frozen-value-evidence belongs to the latch ladder's tier-2 "
+                "escape; the watch-fire relabel (--cite-fire-candidate) "
+                "refuses a latched fill and takes no evidence.")
+    elif cited_candidate_id is None or cited_recommendation_id is None:
+        raise click.UsageError(
+            "give either BOTH --cited-candidate and --cited-recommendation, or "
+            "--cite-fire-candidate (the watch-fire relabel).")
 
     cfg = apply_overrides(ctx.obj["config"])
     conn = connect(cfg.paths.db_path)
@@ -3757,18 +3839,25 @@ def journal_correct_cohort_provenance_cmd(
     try:
         if dry_run:
             try:
-                preview = preview_cohort_provenance_correction(
-                    conn, trade_id=trade_id,
-                    cited_candidate_id=cited_candidate_id,
-                    cited_recommendation_id=cited_recommendation_id,
-                    reason=reason,
-                    # 22-A: the config is what lets the ladder run at all.
-                    # WITHOUT it the resolver returns `no_config` and every
-                    # correction silently reports the `last_word` tier -- a
-                    # true statement about a probe that never happened.
-                    cfg=cfg,
-                    frozen_value_evidence=frozen_value_evidence,
-                )
+                if fire_mode:
+                    preview = preview_watch_fire_label(
+                        conn, trade_id=trade_id,
+                        fire_candidate_id=cite_fire_candidate_id,
+                        reason=reason, cfg=cfg)
+                else:
+                    preview = preview_cohort_provenance_correction(
+                        conn, trade_id=trade_id,
+                        cited_candidate_id=cited_candidate_id,
+                        cited_recommendation_id=cited_recommendation_id,
+                        reason=reason,
+                        # 22-A: the config is what lets the ladder run at
+                        # all. WITHOUT it the resolver returns `no_config`
+                        # and every correction silently reports the
+                        # `last_word` tier -- a true statement about a probe
+                        # that never happened.
+                        cfg=cfg,
+                        frozen_value_evidence=frozen_value_evidence,
+                    )
             except CohortProvenanceCorrectionError as exc:
                 raise click.ClickException(ascii_safe(str(exc))) from exc
             if preview.already_applied_correction_id is not None:
@@ -3790,8 +3879,10 @@ def journal_correct_cohort_provenance_cmd(
             )
             click.echo(
                 "  cited daily_recommendations   "
-                f"{preview.cited_daily_recommendation_id} (action session "
-                f"{preview.recommendation_action_session_date})"
+                + _recommendation_citation(
+                    preview.correction_kind,
+                    preview.cited_daily_recommendation_id,
+                    preview.recommendation_action_session_date)
             )
             click.echo(
                 f"  cited evaluation run          "
@@ -3843,14 +3934,20 @@ def journal_correct_cohort_provenance_cmd(
             return
 
         try:
-            result = correct_cohort_provenance(
-                conn, trade_id=trade_id,
-                cited_candidate_id=cited_candidate_id,
-                cited_recommendation_id=cited_recommendation_id,
-                reason=reason,
-                cfg=cfg,
-                frozen_value_evidence=frozen_value_evidence,
-            )
+            if fire_mode:
+                result = correct_watch_fire_label(
+                    conn, trade_id=trade_id,
+                    fire_candidate_id=cite_fire_candidate_id,
+                    reason=reason, cfg=cfg)
+            else:
+                result = correct_cohort_provenance(
+                    conn, trade_id=trade_id,
+                    cited_candidate_id=cited_candidate_id,
+                    cited_recommendation_id=cited_recommendation_id,
+                    reason=reason,
+                    cfg=cfg,
+                    frozen_value_evidence=frozen_value_evidence,
+                )
         except CohortProvenanceCorrectionError as exc:
             raise click.ClickException(ascii_safe(str(exc))) from exc
         # 22-F R1-05 (CHARC): an already-applied correction is a no-op
@@ -3868,7 +3965,10 @@ def journal_correct_cohort_provenance_cmd(
             f"ALREADY APPLIED -- trade {result.trade_id} already carries "
             f"provenance correction {result.correction_id} citing candidate "
             f"{result.cited_candidate_id} and daily_recommendations row "
-            f"{result.cited_daily_recommendation_id}. Nothing was written."
+            + (_recommendation_citation(result.correction_kind, None, None)
+               if result.correction_kind == "watch_fire_relabel"
+               else str(result.cited_daily_recommendation_id))
+            + ". Nothing was written."
         )
         _echo_tier2_note(result)
     else:
@@ -3884,7 +3984,10 @@ def journal_correct_cohort_provenance_cmd(
         # from the dry-run reading visible where he can act on it.
         click.echo(
             f"  cited candidates {result.cited_candidate_id} + "
-            f"daily_recommendations {result.cited_daily_recommendation_id}"
+            "daily_recommendations "
+            + (_recommendation_citation(result.correction_kind, None, None)
+               if result.correction_kind == "watch_fire_relabel"
+               else str(result.cited_daily_recommendation_id))
         )
         _echo_admission_tier(result)
         for fname in COHORT_FIELD_ORDER:
@@ -3934,10 +4037,16 @@ def journal_provenance_corrections_cmd(ctx, trade_id):
             f"-- applied {c.applied_at} by {c.applied_by}"
         )
         click.echo(
+            f"  correction_kind {c.correction_kind}, admission tier "
+            f"{c.admission_tier}"
+        )
+        click.echo(
             f"  cites candidates {c.cited_candidate_id} (action session "
             f"{c.cited_candidate_action_session_date}) + "
-            f"daily_recommendations {c.cited_daily_recommendation_id} "
-            f"(action session {c.cited_recommendation_action_session_date})"
+            "daily_recommendations "
+            + _recommendation_citation(
+                c.correction_kind, c.cited_daily_recommendation_id,
+                c.cited_recommendation_action_session_date)
         )
         click.echo(
             f"  evaluation run {c.cited_evaluation_run_id}, pipeline run "

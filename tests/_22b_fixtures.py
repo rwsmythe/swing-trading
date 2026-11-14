@@ -62,6 +62,15 @@ LVE_ROW5 = {
 
 
 def insert_row(conn: sqlite3.Connection, table: str, row: dict[str, Any]) -> int:
+    if table == "provenance_corrections" and "correction_kind" in row:
+        # sg-label (0042): a HEAD-emitted kind-1 row carries correction_kind
+        # 'fill_unset_provenance'; a pre-0042 world has no such column, and
+        # 0042's copy writes exactly that value, so the older-column subset is
+        # the SAME row (0039 SS-1). A kind-2 value is never dropped.
+        have = {r[1] for r in conn.execute("PRAGMA table_info(provenance_corrections)")}
+        if "correction_kind" not in have:
+            assert row["correction_kind"] == "fill_unset_provenance", row
+            row = {k: v for k, v in row.items() if k != "correction_kind"}
     cols = ", ".join(row)
     marks = ", ".join("?" * len(row))
     cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})",

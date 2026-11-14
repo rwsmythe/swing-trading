@@ -80,8 +80,13 @@ _MEMBER_SITES: dict[str, dict[str, str]] = {
             "tight-by-design: the historical CHECK 0040 rebuilds",
         "swing/data/migrations/0040_entry_intent_unintended_execution.sql":
             "widened: the v40 CHECK",
+        "swing/data/migrations/0042_provenance_corrections_watch_fire_relabel.sql":
+            "tight-by-design (sg-label, D104): the citation trigger's kind-2 F5 "
+            "gate -- a watch_fire_relabel is admissible only for a by-design "
+            "trade; pinned to PROVENANCE_WATCH_FIRE_ENTRY_INTENT by 0042's 1m",
         "swing/data/models.py":
-            "widened: ENTRY_INTENTS; tight-by-design: ENTRY_INTENTS_ASSERTABLE",
+            "widened: ENTRY_INTENTS; tight-by-design: ENTRY_INTENTS_ASSERTABLE "
+            "and PROVENANCE_WATCH_FIRE_ENTRY_INTENT (sg-label, the F5 gate)",
         "swing/metrics/cohort_intent.py":
             "value-agnostic: prose + the H2-H5 epoch-contract doctrine",
         "swing/trades/intent.py":

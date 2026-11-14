@@ -65,7 +65,7 @@ def test_the_22i_gate_row_is_the_canonical_clause() -> None:
             spec.creator_alias) == (
         40, "22i", "_phase22_arc_i_backup_gate", "pre-22-I", None)
     assert spec.expected_tables is db_mod.PHASE22_ARC_I_PRE_MIGRATION_EXPECTED_TABLES
-    assert db_mod.EXPECTED_SCHEMA_VERSION == 41
+    assert db_mod.EXPECTED_SCHEMA_VERSION == 42
 
 
 def test_the_22i_expected_tables_are_the_measured_v40_set(tmp_path: Path) -> None:

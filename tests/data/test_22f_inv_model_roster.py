@@ -188,6 +188,16 @@ LATER_ARC_ROSTER: dict[str, str] = {
     # candidate's risk-layer results (computed, never itself a DB row); reached
     # from the matcher adapter, the latch panel, the tag sites and the briefing.
     "evaluation.scoring.RiskInputs.__post_init__": "computed",
+    # sg-label T1.1 (D104): `ProvenanceCorrection.__post_init__`'s snapshot
+    # validation split in two so the recommendation snapshot is validated only
+    # for kind 1 (`fill_unset_provenance`; kind 2 cites no recommendation).
+    # Both are called ONLY from `ProvenanceCorrection.__post_init__` (ROSTER:
+    # persisted), on rows the repo mapper hydrates from `provenance_corrections`
+    # and on the service's insert payload; the SQL twins are 0042's
+    # `cited_recommendation_snapshot_json IS NULL OR (CASE WHEN json_valid(...)`
+    # CHECK and the kind-CASE `cited_candidate_snapshot_json` CHECK.
+    "data.models.ProvenanceCorrection._validate_recommendation_snapshot": "persisted",
+    "data.models.ProvenanceCorrection._validate_remaining_snapshots": "persisted",
 }
 
 UNREACHED: dict[str, str] = {

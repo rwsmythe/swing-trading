@@ -12,7 +12,7 @@ def test_expected_schema_version_unchanged() -> None:
     # B-7 (Phase 15) arc subsequently bumped HEAD to v24 (migration 0024 adds the
     # nullable failure_mode column); this guard tracks the current HEAD so the
     # schwabdev-arc invariant (it added nothing of its own) stays auditable.
-    assert EXPECTED_SCHEMA_VERSION == 41
+    assert EXPECTED_SCHEMA_VERSION == 42
 
 
 def test_no_new_migration_file_added() -> None:
@@ -38,11 +38,13 @@ def test_no_new_migration_file_added() -> None:
     # CHARC F12 = A); 22-B adds 0040 (the trades rebuild widening
     # entry_intent, entry_intent_attestations, the N4 trigger + twins and the
     # four latch_view_events belts); 22-I adds 0041 (the REPLACE-exposure
-    # sweep: triggers only, one rebuilt trigger), so the ceiling is now 41.
+    # sweep: triggers only, one rebuilt trigger); sg-label adds 0042 (the
+    # provenance_corrections rebuild: the second correction kind
+    # watch_fire_relabel and the last_fire tier, D104), so the ceiling is now 42.
     #
     # Raising this ceiling is the guard WORKING AS DESIGNED for an AUTHORIZED
     # migration (CHARC's section-3 pass). An UNAUTHORIZED one must still trip
     # it, which is why the bump belongs in the same commit as the migration and
     # nowhere else.
     versions = sorted(int(p.name[:4]) for p in MIG.glob("[0-9][0-9][0-9][0-9]_*.sql"))
-    assert versions[-1] <= 41, f"a new migration file was added: {versions[-1]} (L3 violation)"
+    assert versions[-1] <= 42, f"a new migration file was added: {versions[-1]} (L3 violation)"

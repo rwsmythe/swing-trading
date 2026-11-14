@@ -148,7 +148,24 @@
                          if vm.sector_industry_evaluation_run_id is not none
                          else '' }}">
         <div><label>Hypothesis:</label>
+          {#- D102 T2.2 -- the operator NAMES the decision night. One option
+              per offered night, newest first and selected by default
+              (today's behaviour, now with the night SHOWN). The hidden
+              anchor carries the offered set; the POST validates the choice
+              against it AND re-derives the offer and the label server-side
+              (the submitted set is a claim, never the authority). When the
+              anchor is present the POST ignores the hidden hypothesis_label
+              below, which stays for the anchor-less path. -#}
+          {% if vm.decision_nights %}
+          <select name="decision_candidate_id">
+            {% for n in vm.decision_nights %}
+            <option value="{{ n.candidate_id }}"{% if n.candidate_id == vm.selected_decision_candidate_id %} selected{% endif %}>{{ n.action_session_date }} (eval {{ n.evaluation_run_id }}, {{ n.bucket }}): {{ n.label or "(no hypothesis match)" }}</option>
+            {% endfor %}
+          </select>
+          <input type="hidden" name="decision_nights_anchor" value="{{ vm.decision_nights_anchor_json }}">
+          {% else %}
           <span>{{ vm.hypothesis_label or "(none)" }}</span>
+          {% endif %}
           <input type="hidden" name="hypothesis_label" value="{{ vm.hypothesis_label or '' }}">
           {#- Arc 22-B RULING R1-3-SURFACES item 2: the negative state
               renders as a statement, never a silent blank. -#}

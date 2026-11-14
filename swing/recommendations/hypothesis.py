@@ -376,7 +376,9 @@ def match_candidate_to_hypotheses(
     # opted in AND the narrow phase returned ZERO matches. Order-robust -- gated
     # on the emptiness of `matches`, not on list position. Requires the row to
     # be active+present (mirrors the narrow rules; the engine loads status=='active'
-    # only). The ONLY opt-in caller is the shadow-expectancy attribution wrapper.
+    # only). Every opt-in caller is pinned by
+    # tests/integration/test_include_baseline_inventory_guard.py (an AST census
+    # of the call sites); this comment does not enumerate them.
     if include_baseline and not matches:
         h = active_by_name.get(H_BROAD_WATCH_BASELINE)
         if h is not None and _broad_watch_baseline_match(candidate):

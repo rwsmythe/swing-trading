@@ -27,6 +27,18 @@ def _plant_prefill_race(monkeypatch) -> None:
 
     monkeypatch.setattr(prefill_mod, "lookup_active_recommendation_label", raced)
 
+    # sg-label T2.2 (D102): the GET now reads the offered nights FIRST
+    # (`list_decision_nights`), through the same memoized governed read. The
+    # race is planted at THAT read too, so the degrade is exercised on the
+    # path the form actually takes.
+    def raced_reader(conn, registry, *, starting_equity, budget_seconds):
+        def read():
+            from swing.metrics.cohort import CohortReadRacedError
+            raise CohortReadRacedError((3,))
+        return read
+
+    monkeypatch.setattr(prefill_mod, "_progress_reader", raced_reader)
+
 
 def test_build_entry_form_vm_degrades_the_suggestion_b22_239(
         seeded_db, monkeypatch) -> None:

@@ -56,11 +56,17 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from swing.data.models import (
+    PROVENANCE_ADMISSION_TIER_LAST_FIRE,
     PROVENANCE_ADMISSION_TIER_LAST_WORD,
     PROVENANCE_ADMISSION_TIER_LATCH,
     PROVENANCE_ADMISSION_TIER_LATCH_TIER2,
     PROVENANCE_CORRECTED_FIELDS,
     PROVENANCE_CORRECTION_APPLIED_BY,
+    PROVENANCE_CORRECTION_KIND_FILL_UNSET,
+    PROVENANCE_CORRECTION_KIND_WATCH_FIRE,
+    PROVENANCE_WATCH_FIRE_CORRECTED_FIELDS,
+    PROVENANCE_WATCH_FIRE_ENTRY_INTENT,
+    PROVENANCE_WATCH_FIRE_ORIGIN,
     ProvenanceCorrection,
 )
 from swing.data.repos.candidates import (
@@ -102,8 +108,11 @@ __all__ = [
     "CohortProvenanceCorrectionPreview",
     "CohortProvenanceCorrectionResult",
     "ProvenanceCorrectionReport",
+    "WATCH_FIRE_BUCKET",
     "correct_cohort_provenance",
+    "correct_watch_fire_label",
     "preview_cohort_provenance_correction",
+    "preview_watch_fire_label",
     "read_provenance_corrections",
 ]
 
@@ -254,6 +263,33 @@ DERIVATION_RULE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     ("function",
      "swing.trades.cohort_provenance_correction:derive_cohort_keys_for_fire"),
     ("function", "swing.trades.cohort_provenance_correction:_FireKeys"),
+    # sg-label T1.6 (F9 = A): the as-of matcher step was factored out of
+    # `derive_cohort_keys_for_fire` so the watch-fire walk reads the same
+    # function, and rung 14a's gate out of `_derive` so both kinds pass one
+    # spelling of it. Both are reached from `_derive`, so the closure check
+    # demands them.
+    ("function",
+     "swing.trades.cohort_provenance_correction:_as_of_narrow_matches"),
+    ("function",
+     "swing.trades.cohort_provenance_correction"
+     ":_same_session_creation_order_gate"),
+    # KIND 2's own decision (sg-label T1.6 steps 7-8): which row is the LAST
+    # fire decides what a `watch_fire_relabel` row cites, and both kinds
+    # write the head version -- so the walk, its window and its readers are
+    # in the pin, checked by a SECOND closure root
+    # (`tests/trades/test_cohort_provenance_watch_fire.py`).
+    ("function",
+     "swing.trades.cohort_provenance_correction:_derive_watch_fire"),
+    ("function",
+     "swing.trades.cohort_provenance_correction:_derive_last_fire"),
+    ("constant",
+     "swing.recommendations.hypothesis_prefill:WATCH_FIRE_WINDOW_ROWS"),
+    ("function", "swing.data.repos.candidates:list_candidates_for_ticker"),
+    ("function", "swing.data.repos.candidates:fetch_candidate_by_id"),
+    ("function", "swing.data.repos.candidates:get_evaluation_run_by_id"),
+    ("function",
+     "swing.trades.cohort_provenance_correction:_require_session_date"),
+    ("function", "swing.evaluation.dates:is_trading_session"),
     # Label construction.
     ("function", "swing.recommendations.hypothesis:_descriptive_label"),
     ("function", "swing.recommendations.hypothesis:_non_pass_criterion_names"),
@@ -419,6 +455,26 @@ DERIVATION_RULE_HISTORY: tuple[tuple[str, str], ...] = (
     # own version.
     ("2026-10-26.1",
      "30ac90635973ac5ea1eb5e61bcc9e60fa665e0b967e6d0407193a1e1f1a3db4b"),
+    # sg-label T3 (D103, `063235a1`): a DOCSTRING-only edit inside
+    # `match_candidate_to_hypotheses` (a manifest member) moved the digest.
+    # No derivation behaviour changed; the version moves because the guard
+    # hashes SOURCE, which is the guard working as designed.
+    ("2026-11-11.1",
+     "fee2b4bd3abcca3f9ae8f0bd7fc15f2cba68c3eee2f9ebddc24ee5b30bb5d3bc"),
+    # sg-label T1.2 (D104, F9 = A): the watch-fire relabel. The as-of matcher
+    # step and rung 14a's gate were FACTORED (behaviour-preserving for kind
+    # 1: the Demand-C and 22-A suites pass unchanged), and kind 2's last-fire
+    # walk, its window and its readers joined the manifest. Both kinds write
+    # this head; the two live rows keep their own versions.
+    ("2026-11-11.2",
+     "8b75cbd0124150fbade4088fb527afb0962f5202c03d3083ae720f7001e89e8a"),
+    # sg-label exec R1-8 (CHARC, ruled inside the amendment): a DOCSTRING-only
+    # edit in `_derive_last_fire` (a manifest member) -- rows older than the
+    # stop are never passed to the MATCHER, and every row's dates are parsed
+    # first because an unparsed row cannot be ranked. No behaviour changed;
+    # the guard hashes SOURCE. Appended, never edited.
+    ("2026-11-12.1",
+     "b8a4e795a1c0ff643dfccde8e8b8cf7ab02d684c7d7f15590d2bad38b6187a5d"),
 )
 DERIVATION_RULE_VERSION: str = DERIVATION_RULE_HISTORY[-1][0]
 DERIVATION_RULE_SOURCE_SHA256: str = DERIVATION_RULE_HISTORY[-1][1]
@@ -856,6 +912,13 @@ class _Derived:
 
 
 def _load_trade_or_refuse(conn: sqlite3.Connection, trade_id: int) -> Any:
+    # Codex exec R2-3: SQLite's INTEGER is signed 64-bit; an id outside it
+    # raises an unbound OverflowError when bound. Both kinds load here.
+    if (isinstance(trade_id, int) and not isinstance(trade_id, bool)
+            and not (-(2 ** 63) <= trade_id < 2 ** 63)):
+        raise _refuse(
+            f"trade id {trade_id} is outside SQLite's signed 64-bit INTEGER "
+            "range, so it names no trade.")
     trade = get_trade(conn, trade_id)
     if trade is None:
         raise _refuse(f"trade {trade_id} not found.")
@@ -1481,14 +1544,115 @@ def derive_cohort_keys_for_fire(
     attribute 'evaluation_run_id'``), and inferring them from a row the
     caller already holds is how a reader starts disagreeing with the row
     the citation names.
+
+    THE MATCHER STEP IS `_as_of_narrow_matches` (sg-label T1.6 step 7),
+    factored out so the watch-fire relabel's last-fire walk reads the SAME
+    as-of narrow matcher, through ONE function, that this derivation reads.
+    The factoring moved code and changed no refusal and no order: the
+    exactly-one assertion stays HERE, on top of it.
+    """
+    from swing.metrics.funnel import APLUS_TRADE_ORIGIN
+    from swing.trades.entry import canonicalize_hypothesis_label
+
+    narrow = _as_of_narrow_matches(
+        conn, candidate=candidate, evaluation_run_id=evaluation_run_id,
+        run_ts_parsed=run_ts_parsed, gate=gate)
+    matches = narrow.matches
+    bound = narrow.bound
+    covering_by_hypothesis = narrow.covering_by_hypothesis
+    hi = narrow.hi
+    run_id = int(evaluation_run_id)
+    if len(matches) != 1:
+        raise _refuse(
+            f"the matcher returned {len(matches)} hypothesis matches for "
+            f"candidate {candidate_id} against the registry AS "
+            f"OF the cited record "
+            f"({[m.hypothesis_name for m in matches]}); exactly one is "
+            "required. An `aplus` candidate matches the A+ baseline and only "
+            "it today, but the registry is DATA and this asserts rather than "
+            "assumes that."
+        )
+    match = matches[0]
+
+    interval = covering_by_hypothesis[int(match.hypothesis_id)]
+    if interval.status != "active":  # pragma: no cover -- matcher guarantees
+        raise _refuse(
+            f"hypothesis {match.hypothesis_id} matched while its as-of status "
+            f"was {interval.status!r}.")
+    # THE CITATION GRAPH IS ASSERTED, NOT MERELY ARRANGED (Codex R2 Major 1).
+    # The audit row's FKs prove each cited row EXISTS; nothing in SQLite can
+    # express "this interval belongs to that hypothesis" or "this candidate
+    # belongs to that run" across tables without composite FKs against UNIQUE
+    # indexes on tables this arc does not own. The SERVICE can and now does say
+    # so about its own output, so the coherence it arranges is also CHECKED.
+    if interval.hypothesis_id != int(match.hypothesis_id):  # pragma: no cover
+        raise _refuse(
+            f"the covering interval (history row {interval.history_id}) "
+            f"belongs to hypothesis {interval.hypothesis_id}, not to the "
+            f"matched hypothesis {match.hypothesis_id}.")
+    if int(bound.snapshot["evaluation_run_id"]) != run_id:  # pragma: no cover
+        raise _refuse(
+            f"pipeline run {bound.pipeline_run_id} owns evaluation run "
+            f"{bound.snapshot['evaluation_run_id']}, not {run_id}.")
+
+    label = canonicalize_hypothesis_label(match.suggested_label_descriptive)
+    if not label:
+        raise _refuse(
+            "the framework's own label builder produced an empty label for "
+            f"candidate {candidate_id}.")
+
+    return _FireKeys(
+        hypothesis_label=label,
+        candidate_id=int(candidate_id),
+        # IMPORTED from `swing.metrics.funnel`, never a third copy of the
+        # literal (#11). A drift test pins it against `origin.py`'s mapping.
+        trade_origin=APLUS_TRADE_ORIGIN,
+        hypothesis_id=int(match.hypothesis_id),
+        hypothesis_name=str(match.hypothesis_name),
+        status_interval=interval,
+        pipeline_run_id=bound.pipeline_run_id,
+        pipeline_finished_ts_raw=str(bound.finished_ts),
+        pipeline_snapshot=bound.snapshot,
+        status_window_upper_utc=hi.isoformat(),
+    )
+
+
+@dataclass(frozen=True)
+class _NarrowMatches:
+    """The as-of narrow matcher's output for ONE candidate row, plus the
+    context the derivation reads after it (the bound, the covering
+    intervals, the UTC window)."""
+
+    matches: list
+    bound: Any
+    covering_by_hypothesis: dict
+    lo: datetime
+    hi: datetime
+
+
+def _as_of_narrow_matches(
+    conn: sqlite3.Connection,
+    *,
+    candidate: Any,
+    evaluation_run_id: int,
+    run_ts_parsed: datetime,
+    gate: Any = None,
+) -> _NarrowMatches:
+    """Rungs 16-17 and the matcher call of rung 18, for ONE candidate row.
+
+    Factored out of ``derive_cohort_keys_for_fire`` VERBATIM (sg-label T1.6
+    step 7): the persistence bound, the started_ts validation, the
+    inverted-window check, the caller's ``gate``, the AS-OF registry, then
+    ``match_candidate_to_hypotheses`` with ``include_baseline`` at its False
+    default. It returns the match LIST and makes no cardinality judgment:
+    the derivation asserts exactly one, and the watch-fire walk reads zero
+    (pass over), one (the fire) or more (ambiguous, refused).
     """
     from dataclasses import replace
 
     from swing.data.repos.hypothesis import list_hypotheses
     from swing.data.repos.pipeline import evaluation_run_persistence_bound
-    from swing.metrics.funnel import APLUS_TRADE_ORIGIN
     from swing.recommendations.hypothesis import match_candidate_to_hypotheses
-    from swing.trades.entry import canonicalize_hypothesis_label
 
     run_id = int(evaluation_run_id)
 
@@ -1569,59 +1733,9 @@ def derive_cohort_keys_for_fire(
     # here would let a FALLBACK rule label a correction.
     matches = match_candidate_to_hypotheses(
         candidate, registry=as_of_rows)
-    if len(matches) != 1:
-        raise _refuse(
-            f"the matcher returned {len(matches)} hypothesis matches for "
-            f"candidate {candidate_id} against the registry AS "
-            f"OF the cited record "
-            f"({[m.hypothesis_name for m in matches]}); exactly one is "
-            "required. An `aplus` candidate matches the A+ baseline and only "
-            "it today, but the registry is DATA and this asserts rather than "
-            "assumes that."
-        )
-    match = matches[0]
-
-    interval = covering_by_hypothesis[int(match.hypothesis_id)]
-    if interval.status != "active":  # pragma: no cover -- matcher guarantees
-        raise _refuse(
-            f"hypothesis {match.hypothesis_id} matched while its as-of status "
-            f"was {interval.status!r}.")
-    # THE CITATION GRAPH IS ASSERTED, NOT MERELY ARRANGED (Codex R2 Major 1).
-    # The audit row's FKs prove each cited row EXISTS; nothing in SQLite can
-    # express "this interval belongs to that hypothesis" or "this candidate
-    # belongs to that run" across tables without composite FKs against UNIQUE
-    # indexes on tables this arc does not own. The SERVICE can and now does say
-    # so about its own output, so the coherence it arranges is also CHECKED.
-    if interval.hypothesis_id != int(match.hypothesis_id):  # pragma: no cover
-        raise _refuse(
-            f"the covering interval (history row {interval.history_id}) "
-            f"belongs to hypothesis {interval.hypothesis_id}, not to the "
-            f"matched hypothesis {match.hypothesis_id}.")
-    if int(bound.snapshot["evaluation_run_id"]) != run_id:  # pragma: no cover
-        raise _refuse(
-            f"pipeline run {bound.pipeline_run_id} owns evaluation run "
-            f"{bound.snapshot['evaluation_run_id']}, not {run_id}.")
-
-    label = canonicalize_hypothesis_label(match.suggested_label_descriptive)
-    if not label:
-        raise _refuse(
-            "the framework's own label builder produced an empty label for "
-            f"candidate {candidate_id}.")
-
-    return _FireKeys(
-        hypothesis_label=label,
-        candidate_id=int(candidate_id),
-        # IMPORTED from `swing.metrics.funnel`, never a third copy of the
-        # literal (#11). A drift test pins it against `origin.py`'s mapping.
-        trade_origin=APLUS_TRADE_ORIGIN,
-        hypothesis_id=int(match.hypothesis_id),
-        hypothesis_name=str(match.hypothesis_name),
-        status_interval=interval,
-        pipeline_run_id=bound.pipeline_run_id,
-        pipeline_finished_ts_raw=str(bound.finished_ts),
-        pipeline_snapshot=bound.snapshot,
-        status_window_upper_utc=hi.isoformat(),
-    )
+    return _NarrowMatches(
+        matches=list(matches), bound=bound,
+        covering_by_hypothesis=covering_by_hypothesis, lo=lo, hi=hi)
 
 
 
@@ -1647,7 +1761,51 @@ def _derive(
     leaving the gate armed produced an AUTHORIZE-THEN-REFUSE divergence in
     which the ladder admitted and the derivation then refused.  The
     INVERTED-WINDOW check is unaffected: it moved into the shared derivation's
-    unconditional half precisely because it is about the RECORD."""
+    unconditional half precisely because it is about the RECORD.
+
+    THE GATE ITSELF IS `_same_session_creation_order_gate` (sg-label T1.6
+    step 8): the watch-fire relabel passes the SAME rung for its one
+    candidate anchor, so the rung has one spelling."""
+    keys = derive_cohort_keys_for_fire(
+        conn, candidate=anchored.cited.candidate,
+        candidate_id=int(anchored.cited.candidate_id),
+        evaluation_run_id=int(anchored.cited.evaluation_run_id),
+        run_ts_parsed=anchored.run_ts_parsed,
+        gate=(_same_session_creation_order_gate(
+            ((anchored.candidate_anchor,
+              "the cited candidate's evaluation run"),
+             (anchored.recommendation_anchor,
+              "the cited recommendation's run")),
+            fill_session=anchored.fill_session)
+            if run_fill_gate else None))
+    if int(anchored.cited.evaluation_run_id) != int(anchored.run.id):
+        raise _refuse(  # pragma: no cover -- the run is fetched BY that id
+            f"candidate {anchored.cited.candidate_id} belongs to evaluation "
+            f"run {anchored.cited.evaluation_run_id}, but the cited run is "
+            f"{anchored.run.id}.")
+    return _Derived(
+        hypothesis_label=keys.hypothesis_label,
+        candidate_id=keys.candidate_id,
+        trade_origin=keys.trade_origin,
+        hypothesis_id=keys.hypothesis_id,
+        hypothesis_name=keys.hypothesis_name,
+        status_interval=keys.status_interval,
+        pipeline_run_id=keys.pipeline_run_id,
+        pipeline_finished_ts_raw=keys.pipeline_finished_ts_raw,
+        pipeline_snapshot=keys.pipeline_snapshot,
+        status_window_upper_utc=keys.status_window_upper_utc,
+    )
+
+
+def _same_session_creation_order_gate(
+    anchors: tuple[tuple[str, str], ...], *, fill_session: str,
+) -> Any:
+    """Rung 14a as a ``gate`` for ``derive_cohort_keys_for_fire``.
+
+    ``anchors`` is ``((anchor_session, label), ...)``: kind 1 passes its
+    candidate AND recommendation anchors, kind 2 its one candidate anchor.
+    Extracted from ``_derive`` (sg-label T1.6 step 8) with its refusal text
+    unchanged."""
     def _fill_gates(bound, finished_parsed) -> None:
         # THE INVERTED-WINDOW CHECK USED TO LIVE HERE and has MOVED into the
         # shared derivation's unconditional half (Codex 22A-R3-07): it is a
@@ -1676,11 +1834,7 @@ def _derive(
         # domain to order them is exactly what this arc refuses to do.
         #
         # Direction: a REFUSAL only. It can never accept something `<=` refuses.
-        fill_session = anchored.fill_session
-        for anchor, label in (
-            (anchored.candidate_anchor, "the cited candidate's evaluation run"),
-            (anchored.recommendation_anchor, "the cited recommendation's run"),
-        ):
+        for anchor, label in anchors:
             if anchor != fill_session:
                 continue
             if bound.finished_ts[:10] >= fill_session:
@@ -1697,29 +1851,7 @@ def _derive(
                     "T16:00:00 placeholder and cannot order them."
                 )
 
-    keys = derive_cohort_keys_for_fire(
-        conn, candidate=anchored.cited.candidate,
-        candidate_id=int(anchored.cited.candidate_id),
-        evaluation_run_id=int(anchored.cited.evaluation_run_id),
-        run_ts_parsed=anchored.run_ts_parsed,
-        gate=_fill_gates if run_fill_gate else None)
-    if int(anchored.cited.evaluation_run_id) != int(anchored.run.id):
-        raise _refuse(  # pragma: no cover -- the run is fetched BY that id
-            f"candidate {anchored.cited.candidate_id} belongs to evaluation "
-            f"run {anchored.cited.evaluation_run_id}, but the cited run is "
-            f"{anchored.run.id}.")
-    return _Derived(
-        hypothesis_label=keys.hypothesis_label,
-        candidate_id=keys.candidate_id,
-        trade_origin=keys.trade_origin,
-        hypothesis_id=keys.hypothesis_id,
-        hypothesis_name=keys.hypothesis_name,
-        status_interval=keys.status_interval,
-        pipeline_run_id=keys.pipeline_run_id,
-        pipeline_finished_ts_raw=keys.pipeline_finished_ts_raw,
-        pipeline_snapshot=keys.pipeline_snapshot,
-        status_window_upper_utc=keys.status_window_upper_utc,
-    )
+    return _fill_gates
 
 
 @dataclass(frozen=True)
@@ -1737,7 +1869,9 @@ class CohortProvenanceCorrectionPreview:
     ticker: str
     state: str
     cited_candidate_id: int
-    cited_daily_recommendation_id: int
+    # NONE on a kind-2 (watch_fire_relabel) preview: that kind cites no
+    # recommendation (migration 0042's presence CHECK).
+    cited_daily_recommendation_id: int | None
     cited_evaluation_run_id: int
     cited_pipeline_run_id: int
     cited_hypothesis_id: int
@@ -1746,7 +1880,7 @@ class CohortProvenanceCorrectionPreview:
     entry_fill_id: int
     entry_fill_session_date: str
     candidate_action_session_date: str
-    recommendation_action_session_date: str
+    recommendation_action_session_date: str | None
     run_ts_raw: str
     run_ts_utc: str
     pipeline_finished_ts_raw: str
@@ -1771,6 +1905,8 @@ class CohortProvenanceCorrectionPreview:
     tier2_clauses: tuple[tuple[str, str], ...] = ()
     tier2_interval_prose: str | None = None
     tier2_note: str | None = None
+    # sg-label (migration 0042): which correction KIND this preview is for.
+    correction_kind: str = PROVENANCE_CORRECTION_KIND_FILL_UNSET
 
 
 def _reason_or_refuse(reason: Any) -> str:
@@ -2141,22 +2277,22 @@ def _authorize(
 
     existing = get_correction_for_trade(conn, trade_id)
     if existing is not None:
+        # THE KIND IS COMPARED FIRST (sg-label T1.6 step 2, a mirror-closure
+        # site). A kind-2 row cites NO recommendation, so its id is NULL and
+        # the `int(...)` below raised a bare TypeError on it -- a crash where
+        # the operator is owed a refusal naming the row he already has.
         same = (
-            int(existing.cited_candidate_id) == int(cited_candidate_id)
+            existing.correction_kind == PROVENANCE_CORRECTION_KIND_FILL_UNSET
+            and int(existing.cited_candidate_id) == int(cited_candidate_id)
             and int(existing.cited_daily_recommendation_id)
             == int(cited_recommendation_id)
         )
         if same:
             return _Authorized(trade=trade, already_applied=existing)
-        raise _refuse(
-            f"trade {trade_id} already has provenance correction "
-            f"{existing.provenance_correction_id}, which cites candidate "
-            f"{existing.cited_candidate_id} and daily_recommendations row "
-            f"{existing.cited_daily_recommendation_id} -- not candidate "
-            f"{cited_candidate_id} / row {cited_recommendation_id}. V1 records "
-            "provenance ONCE per trade and there is no supersession path: "
-            "re-deciding provenance is a different authority question."
-        )
+        raise _refuse(_existing_correction_refusal(
+            existing, trade_id=trade_id,
+            asked=(f"candidate {cited_candidate_id} / row "
+                   f"{cited_recommendation_id}")))
 
     # THE UNSET-STATE VERDICT PRECEDES THE REASON INSTRUCTION (Codex R3 Minor
     # 7). It is TERMINAL and true whatever payload arrives, while "supply a
@@ -2206,6 +2342,31 @@ def _authorize(
         latch=latch)
 
 
+def _existing_correction_refusal(
+    existing: Any, *, trade_id: int, asked: str,
+) -> str:
+    """The once-per-trade refusal, naming the existing row by KIND.
+
+    Both kinds share ``ux_provenance_corrections_trade``, so a trade carries
+    at most one correction of either kind, and the operator is told which
+    one he already has and what it cites."""
+    if existing.correction_kind == PROVENANCE_CORRECTION_KIND_FILL_UNSET:
+        cites = (f"candidate {existing.cited_candidate_id} and "
+                 "daily_recommendations row "
+                 f"{existing.cited_daily_recommendation_id}")
+    else:
+        cites = (f"candidate {existing.cited_candidate_id} and no "
+                 "daily_recommendations row")
+    return (
+        f"trade {trade_id} already has provenance correction "
+        f"{existing.provenance_correction_id} (correction_kind "
+        f"{existing.correction_kind}, admission tier "
+        f"{existing.admission_tier}), which cites {cites} -- not {asked}. "
+        "V1 records provenance ONCE per trade and there is no supersession "
+        "path: re-deciding provenance is a different authority question."
+    )
+
+
 def _na_suffix_note(anchored: _Anchored, derived: _Derived) -> str | None:
     """Explain a ``; failed: X`` suffix earned by an ``na`` result.
 
@@ -2217,11 +2378,18 @@ def _na_suffix_note(anchored: _Anchored, derived: _Derived) -> str | None:
     rather than minting a second implementation, and SAYS SO wherever the
     string is shown.
     """
+    return _na_note_for(anchored.cited.candidate, derived.hypothesis_label)
+
+
+def _na_note_for(candidate: Any, hypothesis_label: str) -> str | None:
+    """``_na_suffix_note``'s body, over the candidate and label alone, so
+    the watch-fire relabel (which has no ``_Anchored``) names the same
+    wart in the same words."""
     na_names = sorted(
-        c.criterion_name for c in anchored.cited.candidate.criteria
+        c.criterion_name for c in candidate.criteria
         if c.result == "na"
     )
-    if not na_names or "; failed:" not in derived.hypothesis_label:
+    if not na_names or "; failed:" not in hypothesis_label:
         return None
     return (
         "the derived label's `failed:` suffix includes "
@@ -2293,56 +2461,15 @@ def _new_preview_savepoint() -> str:
     return f"{_PREVIEW_SAVEPOINT_PREFIX}_{uuid.uuid4().hex}"
 
 
-def preview_cohort_provenance_correction(
-    conn: sqlite3.Connection,
-    *,
-    trade_id: int,
-    cited_candidate_id: int,
-    cited_recommendation_id: int,
-    reason: str | None = None,
-    cfg: Any = None,
-    frozen_value_evidence: Path | None = None,
-    evidence_repo: Path | None = None,
-) -> CohortProvenanceCorrectionPreview:
-    """``--dry-run``: NET-ZERO, and that is a weaker claim than write-free.
+def _within_preview_savepoint(conn: sqlite3.Connection, work: Any) -> Any:
+    """Run ``work()`` under a SAVEPOINT that is rolled back UNCONDITIONALLY.
 
-    Raises the SAME refusals the write path raises, because both call the same
-    authorization function -- one authorization function, two entry points, so
-    ``--dry-run`` cannot diverge from apply.
-
-    IT IS NO LONGER A READ-ONLY LADDER, AND THE TEXT SAYS SO (Codex
-    22A-R11-05).  PERSIST-CANONICAL made the SHARED authorization WRITE: it
-    canonicalises the subject fill's envelope and persists that reading, and
-    behind it the latch rungs can populate the whole entry-fill reading
-    population.  So this docstring's predecessor -- *"every read-only check,
-    writing nothing"*, beside a comment claiming *"still takes no write
-    lock"* -- was FALSE while it still read TRUE, which is gotcha #31 inside
-    the very function the reshape moved.
-
-    WHAT IS GUARANTEED NOW, precisely: every write this call makes is unwound
-    before it returns, in EVERY transaction posture, by a SAVEPOINT rolled
-    back unconditionally.  What is NOT guaranteed, and is stated rather than
-    implied: for the duration of the call the connection takes a WRITE LOCK.
-
-    22-A2: ``frozen_value_evidence`` is the tier-2 SELECTION, handled exactly
-    as the apply handles it -- the git preflight runs HERE, before this call
-    opens its transaction or its SAVEPOINT (S12.1 #9), and its result is
-    consulted only at rung 9's escape, after SELECT-first (E-6).
-
-    CHARC G-T7 Q1: with evidence supplied, a CALLER-HELD transaction is
-    REFUSED before the preflight, so no git process ever starts under it (S12.1
-    #9 -- a git subprocess under the caller's SAVEPOINT is a network call
-    inside a transaction). The refusal is scoped to supplied evidence; the
-    no-evidence preview still runs inside a caller's transaction, as before.
+    The dry-run unwind of both correction kinds, moved here VERBATIM from
+    ``preview_cohort_provenance_correction`` (sg-label T1.6): one copy of
+    the acquisition guard, the caller-held-transaction posture and the
+    loud cleanup, whichever kind's ladder ``work`` runs. Every comment
+    below is the original's.
     """
-    if frozen_value_evidence is not None and conn.in_transaction:
-        raise CallerHeldTransactionError(
-            "tier-2 evidence needs a preflight outside any transaction; call "
-            "the preview on a connection that holds none. Nothing was written."
-        )
-    preflight = (None if frozen_value_evidence is None
-                 else run_preflight(frozen_value_evidence, repo_dir=evidence_repo,
-                                    now_utc=_preflight_now_utc()))
     # A DRY RUN MUST AT LEAST BE COHERENT WITH ITSELF (Codex R2 Major 4). The
     # authorization ladder runs a dozen separate SELECTs, and under sqlite3's
     # default isolation each one sees whatever is committed at that instant --
@@ -2517,28 +2644,7 @@ def preview_cohort_provenance_correction(
                 raise anomaly from savepoint_error
         raise
     try:
-        # ONE stamp is the blob's `evaluated_at` and the interval's `read_at`
-        # (E-7). Taken only when evidence was supplied: a preview writes no
-        # row, so without evidence it has nothing to stamp.
-        tier2 = (None if preflight is None
-                 else Tier2Request(preflight=preflight,
-                                   applied_at=_APPLIED_AT_CLOCK()))
-        auth = _authorize(
-            conn,
-            trade_id=trade_id,
-            cited_candidate_id=cited_candidate_id,
-            cited_recommendation_id=cited_recommendation_id,
-            reason=reason,
-            cfg=cfg,
-            tier2=tier2,
-        )
-        if auth.already_applied is not None:
-            return _preview_from_existing(
-                auth.trade, auth.already_applied,
-                tier2_note=(None if preflight is None
-                            else TIER2_ALREADY_APPLIED_NOTE))
-        anchored, derived, latch = auth.anchored, auth.derived, auth.latch
-        tier = auth.admission_tier
+        return work()
     finally:
         # A FAILED UNWIND IS NOT SUPPRESSED (Codex 22A-R13-06).  Both verbs
         # used to sit inside ONE `contextlib.suppress(sqlite3.Error)`, so a
@@ -2625,6 +2731,89 @@ def preview_cohort_provenance_correction(
                 "connection; the caller MUST NOT commit. Nothing about the "
                 "preview's answer is trustworthy.", cleanup_error)
             raise cleanup_error
+
+
+def preview_cohort_provenance_correction(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    cited_candidate_id: int,
+    cited_recommendation_id: int,
+    reason: str | None = None,
+    cfg: Any = None,
+    frozen_value_evidence: Path | None = None,
+    evidence_repo: Path | None = None,
+) -> CohortProvenanceCorrectionPreview:
+    """``--dry-run``: NET-ZERO, and that is a weaker claim than write-free.
+
+    Raises the SAME refusals the write path raises, because both call the same
+    authorization function -- one authorization function, two entry points, so
+    ``--dry-run`` cannot diverge from apply.
+
+    IT IS NO LONGER A READ-ONLY LADDER, AND THE TEXT SAYS SO (Codex
+    22A-R11-05).  PERSIST-CANONICAL made the SHARED authorization WRITE: it
+    canonicalises the subject fill's envelope and persists that reading, and
+    behind it the latch rungs can populate the whole entry-fill reading
+    population.  So this docstring's predecessor -- *"every read-only check,
+    writing nothing"*, beside a comment claiming *"still takes no write
+    lock"* -- was FALSE while it still read TRUE, which is gotcha #31 inside
+    the very function the reshape moved.
+
+    WHAT IS GUARANTEED NOW, precisely: every write this call makes is unwound
+    before it returns, in EVERY transaction posture, by a SAVEPOINT rolled
+    back unconditionally.  What is NOT guaranteed, and is stated rather than
+    implied: for the duration of the call the connection takes a WRITE LOCK.
+
+    22-A2: ``frozen_value_evidence`` is the tier-2 SELECTION, handled exactly
+    as the apply handles it -- the git preflight runs HERE, before this call
+    opens its transaction or its SAVEPOINT (S12.1 #9), and its result is
+    consulted only at rung 9's escape, after SELECT-first (E-6).
+
+    CHARC G-T7 Q1: with evidence supplied, a CALLER-HELD transaction is
+    REFUSED before the preflight, so no git process ever starts under it (S12.1
+    #9 -- a git subprocess under the caller's SAVEPOINT is a network call
+    inside a transaction). The refusal is scoped to supplied evidence; the
+    no-evidence preview still runs inside a caller's transaction, as before.
+    """
+    if frozen_value_evidence is not None and conn.in_transaction:
+        raise CallerHeldTransactionError(
+            "tier-2 evidence needs a preflight outside any transaction; call "
+            "the preview on a connection that holds none. Nothing was written."
+        )
+    preflight = (None if frozen_value_evidence is None
+                 else run_preflight(frozen_value_evidence, repo_dir=evidence_repo,
+                                    now_utc=_preflight_now_utc()))
+    def _work() -> Any:
+        # ONE stamp is the blob's `evaluated_at` and the interval's `read_at`
+        # (E-7). Taken only when evidence was supplied: a preview writes no
+        # row, so without evidence it has nothing to stamp.
+        tier2 = (None if preflight is None
+                 else Tier2Request(preflight=preflight,
+                                   applied_at=_APPLIED_AT_CLOCK()))
+        auth = _authorize(
+            conn,
+            trade_id=trade_id,
+            cited_candidate_id=cited_candidate_id,
+            cited_recommendation_id=cited_recommendation_id,
+            reason=reason,
+            cfg=cfg,
+            tier2=tier2,
+        )
+        if auth.already_applied is not None:
+            return _preview_from_existing(
+                auth.trade, auth.already_applied,
+                tier2_note=(None if preflight is None
+                            else TIER2_ALREADY_APPLIED_NOTE))
+        return auth
+
+    # THE SAVEPOINT MACHINERY IS `_within_preview_savepoint` (sg-label T1.6),
+    # moved there verbatim so the watch-fire relabel's dry run runs under the
+    # SAME unwind rather than a copy of it.
+    outcome = _within_preview_savepoint(conn, _work)
+    if isinstance(outcome, CohortProvenanceCorrectionPreview):
+        return outcome
+    anchored, derived, latch = outcome.anchored, outcome.derived, outcome.latch
+    tier = outcome.admission_tier
     trade = anchored.trade
     tier2_clauses, tier2_prose = _tier2_surface(latch)
     return CohortProvenanceCorrectionPreview(
@@ -2691,8 +2880,12 @@ def _preview_from_existing(
         ticker=str(trade.ticker),
         state=str(trade.state),
         cited_candidate_id=int(existing.cited_candidate_id),
-        cited_daily_recommendation_id=int(
-            existing.cited_daily_recommendation_id),
+        # NULL on a kind-2 row (0042's presence CHECK), read as NULL rather
+        # than coerced: `str(None)` would print a recommendation date the
+        # ledger does not contain.
+        cited_daily_recommendation_id=(
+            None if existing.cited_daily_recommendation_id is None
+            else int(existing.cited_daily_recommendation_id)),
         cited_evaluation_run_id=int(existing.cited_evaluation_run_id),
         cited_pipeline_run_id=int(existing.cited_pipeline_run_id),
         cited_hypothesis_id=int(existing.cited_hypothesis_id),
@@ -2703,8 +2896,10 @@ def _preview_from_existing(
         entry_fill_session_date=str(existing.entry_fill_session_date),
         candidate_action_session_date=str(
             existing.cited_candidate_action_session_date),
-        recommendation_action_session_date=str(
-            existing.cited_recommendation_action_session_date),
+        recommendation_action_session_date=(
+            None if existing.cited_recommendation_action_session_date is None
+            else str(existing.cited_recommendation_action_session_date)),
+        correction_kind=str(existing.correction_kind),
         run_ts_raw=str(existing.cited_run_ts_raw),
         run_ts_utc=str(existing.cited_run_ts_utc),
         pipeline_finished_ts_raw=str(existing.cited_pipeline_finished_ts_raw),
@@ -2734,7 +2929,8 @@ class CohortProvenanceCorrectionResult:
     trade_id: int
     already_applied: bool
     cited_candidate_id: int
-    cited_daily_recommendation_id: int
+    # NONE on a kind-2 (watch_fire_relabel) result -- no recommendation cited.
+    cited_daily_recommendation_id: int | None
     pre_values: dict[str, Any]
     applied_values: dict[str, Any]
     correction_reason: str
@@ -2748,6 +2944,7 @@ class CohortProvenanceCorrectionResult:
     tier2_clauses: tuple[tuple[str, str], ...] = ()
     tier2_interval_prose: str | None = None
     tier2_note: str | None = None
+    correction_kind: str = PROVENANCE_CORRECTION_KIND_FILL_UNSET
 
 
 def _compose_reason(
@@ -2848,9 +3045,11 @@ def correct_cohort_provenance(
     preflight = (None if frozen_value_evidence is None
                  else run_preflight(frozen_value_evidence, repo_dir=evidence_repo,
                                     now_utc=_preflight_now_utc()))
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        result = _correct_cohort_provenance_inner(
+    # THE TRANSACTION MACHINERY IS `_within_write_transaction` (sg-label
+    # T1.6), moved there verbatim so the watch-fire relabel's apply owns its
+    # write reservation through the SAME code.
+    return _within_write_transaction(
+        conn, lambda: _correct_cohort_provenance_inner(
             conn,
             trade_id=trade_id,
             cited_candidate_id=cited_candidate_id,
@@ -2858,7 +3057,21 @@ def correct_cohort_provenance(
             reason=reason,
             cfg=cfg,
             tier2_preflight=preflight,
-        )
+        ))
+
+
+def _within_write_transaction(conn: sqlite3.Connection, work: Any) -> Any:
+    """``BEGIN IMMEDIATE``; ``work()``; COMMIT -- or ROLLBACK on ANY
+    ``BaseException``, a failed rollback surfacing loudly.
+
+    Moved VERBATIM out of ``correct_cohort_provenance`` (sg-label T1.6) so
+    both correction kinds hold one write discipline. The caller rejects a
+    caller-held transaction BEFORE calling this; every comment below is the
+    original's.
+    """
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        result = work()
         conn.commit()
         return result
     except BaseException as write_error:
@@ -3118,6 +3331,613 @@ def _correct_cohort_provenance_inner(
 
 
 # ---------------------------------------------------------------------------
+# KIND 2 -- the watch-fire relabel (D104, migration 0042).
+#
+# A `pipeline_watch_manual`, by-design entry whose label and anchor the
+# entry-form prefill stamped from the FILL night (the batch night) is moved
+# to the ticker's LAST narrow-rule fire before the fill. Everything below is
+# the kind-1 surface's own machinery reused, never re-spelled: the fill
+# resolver, the latch ladder, the session/datetime validators, the shared
+# derivation (through `_as_of_narrow_matches`), rung 14a's gate, the
+# SAVEPOINT dry run and the write transaction. What is kind-2's own is the
+# eligibility gate and the last-fire walk.
+#
+# THE LAST FIRE IS DERIVED, AND THE OPERATOR'S ID ONLY CONFIRMS IT (F2 = B,
+# ruled). A choice made after the outcome is post-outcome testimony, so the
+# operator can name the row and cannot pick it: a mismatch refuses naming
+# both ids, and closest-wins never applies.
+# ---------------------------------------------------------------------------
+
+# The cited fire's bucket. The SQL side is 0042's citation trigger (edit 1's
+# kind CASE) and the snapshot CHECK; test 1m compares them.
+WATCH_FIRE_BUCKET = "watch"
+
+
+@dataclass(frozen=True)
+class _LastFire:
+    """The derived last fire: the newest window row with exactly ONE narrow
+    match."""
+
+    candidate_id: int
+    evaluation_run_id: int
+    action_session_date: str
+    hypothesis_id: int
+    hypothesis_name: str
+
+
+def _without_terminal(exc: BaseException) -> str:
+    """A refusal's text without its terminal "Nothing was written.", for
+    quoting it inside another refusal that will append its own."""
+    return str(exc).removesuffix(" Nothing was written.")
+
+
+def _derive_last_fire(
+    conn: sqlite3.Connection, *, ticker: str, fill_session: str,
+) -> _LastFire:
+    """The ticker's LAST narrow-rule fire at or before the fill session.
+
+    THE WINDOW: the ticker's ``WATCH_FIRE_WINDOW_ROWS`` newest candidates
+    rows whose run's ``action_session_date <= fill_session``, ranked by the
+    last-word key ``(action_session_date, run_ts, candidate_id)`` on PARSED
+    values -- the ranking ``_assert_last_word_before_the_fill`` uses. That
+    helper is NOT called or changed: it answers "which row is last", this
+    walk answers "which row last FIRED", and the kind-1 call stays
+    byte-for-byte (the plan's bounded-sibling clause). Every row's dates are
+    validated before any is ranked, for the same reason the last-word guard
+    validates every competitor: a malformed row a comparison drops is a row
+    the decision never sees.
+
+    THE WALK (CHARC's plan-stage amendment): newest first, each row through
+    the AS-OF narrow matcher (``_as_of_narrow_matches``, the SAME function
+    the derivation reads), and it STOPS at the first row with exactly one
+    match. A row NEWER than that stop which cannot be read (no pipeline
+    bound, a clock-margin decline, a missing status interval) REFUSES: it
+    could have been the last fire. A row with two or more matches REFUSES
+    (E3): it is AMBIGUOUS, and a newer ambiguous row is never passed over to
+    reach an older fire. Rows OLDER than the stop are never passed to the
+    matcher (an older row cannot be the LAST fire once a newer single-match
+    row exists, so its matcher read cannot change the correction); every
+    row's dates are parsed first, because a row whose dates do not parse
+    cannot be ranked (CHARC, R1-8).
+    """
+    from swing.data.repos.candidates import list_candidates_for_ticker
+    from swing.recommendations.hypothesis_prefill import WATCH_FIRE_WINDOW_ROWS
+
+    ranked: list[tuple[_date, datetime, int, int]] = []
+    for candidate_id, run_id, _bucket in list_candidates_for_ticker(
+            conn, ticker):
+        run = get_evaluation_run_by_id(conn, run_id)
+        if run is None:  # pragma: no cover -- candidates FK RESTRICT
+            raise _refuse(
+                f"candidate {candidate_id} ({ticker}) names evaluation run "
+                f"{run_id}, which does not exist, so the last-fire walk "
+                "cannot rank it.")
+        anchor = _require_session_date(
+            run.action_session_date,
+            what=(f"window candidate {candidate_id}'s evaluation run "
+                  f"{run_id} action_session_date"))
+        run_ts = _require_naive_datetime(
+            run.run_ts,
+            what=f"window candidate {candidate_id}'s evaluation run "
+                 f"{run_id} run_ts")
+        if anchor.isoformat() <= fill_session:
+            ranked.append((anchor, run_ts, int(candidate_id), int(run_id)))
+    window = sorted(ranked, reverse=True)[:WATCH_FIRE_WINDOW_ROWS]
+    for anchor, run_ts, candidate_id, run_id in window:
+        row = fetch_candidate_by_id(conn, candidate_id)
+        if row is None:  # pragma: no cover -- listed one statement ago
+            raise _refuse(f"candidate {candidate_id} vanished mid-walk.")
+        where = (f"window row candidate {candidate_id} (evaluation run "
+                 f"{run_id}, action session {anchor.isoformat()})")
+        try:
+            narrow = _as_of_narrow_matches(
+                conn, candidate=row.candidate, evaluation_run_id=run_id,
+                run_ts_parsed=run_ts)
+        except CohortProvenanceCorrectionError as exc:
+            raise _refuse(
+                f"the last-fire walk cannot read {where}, and that row is "
+                "NEWER than any fire the walk has derived, so it cannot be "
+                f"passed over: {_without_terminal(exc)}") from exc
+        if not narrow.matches:
+            continue
+        if len(narrow.matches) > 1:
+            raise _refuse(
+                f"{where} matches {len(narrow.matches)} narrow hypotheses "
+                f"({[m.hypothesis_name for m in narrow.matches]}) against the "
+                "registry as of its run. The row is AMBIGUOUS, and a newer "
+                "ambiguous row is never passed over to reach an older fire.")
+        match = narrow.matches[0]
+        return _LastFire(
+            candidate_id=candidate_id, evaluation_run_id=run_id,
+            action_session_date=anchor.isoformat(),
+            hypothesis_id=int(match.hypothesis_id),
+            hypothesis_name=str(match.hypothesis_name))
+    raise _refuse(
+        f"no row among the {len(window)} newest {ticker} candidates rows at "
+        f"or before the entry fill's session ({fill_session}; window "
+        f"{WATCH_FIRE_WINDOW_ROWS}) has exactly one narrow hypothesis match "
+        "against the registry as of its run, so there is no fire to relabel "
+        "this trade to.")
+
+
+def _derive_watch_fire(
+    conn: sqlite3.Connection,
+    *,
+    ticker: str,
+    fill_session: str,
+    fire: Any,
+    fire_candidate_id: int,
+    candidate_anchor: str,
+    run_ts_parsed: datetime,
+) -> tuple[_LastFire, _FireKeys]:
+    """Steps 7-8: derive the last fire, require it to BE the cited row, then
+    derive the cited row's keys through the ONE derivation.
+
+    Both reads go through ``_as_of_narrow_matches`` for the SAME row inside
+    the caller's ``BEGIN IMMEDIATE``, so the registry cannot change between
+    them; step 8 still ASSERTS that the derivation's hypothesis equals the
+    walk's single match (Codex R1-02) -- an inequality is a refusal, never a
+    pass. Rung 14a's same-session gate is passed for the candidate anchor,
+    the only anchor kind 2 has.
+    """
+    last = _derive_last_fire(conn, ticker=ticker, fill_session=fill_session)
+    if last.candidate_id != fire_candidate_id:
+        raise _refuse(
+            f"cited {fire_candidate_id}; the derived last fire is "
+            f"{last.candidate_id} (evaluation run {last.evaluation_run_id}, "
+            f"action session {last.action_session_date}, "
+            f"{last.hypothesis_name}). The last fire is DERIVED from the "
+            "framework's record and the cited id only CONFIRMS it; "
+            "closest-wins never applies.")
+    keys = derive_cohort_keys_for_fire(
+        conn, candidate=fire.candidate, candidate_id=fire_candidate_id,
+        evaluation_run_id=int(fire.evaluation_run_id),
+        run_ts_parsed=run_ts_parsed,
+        gate=_same_session_creation_order_gate(
+            ((candidate_anchor, "the cited candidate's evaluation run"),),
+            fill_session=fill_session))
+    if keys.hypothesis_id != last.hypothesis_id:
+        raise _refuse(
+            f"the derivation for candidate {fire_candidate_id} selected "
+            f"hypothesis {keys.hypothesis_id}, but the last-fire walk matched "
+            f"hypothesis {last.hypothesis_id} on the same row. Two reads of "
+            "one record disagree, so neither is evidence.")
+    return last, keys
+
+
+@dataclass(frozen=True)
+class _WatchFireAuthorized:
+    trade: Any
+    already_applied: Any = None       # ProvenanceCorrection | None
+    entry_fill: _EntryFill | None = None
+    fill_session: str | None = None
+    fire: Any = None                  # CitedCandidate
+    candidate_anchor: str | None = None
+    run_ts_raw: str | None = None
+    run_ts_utc: str | None = None
+    last_fire: _LastFire | None = None
+    keys: _FireKeys | None = None
+
+
+def _gate_watch_fire_eligibility(trade: Any) -> None:
+    """Eligibility (a)-(d), terminal, each refusal naming its condition.
+
+    (e) -- the current anchor is the batch night -- needs the fill session
+    and runs in ``_authorize_watch_fire`` right after this."""
+    tid = trade.id
+    if str(getattr(trade, "trade_origin", "")) != PROVENANCE_WATCH_FIRE_ORIGIN:
+        raise _refuse(
+            f"eligibility (a): trade {tid}'s trade_origin is "
+            f"{trade.trade_origin!r}, not {PROVENANCE_WATCH_FIRE_ORIGIN!r}. "
+            "The watch-fire relabel corrects the batch-night stamp of a "
+            "watch-manual entry; a manual_off_pipeline trade with unset keys "
+            "is the fill_unset_provenance kind's shape, and a "
+            "pipeline_watch_hyp_recs trade took its label from the night's "
+            "own recommendation.")
+    if getattr(trade, "entry_intent", None) != PROVENANCE_WATCH_FIRE_ENTRY_INTENT:
+        raise _refuse(
+            f"eligibility (b): trade {tid}'s entry_intent is "
+            f"{trade.entry_intent!r}, not "
+            f"{PROVENANCE_WATCH_FIRE_ENTRY_INTENT!r}. This correction fixes "
+            "the LABEL, never the INTENT: a standard-intent watch trade stays "
+            "H5 practice even with a hypothesis fire in the window (RD's F5 "
+            "gate).")
+    label = getattr(trade, "hypothesis_label", None)
+    if not isinstance(label, str) or not label.strip():
+        raise _refuse(
+            f"eligibility (c): trade {tid} carries no hypothesis_label "
+            f"({label!r}); there is no batch-night label to correct.")
+    if "\x00" in label:
+        # Codex exec R2-2 (CHARC-ruled 2026-11-12, service side only): SQLite
+        # cannot read a NUL-bearing label out of the kind-2 envelope, so the
+        # 0042 CHECK would refuse what this ladder had authorized. The
+        # trigger's predicates must be a subset of the service's admission
+        # predicates -- refuse here, first, typed.
+        raise _refuse(
+            f"eligibility (c): trade {tid}'s stored trades.hypothesis_label "
+            f"contains a NUL character ({label!r}); the correction envelope "
+            "cannot carry it. Repair the stored label before relabelling.")
+    if getattr(trade, "candidate_id", None) is None:
+        raise _refuse(
+            f"eligibility (d): trade {tid} carries no candidate_id; there is "
+            "no batch-night anchor to move.")
+
+
+def _authorize_watch_fire(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    fire_candidate_id: Any,
+    reason: Any,
+    cfg: Any = None,
+) -> _WatchFireAuthorized:
+    """Every kind-2 check, in the plan's step order (T1.6 steps 1-8).
+
+    SELECT-first idempotency precedes eligibility and ``--reason``, as on
+    the kind-1 surface: a replay with ``reason=None`` returns the existing
+    id. It WRITES, as ``_authorize`` does: the latch rung persists the
+    subject fill's envelope reading (PERSIST-CANONICAL). The apply owns
+    ``BEGIN IMMEDIATE``; the dry run unwinds through a SAVEPOINT.
+    """
+    from swing.data.repos.provenance_corrections import get_correction_for_trade
+
+    # Step 1.
+    trade = _load_trade_or_refuse(conn, trade_id)
+    if isinstance(fire_candidate_id, bool) or not isinstance(
+            fire_candidate_id, int):
+        raise _refuse(
+            f"fire_candidate_id must be an int row id; got "
+            f"{fire_candidate_id!r}. The cited fire is the idempotency KEY, "
+            "so it is required even on a replay.")
+    # Codex R1-4: SQLite's INTEGER is signed 64-bit; a Python int outside it
+    # raises an unbound OverflowError when the walk binds it.
+    if not (-(2 ** 63) <= fire_candidate_id < 2 ** 63):
+        raise _refuse(
+            f"fire_candidate_id {fire_candidate_id} is outside SQLite's "
+            "signed 64-bit INTEGER range, so it names no candidates row.")
+
+    # Step 2 -- SELECT-first.
+    existing = get_correction_for_trade(conn, trade_id)
+    if existing is not None:
+        if (existing.correction_kind == PROVENANCE_CORRECTION_KIND_WATCH_FIRE
+                and int(existing.cited_candidate_id) == fire_candidate_id):
+            return _WatchFireAuthorized(trade=trade, already_applied=existing)
+        raise _refuse(_existing_correction_refusal(
+            existing, trade_id=trade_id,
+            asked=f"the watch fire candidate {fire_candidate_id}"))
+
+    # Step 3 -- eligibility, (a)-(d) then (e).
+    _gate_watch_fire_eligibility(trade)
+    entry_fill = resolve_authoritative_entry_fill(conn, trade_id)
+    fill_session = _require_session_date(
+        entry_fill.session_date,
+        what=f"the authoritative entry fill (fill {entry_fill.fill_id})'s "
+             "session date").isoformat()
+    ticker = str(trade.ticker)
+    try:
+        _assert_last_word_before_the_fill(
+            conn, ticker=ticker, fill_session=fill_session,
+            cited_candidate_id=int(trade.candidate_id))
+    except CohortProvenanceCorrectionError as exc:
+        raise _refuse(
+            f"eligibility (e): trade {trade_id}'s current candidate_id "
+            f"{trade.candidate_id} must be the ticker's last-word row before "
+            "the fill -- the batch-night signature this instrument corrects, "
+            f"and nothing else. {_without_terminal(exc)}") from exc
+
+    # Step 4.
+    _reason_or_refuse(reason)
+
+    # Step 5 -- a latched fill's label is the fire's by construction.
+    latch = _resolve_latch_citation(
+        conn, cfg, trade=trade, trade_id=trade_id, entry_fill=entry_fill,
+        tier2=None)
+    if latch is not None:
+        raise _refuse(
+            f"trade {trade_id}'s entry fill resolves to the accepted latch "
+            f"order {latch.broker_order_id} (link {latch.link_id}, fire "
+            f"candidate {latch.fire_candidate_id}). The latch path is "
+            "untouched by the watch-fire relabel: a latched fill's label is "
+            "the fire's by construction.")
+
+    # Step 6 -- anchor the cited fire.
+    fire = fetch_candidate_by_id(conn, fire_candidate_id)
+    if fire is None:
+        raise _refuse(f"candidate {fire_candidate_id} not found.")
+    if str(fire.candidate.ticker) != ticker:
+        raise _refuse(
+            f"candidate {fire_candidate_id} is {fire.candidate.ticker!r} but "
+            f"trade {trade_id} is {ticker!r}.")
+    if str(fire.candidate.bucket) != WATCH_FIRE_BUCKET:
+        raise _refuse(
+            f"candidate {fire_candidate_id} is bucket "
+            f"{fire.candidate.bucket!r}, not {WATCH_FIRE_BUCKET!r}. The "
+            "watch-fire relabel cites a WATCH fire; an aplus record is the "
+            "fill_unset_provenance kind's citation.")
+    run = get_evaluation_run_by_id(conn, fire.evaluation_run_id)
+    if run is None:  # pragma: no cover -- candidates FK RESTRICT
+        raise _refuse(
+            f"candidate {fire_candidate_id} names evaluation run "
+            f"{fire.evaluation_run_id}, which does not exist.")
+    candidate_anchor = _require_session_date(
+        run.action_session_date,
+        what=f"evaluation run {run.id}'s action_session_date").isoformat()
+    run_ts_parsed = _require_naive_datetime(
+        run.run_ts, what=f"evaluation run {run.id}'s run_ts")
+    if candidate_anchor > fill_session:
+        raise _refuse(
+            f"the cited fire's evaluation_runs.action_session_date "
+            f"({candidate_anchor}) POST-DATES the authoritative entry fill's "
+            f"session ({fill_session}), so the framework wrote that record "
+            "AFTER the trade was already filled.")
+
+    # Steps 7-8.
+    last, keys = _derive_watch_fire(
+        conn, ticker=ticker, fill_session=fill_session, fire=fire,
+        fire_candidate_id=fire_candidate_id,
+        candidate_anchor=candidate_anchor, run_ts_parsed=run_ts_parsed)
+    if int(trade.candidate_id) == fire_candidate_id:
+        raise _refuse(
+            f"trade {trade_id}'s candidate_id already IS the derived last "
+            f"fire ({fire_candidate_id}). A watch-fire relabel MOVES the "
+            "anchor off the batch night; there is nothing to move.")
+    return _WatchFireAuthorized(
+        trade=trade, entry_fill=entry_fill, fill_session=fill_session,
+        fire=fire, candidate_anchor=candidate_anchor,
+        run_ts_raw=str(run.run_ts).strip(),
+        run_ts_utc=_to_utc_naive(run_ts_parsed).isoformat(),
+        last_fire=last, keys=keys)
+
+
+def _watch_fire_values(auth: _WatchFireAuthorized) -> tuple[dict, dict]:
+    """The pre and applied envelopes: all three keys on both sides, the
+    origin unchanged (it is the trade's own, eligibility (a))."""
+    trade = auth.trade
+    pre = {
+        "trades.hypothesis_label": trade.hypothesis_label,
+        "trades.candidate_id": trade.candidate_id,
+        "trades.trade_origin": trade.trade_origin,
+    }
+    applied = {
+        "trades.hypothesis_label": auth.keys.hypothesis_label,
+        "trades.candidate_id": int(auth.keys.candidate_id),
+        "trades.trade_origin": PROVENANCE_WATCH_FIRE_ORIGIN,
+    }
+    return pre, applied
+
+
+def _compose_watch_fire_reason(
+    operator_reason: str, auth: _WatchFireAuthorized,
+) -> str:
+    """The operator's reason plus the clause only the server can write."""
+    from swing.recommendations.hypothesis_prefill import WATCH_FIRE_WINDOW_ROWS
+
+    keys = auth.keys
+    parts = [
+        operator_reason.strip(),
+        "[server-derived: watch-fire relabel. Cohort keys taken from "
+        f"candidates row {auth.fire.candidate_id} (evaluation run "
+        f"{auth.fire.evaluation_run_id}, action session "
+        f"{auth.candidate_anchor}, bucket {WATCH_FIRE_BUCKET}), DERIVED as "
+        f"the ticker's last narrow-rule fire among its "
+        f"{WATCH_FIRE_WINDOW_ROWS} newest rows at or before the entry fill "
+        f"{auth.entry_fill.fill_id}'s session {auth.fill_session}; the "
+        f"anchor moved from candidates row {auth.trade.candidate_id}. No "
+        "daily_recommendations row is cited. Hypothesis "
+        f"{keys.hypothesis_id} ({keys.hypothesis_name}) was 'active' over "
+        f"[{auth.run_ts_utc}, {keys.status_window_upper_utc}] UTC per "
+        f"status-history row {keys.status_interval.history_id}. Label "
+        "written verbatim from the framework's own builder (derivation rule "
+        f"{DERIVATION_RULE_VERSION}): {keys.hypothesis_label!r}; "
+        f"trade_origin unchanged ({PROVENANCE_WATCH_FIRE_ORIGIN}).]",
+    ]
+    note = _na_note_for(auth.fire.candidate, keys.hypothesis_label)
+    if note:
+        parts.append(f"[{note}]")
+    return " ".join(parts)
+
+
+def _watch_fire_preview(auth: _WatchFireAuthorized) -> (
+        CohortProvenanceCorrectionPreview):
+    keys = auth.keys
+    pre, applied = _watch_fire_values(auth)
+    return CohortProvenanceCorrectionPreview(
+        trade_id=int(auth.trade.id),
+        ticker=str(auth.trade.ticker),
+        state=str(auth.trade.state),
+        cited_candidate_id=int(auth.fire.candidate_id),
+        cited_daily_recommendation_id=None,
+        cited_evaluation_run_id=int(auth.fire.evaluation_run_id),
+        cited_pipeline_run_id=keys.pipeline_run_id,
+        cited_hypothesis_id=keys.hypothesis_id,
+        cited_hypothesis_name=keys.hypothesis_name,
+        cited_hypothesis_status_history_id=keys.status_interval.history_id,
+        entry_fill_id=auth.entry_fill.fill_id,
+        entry_fill_session_date=auth.fill_session,
+        candidate_action_session_date=auth.candidate_anchor,
+        recommendation_action_session_date=None,
+        run_ts_raw=auth.run_ts_raw,
+        run_ts_utc=auth.run_ts_utc,
+        pipeline_finished_ts_raw=keys.pipeline_finished_ts_raw,
+        status_window_upper_utc=keys.status_window_upper_utc,
+        derivation_rule_version=DERIVATION_RULE_VERSION,
+        pre_values=pre,
+        post_values=applied,
+        na_criterion_suffix_note=_na_note_for(
+            auth.fire.candidate, keys.hypothesis_label),
+        admission_tier=PROVENANCE_ADMISSION_TIER_LAST_FIRE,
+        correction_kind=PROVENANCE_CORRECTION_KIND_WATCH_FIRE,
+    )
+
+
+def preview_watch_fire_label(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    fire_candidate_id: int,
+    reason: str | None = None,
+    cfg: Any = None,
+) -> CohortProvenanceCorrectionPreview:
+    """``--dry-run`` for the watch-fire relabel: the SAME authorization the
+    apply runs, under the SAME unconditionally-unwound SAVEPOINT the kind-1
+    dry run uses (``_within_preview_savepoint``). Net-zero, not write-free:
+    the latch rung persists an envelope reading, and the savepoint unwinds
+    it."""
+    def _work() -> Any:
+        auth = _authorize_watch_fire(
+            conn, trade_id=trade_id, fire_candidate_id=fire_candidate_id,
+            reason=reason, cfg=cfg)
+        if auth.already_applied is not None:
+            return _preview_from_existing(auth.trade, auth.already_applied)
+        return _watch_fire_preview(auth)
+
+    return _within_preview_savepoint(conn, _work)
+
+
+def correct_watch_fire_label(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    fire_candidate_id: int,
+    reason: str | None = None,
+    cfg: Any = None,
+) -> CohortProvenanceCorrectionResult:
+    """Outer: REJECTS a caller-held transaction, then owns ``BEGIN
+    IMMEDIATE`` / COMMIT / ROLLBACK through ``_within_write_transaction``,
+    the kind-1 apply's own machinery. No sandbox short-circuit (F8 = A,
+    ruled): nothing here writes a Schwab-derived domain row, mirroring kind
+    1. No ``applied_at`` parameter, for kind 1's reason."""
+    if conn.in_transaction:
+        raise CallerHeldTransactionError(
+            "correct_watch_fire_label must be called with no open "
+            "transaction; compose via _correct_watch_fire_label_inner inside "
+            "an existing tx. Nothing was written."
+        )
+    return _within_write_transaction(
+        conn, lambda: _correct_watch_fire_label_inner(
+            conn, trade_id=trade_id, fire_candidate_id=fire_candidate_id,
+            reason=reason, cfg=cfg))
+
+
+def _correct_watch_fire_label_inner(
+    conn: sqlite3.Connection,
+    *,
+    trade_id: int,
+    fire_candidate_id: int,
+    reason: str | None = None,
+    cfg: Any = None,
+) -> CohortProvenanceCorrectionResult:
+    """Never commits; every callee is repo-level (steps 9-10 after the
+    authorization). The trade is UPDATEd BEFORE the audit row is INSERTed:
+    0042's citation trigger reads the trade's applied values at INSERT time,
+    so the row DESCRIBES the write of its own transaction."""
+    from swing.data.repos.provenance_corrections import (
+        insert_provenance_correction,
+    )
+    from swing.data.repos.trades import update_cohort_provenance
+    from swing.trades.reconciliation_auto_correct import (
+        _maybe_get_active_risk_policy_id,
+    )
+
+    applied_at = _APPLIED_AT_CLOCK()
+    auth = _authorize_watch_fire(
+        conn, trade_id=trade_id, fire_candidate_id=fire_candidate_id,
+        reason=reason, cfg=cfg)
+    follow_up = f"swing journal provenance-corrections {trade_id}"
+    if auth.already_applied is not None:
+        existing = auth.already_applied
+        return CohortProvenanceCorrectionResult(
+            correction_id=int(existing.provenance_correction_id),
+            trade_id=trade_id,
+            already_applied=True,
+            cited_candidate_id=int(existing.cited_candidate_id),
+            cited_daily_recommendation_id=None,
+            pre_values=json.loads(existing.pre_value_json),
+            applied_values=json.loads(existing.applied_value_json),
+            correction_reason=str(existing.correction_reason),
+            follow_up_command=follow_up,
+            admission_tier=str(existing.admission_tier),
+            correction_kind=str(existing.correction_kind),
+        )
+
+    keys = auth.keys
+    pre_values, applied_values = _watch_fire_values(auth)
+    # Step 9 -- the existing repo writer, unchanged; the origin is re-written
+    # to its own value.
+    update_cohort_provenance(
+        conn,
+        trade_id=trade_id,
+        hypothesis_label=keys.hypothesis_label,
+        candidate_id=int(keys.candidate_id),
+        trade_origin=PROVENANCE_WATCH_FIRE_ORIGIN,
+    )
+    stored_reason = _compose_watch_fire_reason(str(reason), auth)
+    # Step 10.
+    correction_id = insert_provenance_correction(
+        conn,
+        ProvenanceCorrection(
+            provenance_correction_id=None,
+            trade_id=trade_id,
+            entry_fill_id=auth.entry_fill.fill_id,
+            entry_fill_id_at_correction=auth.entry_fill.fill_id,
+            entry_fill_snapshot_json=json.dumps(
+                auth.entry_fill.snapshot(), sort_keys=True),
+            cited_candidate_id=int(auth.fire.candidate_id),
+            cited_daily_recommendation_id=None,
+            cited_evaluation_run_id=int(auth.fire.evaluation_run_id),
+            cited_hypothesis_id=keys.hypothesis_id,
+            cited_hypothesis_status_history_id=(
+                keys.status_interval.history_id),
+            cited_hypothesis_status_at_record=keys.status_interval.status,
+            cited_pipeline_finished_ts_raw=keys.pipeline_finished_ts_raw,
+            cited_run_ts_utc=auth.run_ts_utc,
+            cited_status_window_upper_utc=keys.status_window_upper_utc,
+            cited_pipeline_run_id=keys.pipeline_run_id,
+            cited_pipeline_run_snapshot_json=json.dumps(
+                keys.pipeline_snapshot, sort_keys=True),
+            cited_hypothesis_status_recorded_at=(
+                keys.status_interval.recorded_at_raw),
+            cited_hypothesis_status_effective_from=(
+                keys.status_interval.effective_from_raw),
+            cited_hypothesis_status_effective_to=(
+                keys.status_interval.effective_to_raw),
+            cited_candidate_snapshot_json=json.dumps(
+                candidate_provenance_snapshot(auth.fire), sort_keys=True),
+            cited_hypothesis_name_at_correction=keys.hypothesis_name,
+            cited_candidate_action_session_date=auth.candidate_anchor,
+            cited_recommendation_action_session_date=None,
+            entry_fill_session_date=auth.fill_session,
+            cited_run_ts_raw=auth.run_ts_raw,
+            cited_recommendation_snapshot_json=None,
+            derivation_rule_version=DERIVATION_RULE_VERSION,
+            pre_value_json=json.dumps(pre_values, sort_keys=True),
+            applied_value_json=json.dumps(applied_values, sort_keys=True),
+            corrected_fields_json=json.dumps(
+                list(PROVENANCE_WATCH_FIRE_CORRECTED_FIELDS)),
+            applied_at=applied_at,
+            applied_by=PROVENANCE_CORRECTION_APPLIED_BY,
+            correction_reason=stored_reason,
+            risk_policy_id_at_correction=_maybe_get_active_risk_policy_id(conn),
+            admission_tier=PROVENANCE_ADMISSION_TIER_LAST_FIRE,
+            correction_kind=PROVENANCE_CORRECTION_KIND_WATCH_FIRE,
+        ),
+    )
+    return CohortProvenanceCorrectionResult(
+        correction_id=correction_id,
+        trade_id=trade_id,
+        already_applied=False,
+        cited_candidate_id=int(auth.fire.candidate_id),
+        cited_daily_recommendation_id=None,
+        pre_values=pre_values,
+        applied_values=applied_values,
+        correction_reason=stored_reason,
+        follow_up_command=follow_up,
+        admission_tier=PROVENANCE_ADMISSION_TIER_LAST_FIRE,
+        correction_kind=PROVENANCE_CORRECTION_KIND_WATCH_FIRE,
+    )
+
+
+# ---------------------------------------------------------------------------
 # The READ surface -- and its drift reporting.
 #
 # Without it the audit table has no supported reader, and "verify against the
@@ -3355,8 +4175,18 @@ def _derivation_input_drift(
         # re-derived the LABEL and checked the bucket, but never the origin --
         # so an audit row citing an A+ candidate with the correct label and
         # `trade_origin='pipeline_watch_manual'` reported CLEAN.
+        #
+        # KIND-DISPATCHED (sg-label T1.7): a kind-1 row cites an `aplus`
+        # record and writes `pipeline_aplus`; a kind-2 row cites a `watch`
+        # fire and leaves the trade's own `pipeline_watch_manual` in place.
+        # Each kind is held to ITS expectation, never the other's.
+        if correction.correction_kind == PROVENANCE_CORRECTION_KIND_FILL_UNSET:
+            expected_bucket, bucket_origin = APLUS_BUCKET, APLUS_TRADE_ORIGIN
+        else:
+            expected_bucket = WATCH_FIRE_BUCKET
+            bucket_origin = PROVENANCE_WATCH_FIRE_ORIGIN
         expected_origin = (
-            APLUS_TRADE_ORIGIN if str(cited.candidate.bucket) == APLUS_BUCKET
+            bucket_origin if str(cited.candidate.bucket) == expected_bucket
             else None)
         if applied.get("trades.trade_origin") != expected_origin:
             lines.append(
@@ -3364,10 +4194,12 @@ def _derivation_input_drift(
                 f"{correction.cited_candidate_id} today is "
                 f"{expected_origin!r}, but this correction wrote "
                 f"{applied.get('trades.trade_origin')!r}.")
-        if str(cited.candidate.bucket) != APLUS_BUCKET:
+        if str(cited.candidate.bucket) != expected_bucket:
             lines.append(
-                f"{CITATION_DRIFT}: candidates.bucket was {APLUS_BUCKET!r} at "
-                f"correction time and is {cited.candidate.bucket!r} now.")
+                f"{CITATION_DRIFT}: candidates.bucket was {expected_bucket!r} "
+                f"at correction time and is {cited.candidate.bucket!r} now.")
+        if correction.correction_kind == PROVENANCE_CORRECTION_KIND_WATCH_FIRE:
+            lines.extend(_last_fire_drift(conn, correction, cited))
         # CANDIDATE OWNERSHIP (Codex R3 Major 3). The audit's candidate and
         # evaluation-run FKs are INDEPENDENT, so moving the cited candidate to
         # a different run left its label and bucket unchanged and the reader
@@ -3412,6 +4244,40 @@ def _derivation_input_drift(
                     f"{applied.get(key)!r} but the trade now carries "
                     f"{live_triple[key]!r}")
     return lines
+
+
+def _last_fire_drift(
+    conn: sqlite3.Connection, correction: Any, cited: Any,
+) -> list[str]:
+    """Kind 2's re-derivation includes the last-fire RANKING (T1.7).
+
+    The label and the snapshot are compared above, exactly as for kind 1;
+    what a kind-2 row additionally claims is that the cited row WAS the
+    ticker's last narrow-rule fire before the fill. That claim is a Python
+    ranking -- SQL verifies facts and never re-derives it -- so the reader
+    re-runs the SAME walk against the frozen fill session and reports a
+    citation that is no longer the last fire. A walk that cannot run is
+    UNVERIFIABLE, never clean.
+    """
+    try:
+        last = _derive_last_fire(
+            conn, ticker=str(cited.candidate.ticker),
+            fill_session=str(correction.entry_fill_session_date))
+    except CohortProvenanceCorrectionError as exc:
+        return [
+            f"{CITATION_ANCHOR_UNVERIFIABLE}: the last-fire walk for "
+            f"correction {correction.provenance_correction_id} cannot be "
+            f"re-run today ({_without_terminal(exc)}), so whether candidate "
+            f"{correction.cited_candidate_id} is still the last fire cannot "
+            "be decided."]
+    if last.candidate_id != int(correction.cited_candidate_id):
+        return [
+            f"{CITATION_DRIFT}: this correction cited candidate "
+            f"{correction.cited_candidate_id} as the ticker's last fire "
+            f"before the fill, and the walk re-derived today names candidate "
+            f"{last.candidate_id} (evaluation run {last.evaluation_run_id}, "
+            f"{last.hypothesis_name}) as the last fire."]
+    return []
 
 
 def _fill_anchor_drift(
@@ -3510,6 +4376,11 @@ def _fill_anchor_drift(
             (correction.cited_recommendation_action_session_date,
              "the cited recommendation's action session"),
         ):
+            # A kind-2 row has NO recommendation anchor (NULL). `str(None)`
+            # is 'None', which sorts AFTER every ISO date, so comparing it
+            # would report a false INVALIDATION on every kind-2 identity move.
+            if column is None:
+                continue
             if str(column) > new_session:
                 lines.append(
                     f"{CITATION_INVALIDATED}: the cohort assignment recorded "
@@ -3623,12 +4494,16 @@ def _read_provenance_corrections_inner(
     reports: list[ProvenanceCorrectionReport] = []
     for correction in list_provenance_corrections(conn, trade_id=trade_id):
         lines: list[str] = []
-        lines.extend(_snapshot_drift(
-            "daily_recommendations",
-            json.loads(correction.cited_recommendation_snapshot_json),
-            snapshot_recommendation_row(
-                conn, int(correction.cited_daily_recommendation_id)),
-        ))
+        # KIND 2 CITES NO RECOMMENDATION (0042's presence CHECK), so there is
+        # nothing to compare; reading the NULL snapshot would crash the
+        # reader on every kind-2 row.
+        if correction.correction_kind == PROVENANCE_CORRECTION_KIND_FILL_UNSET:
+            lines.extend(_snapshot_drift(
+                "daily_recommendations",
+                json.loads(correction.cited_recommendation_snapshot_json),
+                snapshot_recommendation_row(
+                    conn, int(correction.cited_daily_recommendation_id)),
+            ))
         bound = evaluation_run_persistence_bound(
             conn, evaluation_run_id=int(correction.cited_evaluation_run_id))
         # THE CLAIM IS NARROWED, NOT THE SNAPSHOT WIDENED (Codex R5 Minor 6).

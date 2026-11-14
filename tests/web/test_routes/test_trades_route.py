@@ -3050,10 +3050,17 @@ def test_entry_form_renders_exact_hypothesis_label_in_hidden_input(
         "hidden input must carry exact matcher label "
         f'"A+ baseline (aplus)"; response excerpt: {r.text[:500]!r}'
     )
-    # Visible read-only display row also carries the exact label.
-    assert ">A+ baseline (aplus)<" in r.text, (
-        "visible display row must show the exact matcher label "
-        "(in a span between > and <)"
+    # Visible display also carries the exact label. D102 T2.2: the ticker
+    # has an offered night, so the label is shown in the decision-night
+    # chooser's SELECTED option ("<session> (eval N, bucket): <label>")
+    # rather than in the read-only span the anchor-less path keeps.
+    import re as _re
+    selected = _re.search(r'<option value="\d+" selected>([^<]*)</option>',
+                          r.text)
+    assert selected is not None and selected.group(1).endswith(
+        "): A+ baseline (aplus)"), (
+        "visible display must show the exact matcher label "
+        "(in the selected decision-night option)"
     )
 
 

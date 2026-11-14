@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
+import math
 import sqlite3
 import sys
 import unicodedata
@@ -479,6 +480,89 @@ class DuplicateOpenPositionError(Exception):
     """Already an open trade for this ticker."""
 
 
+class EntryInputDomainError(ValueError):
+    """D86 (sg-label T4): an entry date or price outside the trade-event
+    input domain (a non-canonical or full-datetime ``entry_date``; a price
+    that is not finite and > 0). A ``ValueError`` so every existing caller
+    and pin is unchanged; TYPED so the web route renders it as its 400 with
+    the form handed back rather than re-raising it as a 500 (Codex R1-3)."""
+
+
+def _entry_date_to_iso(entry_date: str) -> str:
+    """The entry date's domain (D86), refused as ``EntryInputDomainError``.
+
+    A separate function, not a ``try`` in ``record_entry``'s own body: that
+    body's single guarded region is pinned by AST
+    (``test_22a4_clause2_settlement.py::test_k3a_...``).
+    """
+    from swing.trades.exit import _normalize_trade_event_date_to_iso
+    if "T" in entry_date:
+        raise EntryInputDomainError(
+            f"entry_date {entry_date!r} must be YYYY-MM-DD only "
+            f"(not a full ISO datetime); the trades.entry_date column is "
+            f"date-only and downstream consumers (advisory, journal, "
+            f"briefing, CLI hold-duration) call date.fromisoformat on it"
+        )
+    try:
+        return _normalize_trade_event_date_to_iso(
+            entry_date, field_name="entry_date")
+    except ValueError as exc:
+        raise EntryInputDomainError(str(exc)) from exc
+
+
+class DecisionNightRefusedError(Exception):
+    """D102 T2.3's 400, ENFORCED HERE after the latch outcome (RD item A = B,
+    CHARC's form ruling, 2026-11-12).
+
+    Raised only for a NON-latched entry whose auto-fill anchor the identity
+    authority did not refuse, i.e. only where the write WOULD USE the night
+    the operator named (RD's entry-refusal rule, clause 2). ``text`` is the
+    route-composed refusal, or None for "no longer offered". Deliberately NOT
+    a ``ValueError``: the route's generic ``except ValueError`` re-raises, and
+    this refusal must never become a 500.
+    """
+
+    def __init__(self, text: str | None) -> None:
+        super().__init__(text or "the named decision night is no longer offered")
+        self.text = text
+
+
+@dataclass(frozen=True)
+class DecisionNightVerdict:
+    """The route's reading of the operator's named decision night (D102 T2.3),
+    computed BEFORE ``record_entry`` and ENFORCED inside it, after the ONE
+    latch resolution (CHARC's form ruling).
+
+    ``refusal`` is the ladder's refusal text (a malformed or stale anchor, a
+    night the server no longer offers, a changed label, an unavailable
+    re-read), or None when the named night was validated; then
+    ``candidate_id``/``label``/``bucket`` are the SERVER's for that night.
+    ``chosen_id`` is the posted choice as parsed (None if unparseable), kept
+    for the latch-wins log.
+    """
+
+    refusal: str | None
+    chosen_id: int | None = None
+    candidate_id: int | None = None
+    label: str | None = None
+    bucket: str | None = None
+
+    def describe(self) -> str:
+        if self.refusal is not None:
+            return f"decision anchor refused: {self.refusal}"
+        return f"named night candidate {self.candidate_id}"
+
+
+# The bucket the derived origin implies (the row `derive_trade_origin` read).
+# A validated night whose bucket disagrees came from a different latest run
+# than the origin did: refused as "no longer offered" rather than paired.
+_ORIGIN_NIGHT_BUCKET = {
+    "pipeline_aplus": "aplus",
+    "pipeline_watch_manual": "watch",
+    "pipeline_watch_hyp_recs": "watch",
+}
+
+
 @dataclass(frozen=True)
 class EntryRequest:
     ticker: str
@@ -564,6 +648,17 @@ class EntryRequest:
     # from hypothesis_label here -- record_entry persists it AS-IS
     # (server-stamp / spec §5 SINGLE PREFILL RULE).
     entry_intent: str | None = None
+    # D86 T4.3 (FORM C, RD's FX-1 ruling 2026-11-11): the caller SAW an
+    # auto-fill anchor the identity authority (`canonical_envelope_identity`)
+    # REFUSES. COHORT-GUARD REFUSES: LABEL -- the entry is recorded with
+    # honest-unset cohort keys and is NEVER refused for it. A downgrade-only
+    # flag: True can only remove keys a request would otherwise carry.
+    anchor_refused_by_authority: bool = False
+    # D102 T2.3 under RD's entry-refusal rule (item A = B): the operator's
+    # named decision night, read by the route and ENFORCED in
+    # `_record_entry_inner` after the latch outcome. None = no chooser posted
+    # (the CLI, bare cURL, a latched form): today's path.
+    decision_night: DecisionNightVerdict | None = None
 
     def __post_init__(self) -> None:
         from swing.data.models import (
@@ -1169,22 +1264,20 @@ def record_entry(
     # remain YYYY-MM-DD only at the API boundary; reject T-form before
     # storing. Synthesis of T16:00:00 for fill_datetime / pre_trade_locked_at
     # happens via the shared helper after the date-only guard.
-    from swing.trades.exit import _normalize_trade_event_date_to_iso
-    if "T" in req.entry_date:
-        raise ValueError(
-            f"entry_date {req.entry_date!r} must be YYYY-MM-DD only "
-            f"(not a full ISO datetime); the trades.entry_date column is "
-            f"date-only and downstream consumers (advisory, journal, "
-            f"briefing, CLI hold-duration) call date.fromisoformat on it"
-        )
-    entry_iso = _normalize_trade_event_date_to_iso(
-        req.entry_date, field_name="entry_date",
-    )
+    entry_iso = _entry_date_to_iso(req.entry_date)
     req_view["pre_trade_locked_at"] = entry_iso
     missing = validate_for_operation(req_view, op="entry_create", current_state=None)
     if missing:
         raise MissingPreTradeFieldsException(missing_fields=missing)
 
+    # D86 (sg-label T4.2): the entry price's domain, before the stop
+    # comparison (which ``inf`` passed, and ``NaN`` passed into an
+    # IntegrityError at the NOT NULL). After the date normalisation, so the
+    # branch order is unchanged for every input the old code accepted.
+    if not (math.isfinite(req.entry_price) and req.entry_price > 0):
+        raise EntryInputDomainError(
+            f"entry price must be a finite number > 0; got {req.entry_price!r}"
+        )
     if req.initial_stop >= req.entry_price:
         raise ValueError(
             f"stop must be < entry; got entry={req.entry_price}, stop={req.initial_stop}"
@@ -2161,8 +2254,73 @@ def _record_entry_inner(
         derived_origin = "manual_off_pipeline"
         resolved_candidate_id = None
         hypothesis_label = None
+    elif getattr(req, "anchor_refused_by_authority", False):
+        # D86 T4.3, FORM C (RD, FX-1 ruled 2026-11-11; the 2026-09-01 ruling
+        # applied to D86's shapes). COHORT-GUARD REFUSES: LABEL.
+        # ========== THIS GUARD REFUSES THE **LABEL** (the latch binding and
+        # ========== the cohort keys), NEVER THE **ENTRY**.
+        #
+        # The caller saw an auto-fill anchor the ONE identity authority
+        # refuses (a duplicate, padded, blank or non-text order or symbol
+        # key, or a document that cannot be decoded). A CLAIMED one already
+        # arrives here as `recognised_but_underivable` through the resolver;
+        # an UNCLAIMED one carries no envelope into this request, so without
+        # this branch it took the ordinary chain and was stamped with
+        # TODAY's candidate and the posted label (the D86 RED). The trade is
+        # real and the fill happened at the broker: a refusal of the entry
+        # would leave a real position unjournaled, which corrupts every
+        # cohort and the cash ledger; an honest-unset row corrupts nothing.
+        # The latch cannot be admitted on this path (a refused envelope is
+        # refused by the resolver before admission, and an unclaimed one is
+        # never reserved), so the branch order is not load-bearing.
+        log.warning(
+            "D86: the submitted auto-fill anchor for %s is one the identity "
+            "authority REFUSES; this guard refuses the LABEL, not the ENTRY "
+            "-- the entry records with honest-unset cohort keys and the "
+            "submitted hypothesis_label %r is discarded. WARRANTS "
+            "INVESTIGATION", req.ticker, req.hypothesis_label)
+        derived_origin = "manual_off_pipeline"
+        resolved_candidate_id = None
+        hypothesis_label = None
 
-    if latched.admitted or latched.recognised_but_underivable:
+    # D102 T2.3, THE NAMED DECISION NIGHT, ENFORCED AFTER THE ONE LATCH
+    # RESOLUTION (RD item A = B; CHARC's form ruling, 2026-11-12). RD's
+    # entry-refusal rule: a guard may refuse the ENTRY only when the operator
+    # EXPLICITLY ASSERTED the value (here he named the night) AND the write
+    # WOULD USE it. So the night's verdict refuses the entry ONLY on the
+    # ordinary path below; where the latch keeps its own candidate, or the
+    # refused anchor discards the keys, the choice is logged and refuses
+    # NOTHING. The refused branch keys on the flag form C already carries
+    # (and on the resolver's own recognised-and-refused outcome), never on a
+    # second detection.
+    _night = getattr(req, "decision_night", None)
+    if _night is not None:
+        if latched.admitted:
+            if (_night.chosen_id is not None
+                    and _night.chosen_id != latched.candidate_id):
+                log.warning(
+                    "D102: the submitted decision night (candidate %s) "
+                    "differs from the latched fire %s for %s; THE LATCH WINS "
+                    "-- the night choice is not evaluated on a latched entry",
+                    _night.chosen_id, latched.candidate_id, req.ticker)
+        elif (latched.recognised_but_underivable
+                or getattr(req, "anchor_refused_by_authority", False)):
+            log.warning(
+                "D102: the submitted decision night choice was NOT evaluated "
+                "for %s: the auto-fill anchor was refused, so the entry "
+                "records honest-unset cohort keys and the choice would be "
+                "discarded; it blocks nothing (%s)",
+                req.ticker, _night.describe())
+        else:
+            if _night.refusal is not None:
+                raise DecisionNightRefusedError(_night.refusal)
+            if _ORIGIN_NIGHT_BUCKET.get(derived_origin) != _night.bucket:
+                raise DecisionNightRefusedError(None)
+            resolved_candidate_id = _night.candidate_id
+            hypothesis_label = _night.label
+
+    if (latched.admitted or latched.recognised_but_underivable
+            or getattr(req, "anchor_refused_by_authority", False)):
         pass                      # the ordinary chain is not consulted
     elif resolved_candidate_id is None and derived_origin != "manual_off_pipeline":
         _eval_run_for_candidate: int | None = None

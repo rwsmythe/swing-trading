@@ -116,7 +116,14 @@ log = logging.getLogger(__name__)
 #   twins on the UPDATE-in-place tables), the latch_view_events first-view
 #   twin (F-I5), and ONE trigger rebuilt: trg_provenance_corrections_
 #   append_only_update gains its COALESCE wrap (F-I2). Atomic BEGIN/COMMIT.
-EXPECTED_SCHEMA_VERSION = 41
+# v42 (the SG label arc, D104, migration 0042): the provenance_corrections
+#   REBUILD -- a second correction KIND (`watch_fire_relabel`, admitted by the
+#   new `last_fire` tier) beside the Demand-C `fill_unset_provenance` kind; the
+#   recommendation citation nullable for kind 2 only; the citation and
+#   append-only-update triggers rebuilt. The RENAME is bracketed by PRAGMA
+#   legacy_alter_table (0040's idiom: trg_eia_audit_trail names the table).
+#   Atomic BEGIN/COMMIT.
+EXPECTED_SCHEMA_VERSION = 42
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -501,6 +508,13 @@ PHASE22_ARC_I_PRE_MIGRATION_EXPECTED_TABLES: set[str] = (
     set(PHASE22_ARC_B_PRE_MIGRATION_EXPECTED_TABLES) | {"entry_intent_attestations"}
 )
 
+# The SG label arc (migration 0042) pre-migration expected-table set: the v41
+# table set. 0041 created NO table (triggers only), so v41's set is v40's,
+# measured above. A FLOOR, not a manifest: the check is missing-only.
+PHASE22_SG_LABEL_PRE_MIGRATION_EXPECTED_TABLES: set[str] = set(
+    PHASE22_ARC_I_PRE_MIGRATION_EXPECTED_TABLES
+)
+
 
 class SchemaVersionMismatchError(RuntimeError):
     """Raised when the DB schema version doesn't match what the code expects."""
@@ -847,6 +861,8 @@ _PRE_MIGRATION_BACKUP_GATES: tuple[BackupGateSpec, ...] = (
                    "_phase22_arc_b_backup_gate", "pre-22-B"),
     BackupGateSpec(40, "22i", PHASE22_ARC_I_PRE_MIGRATION_EXPECTED_TABLES,
                    "_phase22_arc_i_backup_gate", "pre-22-I"),
+    BackupGateSpec(41, "sg-label", PHASE22_SG_LABEL_PRE_MIGRATION_EXPECTED_TABLES,
+                   "_sg_label_backup_gate", "pre-sg-label"),
 )
 _GATE_BY_PRE_VERSION: dict[int, BackupGateSpec] = {
     s.pre_version: s for s in _PRE_MIGRATION_BACKUP_GATES
@@ -1044,6 +1060,7 @@ _phase22_arc_a4_backup_gate = _bind_gate_wrapper(37)
 _phase22_arc_a2_backup_gate = _bind_gate_wrapper(38)
 _phase22_arc_b_backup_gate = _bind_gate_wrapper(39)
 _phase22_arc_i_backup_gate = _bind_gate_wrapper(40)
+_sg_label_backup_gate = _bind_gate_wrapper(41)
 
 
 def run_migrations(

@@ -31,6 +31,12 @@ from tests.docs._contract_reader import clause4_sha256
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIG_DIR = REPO_ROOT / "swing" / "data" / "migrations"
 M0040 = MIG_DIR / "0040_entry_intent_unintended_execution.sql"
+M0042 = MIG_DIR / "0042_provenance_corrections_watch_fire_relabel.sql"
+# sg-label (0042) re-creates the citation trigger with the second correction
+# kind: its HEAD text is 0042's statement, NAMED here so the move is visible.
+V42_RECREATED_FOREIGN_OBJECTS: frozenset[str] = frozenset({
+    "trg_provenance_corrections_citation_graph",
+})
 CLAUSE4_SHA256 = "5a78e547f64df25e0f891bd271c8d5e51bbd884866ca6d04c6c85b7803ef3886"
 
 ONE_EDIT_FROM = "entry_intent IN ('standard','hypothesis_test_by_design')"
@@ -463,7 +469,11 @@ def test_every_foreign_object_referencing_trades_is_unchanged_and_still_fires_b2
             e = ensure_schema(tmp_path / "ensure" / "swing.db")
         try:
             head = _foreign_trades_objects(e)
-            assert {n: head[n] for n in v40 if n in head} == v40
+            kept = {n: v for n, v in v40.items() if n not in V42_RECREATED_FOREIGN_OBJECTS}
+            assert {n: head[n] for n in kept if n in head} == kept
+            for name in V42_RECREATED_FOREIGN_OBJECTS:
+                assert head[name] == create_statement_in(M0042, name), name
+                assert head[name] != v40[name], name
             assert set(head) - set(v40) == V41_NEW_FOREIGN_TRADES_OBJECTS
         finally:
             e.close()
