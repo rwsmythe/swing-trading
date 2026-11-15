@@ -128,7 +128,8 @@ gate runs never load it. Narrow the run to the files your brief owns while you
 iterate (append their paths); the full command is the turn's evidence.
 
 **Sandbox-only residue: tests that fail inside the sandbox and pass at the
-dispatcher's seat** (measured 2026-11-11 on the full fast suite, 197 node ids):
+dispatcher's seat** (measured 2026-11-11 on the full fast suite, 197 node ids;
+the 198th added at the operator witness 2026-11-14, CHARC's gate item 4):
 
 - Network denied (4):
   - `tests/pipeline/test_runner_chart_targets.py::test_step_charts_records_too_few_bars`
@@ -156,11 +157,19 @@ dispatcher's seat** (measured 2026-11-11 on the full fast suite, 197 node ids):
   - 5 `tests/cli/test_correct_cohort_provenance_command.py`
   - 1 `tests/trades/test_22a2_g_t7_followon.py`
   - 1 `tests/metrics/test_22b_cohort_read_race.py`
+- The review tool-set stability test (1), the same MSYS death by a different
+  tool: its tool set runs Git-for-Windows' MSYS `grep.exe -rn`, which dies at
+  runtime start under the restricted token (`fatal error - CreateFileMapping
+  S-1-5-21-...-1001.1, Win32 error 5`, exit 256). Measured inside the sandbox at
+  the operator witness 2026-11-14 (witness turn 2: `1 failed`); passes at the
+  dispatcher's seat (`1 passed`, same tree):
+  - `tests/scripts/test_codex_cell.py::test_the_review_env_keeps_the_ignored_manifest_stable_across_the_tool_set`
 
 **The rule:** a red in these classes inside the sandbox is NOT evidence about your
 change -- your dispatcher's gate runs them -- and a red OUTSIDE these classes is
-yours to fix. All 197 names are in the build ledger
-(`~/swing-data/review-transcripts/codex-lane/build-ledger.md`, Group 1).
+yours to fix. The first 197 names are in the build ledger
+(`~/swing-data/review-transcripts/codex-lane/build-ledger.md`, Group 1); the
+198th is in its operator-witness section.
 
 Your FINAL turn's message is the structured return report to your dispatcher (the
 mechanism your brief names) followed by the FILES CHANGED block; an undelivered
