@@ -599,23 +599,33 @@ def _with_decision_choice(vm, submitted: str | None):
 
 
 def _with_entry_submission(
-    vm, *, entry_date: str, entry_price: float, initial_stop: float,
+    vm, *, cfg, entry_date: str, entry_price: float, initial_stop: float,
     shares: int, rationale: str, notes: str | None, drafts: dict,
 ):
     """Phase 22 entry-form rider (C2): THE one re-render of a refused entry
     submit, used by every entry-side recovery form (`_rerender_entry_form_
     with_error`, the missing-field 400 and the duplicate-position 400).
 
-    It replaces the six submitted position fields and sets EVERY `draft_*`
-    field from `drafts` -- the operator's typed pre-trade answers, built
-    once at the top of `entry_post` (`_entry_drafts`). The D47 companion:
-    before this, only the missing-field 400 kept the answers and every
-    other refusal handed back a blank journal. Drafts are answers, never
-    anchors: the auto-fill / decision anchors stay with each caller.
+    It replaces the six submitted position fields, RECOMPUTES the four
+    sizing fields on the SUBMITTED geometry (D98: before this the form showed
+    the submitted prices beside sizing computed on the server-resolved ones)
+    through the ONE entry-form sizing (`entry_form_sizing`, floored, D97) on
+    the real equity the rebuilt VM read, and sets EVERY `draft_*` field from
+    `drafts` -- the operator's typed pre-trade answers, built once at the top
+    of `entry_post` (`_entry_drafts`). The D47 companion: before this, only
+    the missing-field 400 kept the answers and every other refusal handed
+    back a blank journal. Drafts are answers, never anchors: the auto-fill /
+    decision anchors stay with each caller. `input_shares` stays the
+    submitted count; the sizing never reads it.
     """
     from dataclasses import replace as dc_replace
+
+    from swing.web.view_models.trades import entry_form_sizing
     if vm is None:
         return vm
+    sizing = entry_form_sizing(
+        cfg=cfg, entry=entry_price, stop=initial_stop,
+        real_equity=vm.sizing_real_equity)
     return dc_replace(
         vm,
         entry_date=entry_date,
@@ -624,6 +634,7 @@ def _with_entry_submission(
         input_shares=shares,
         rationale=rationale,
         notes=notes or "",
+        **sizing.vm_fields(),
         **drafts,
     )
 
@@ -711,7 +722,7 @@ def _rerender_entry_form_with_error(
     )
     if vm is not None:
         vm = _with_entry_submission(
-            vm, entry_date=entry_date, entry_price=entry_price,
+            vm, cfg=cfg, entry_date=entry_date, entry_price=entry_price,
             initial_stop=initial_stop, shares=shares, rationale=rationale,
             notes=notes, drafts=drafts,
         )
@@ -2197,7 +2208,8 @@ def entry_post(
                     # discriminates on `is not none`, Codex R1-Major-1) come
                     # from the ONE helper every entry recovery form uses.
                     vm = _with_entry_submission(
-                        vm, entry_date=entry_date, entry_price=entry_price,
+                        vm, cfg=cfg, entry_date=entry_date,
+                        entry_price=entry_price,
                         initial_stop=initial_stop, shares=shares,
                         rationale=rationale, notes=notes, drafts=drafts,
                     )
@@ -2465,7 +2477,8 @@ def entry_post(
                     # draft come from the ONE helper every entry recovery form
                     # uses -- the duplicate 400 kept no answers before.
                     vm = _with_entry_submission(
-                        vm, entry_date=entry_date, entry_price=entry_price,
+                        vm, cfg=cfg, entry_date=entry_date,
+                        entry_price=entry_price,
                         initial_stop=initial_stop, shares=shares,
                         rationale=rationale, notes=notes, drafts=drafts,
                     )

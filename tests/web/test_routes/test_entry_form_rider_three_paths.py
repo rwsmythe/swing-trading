@@ -130,3 +130,73 @@ def test_d47_each_recovery_path_keeps_the_pre_trade_answers(
                 if not (path == "missing-field" and k == "thesis")}
     assert {k: recovery.get(k) for k in expected} == expected
     assert recovery["shares"] == "5"
+
+
+# ---------------------------------------------------------------------------
+# D98 -- a refused submit re-renders the sizing ON THE SUBMITTED PRICES.
+#
+# Server-resolved geometry (what the rebuilt VM sizes): live 20.00 / stop
+# 19.00 on the floored $7,500 (budget $37.50): 37 by risk, cap 56 -> 37 sh.
+#
+# Risk-bound zero submitted: 104.00 / 29.81 -> one share risks $74.19 against
+# the $37.50 budget, 74.19 / 37.50 = 1.98 -> "2.0x budget": zero shares, the
+# stated line below. Before D98 every path rendered "Suggested max: 37 sh"
+# beside those prices (the server's sizing, a different geometry).
+#
+# Feasible submitted: 20.00 / 18.00 -> $2.00 a share: 18 by risk (37.50 / 2 =
+# 18.75), cap 7500 * 0.15 / 20 = 56 -> 18 sh, $36.00 risk = 36 / 7500 = 0.48%.
+# 18 differs from the server's 37 AND from the submitted count, 5.
+# ---------------------------------------------------------------------------
+_ZERO_LINE = ("0 shares at the $37.50 budget; 1 share risks $74.19 (2.0x "
+              "budget) at entry 104.00; above budget if you proceed")
+
+
+@pytest.mark.parametrize("path", _PATHS)
+def test_d98_a_risk_bound_zero_submit_states_its_zero(
+        seeded_db, monkeypatch, path):
+    cfg, cfg_path = seeded_db
+    _seed(cfg, monkeypatch)
+    body = html.unescape(_post(cfg, cfg_path, monkeypatch, path,
+                               entry="104.00", stop="29.81"))
+    assert _ZERO_LINE in body
+    assert "Suggested max" not in body
+    # The prices shown are the submitted ones the line is computed on.
+    recovery = _serialize_first_form(body)
+    assert (recovery["entry_price"], recovery["initial_stop"]) == (
+        "104.00", "29.81")
+
+
+@pytest.mark.parametrize("path", _PATHS)
+def test_d98_a_feasible_submit_is_sized_on_its_own_prices(
+        seeded_db, monkeypatch, path):
+    cfg, cfg_path = seeded_db
+    _seed(cfg, monkeypatch)
+    body = _post(cfg, cfg_path, monkeypatch, path,
+                 entry="20.00", stop="18.00", shares="5")
+    assert 18 not in (37, 5)
+    assert "Suggested max: <strong>18 sh</strong>" in body
+    assert "~$36.00 risk" in body
+    assert "0.48%" in body
+    assert "Suggested max: <strong>37 sh</strong>" not in body
+    # `input_shares` stays the submitted count; the sizing never reads it.
+    assert _shares_input(body) == 5
+
+
+def test_d98_an_invalid_submitted_geometry_asks_for_valid_prices(
+        seeded_db, monkeypatch):
+    """The stop >= entry refusal re-renders NO sizing for its prices (before
+    D98 it showed the server geometry's "37 sh" beside a stop above entry)."""
+    cfg, cfg_path = seeded_db
+    _seed(cfg, monkeypatch)
+    data = {
+        "ticker": _TICKER, "entry_date": "2026-11-13", "entry_price": "20.00",
+        "shares": "5", "initial_stop": "21.00", "rationale": "vcp-breakout",
+        "origin": "watchlist", **_ANSWERS,
+    }
+    with TestClient(create_app(cfg, cfg_path)) as client:
+        r = client.post("/trades/entry", data=data,
+                        headers={"HX-Request": "true"})
+    assert r.status_code == 400, r.text
+    assert "stop must be &lt; entry" in r.text or "stop must be < entry" in r.text
+    assert "Suggested max" not in r.text
+    assert "Enter a valid entry price and stop to see sizing" in r.text
