@@ -200,3 +200,36 @@ def test_d98_an_invalid_submitted_geometry_asks_for_valid_prices(
     assert "stop must be &lt; entry" in r.text or "stop must be < entry" in r.text
     assert "Suggested max" not in r.text
     assert "Enter a valid entry price and stop to see sizing" in r.text
+
+
+def test_d98_an_unsizable_submitted_geometry_keeps_the_recovery_form(
+        seeded_db, monkeypatch):
+    """Codex R1 minor 1: finite, positive, ordered prices can still overflow
+    the sizing arithmetic (1e-308 / 5e-309: the $37.50 budget over a
+    5e-309 one-share risk is inf, and `math.floor(inf)` raises). Sizing is
+    advisory, so the recovery form comes back (400, not 500) with no sizing
+    and the hint endpoint keeps its "Sizing unavailable" guidance."""
+    from swing.web.view_models.trades import entry_form_sizing
+
+    cfg, cfg_path = seeded_db
+    _seed(cfg, monkeypatch)
+    unsized = entry_form_sizing(cfg=cfg, entry=1e-308, stop=5e-309,
+                                real_equity=1200.0)
+    assert (unsized.suggested_shares, unsized.sizing) == (0, None)
+    data = {
+        "ticker": _TICKER, "entry_date": "2026-11-13", "entry_price": "1e-308",
+        "shares": "5", "initial_stop": "5e-309", "rationale": "not-a-rationale",
+        "origin": "watchlist", **_ANSWERS,
+    }
+    with TestClient(create_app(cfg, cfg_path)) as client:
+        r = client.post("/trades/entry", data=data,
+                        headers={"HX-Request": "true"})
+        hint = client.get("/trades/entry/sizing-hint",
+                          params={"entry_price": "1e-308",
+                                  "initial_stop": "5e-309"})
+    assert r.status_code == 400, r.text
+    assert "Invalid rationale" in r.text
+    assert "Enter a valid entry price and stop to see sizing" in r.text
+    assert _serialize_first_form(r.text)["thesis"] == _ANSWERS["thesis"]
+    assert hint.status_code == 200
+    assert "Sizing unavailable" in hint.text

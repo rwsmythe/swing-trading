@@ -484,26 +484,33 @@ def entry_form_sizing(
     one budget for one account. `real_equity` is the UNFLOORED equity.
 
     A geometry that is not `entry > 0 and 0 < stop < entry` (or carries a
-    non-finite price) is not sized: (0, 0.0, 0.0, None), so the template asks
-    for valid prices rather than stating a zero.
+    non-finite price, or whose arithmetic overflows -- e.g. 1e-308 / 5e-309,
+    Codex R1 minor 1) is not sized: (0, 0.0, 0.0, None), so the template
+    asks for valid prices rather than stating a zero, and a refused submit's
+    recovery form is never lost to a 500 over advisory sizing.
     """
     import math
 
+    unsized = EntryFormSizing(
+        suggested_shares=0, risk_dollars=0.0, risk_pct=0.0,
+        sizing_zero_line=None, sizing=None)
     sizable = (
         math.isfinite(entry) and math.isfinite(stop)
         and entry > 0 and 0 < stop < entry
     )
     if not sizable:
-        return EntryFormSizing(
-            suggested_shares=0, risk_dollars=0.0, risk_pct=0.0,
-            sizing_zero_line=None, sizing=None)
-    sizing = compute_shares(
-        entry=entry, stop=stop,
-        equity=sizing_equity(
-            real_equity=real_equity, floor=cfg.account.risk_equity_floor),
-        max_risk_pct=cfg.risk.max_risk_pct,
-        position_pct_cap=cfg.sizing.position_pct_cap,
-    )
+        return unsized
+    try:
+        sizing = compute_shares(
+            entry=entry, stop=stop,
+            equity=sizing_equity(
+                real_equity=real_equity,
+                floor=cfg.account.risk_equity_floor),
+            max_risk_pct=cfg.risk.max_risk_pct,
+            position_pct_cap=cfg.sizing.position_pct_cap,
+        )
+    except ArithmeticError:
+        return unsized
     return EntryFormSizing(
         suggested_shares=sizing.shares,
         risk_dollars=sizing.risk_dollars,
