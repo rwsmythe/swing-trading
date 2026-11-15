@@ -14,9 +14,10 @@ night (D102 T2.3):
   2. R1-2 -- the LATCH admits the fill and keeps its own candidate: a stale
      night offer must not 400 the FIRST post.
   3. The 400 that STAYS (non-latched, anchor accepted, night not offered) is
-     recordable from the form it hands back: the resubmit built from the 400's
-     own form, with the pre-trade answers retyped (the D47 companion), writes
-     the trade with the night the recovery form shows.
+     recordable from the form it hands back: the resubmit IS the 400's own
+     form, with nothing retyped (the D47 companion, fixed by the Phase 22
+     entry-form rider: the recovery form keeps the pre-trade answers), and it
+     writes the trade with the night the recovery form shows.
 
 CHARC's form: ONE latch resolution, inside ``record_entry``; the night verdict
 is ENFORCED there, after the latch outcome, as a typed refusal the route maps
@@ -181,8 +182,10 @@ def test_the_standing_night_400_is_recordable_from_the_form_it_hands_back(
         assert json.loads(recovery["decision_nights_anchor"]) == json.loads(
             anchor)
         shown = int(recovery["decision_candidate_id"])
+        # The answers came back (D47 companion): nothing is retyped.
+        assert {k: recovery.get(k) for k in _THIRTEEN} == {
+            k: sent[k] for k in _THIRTEEN}
         resubmit = dict(recovery)
-        resubmit.update({k: sent[k] for k in _THIRTEEN})
         second = client.post("/trades/entry", data=resubmit,
                              headers={"HX-Request": "true"})
     assert second.status_code == 200, second.text

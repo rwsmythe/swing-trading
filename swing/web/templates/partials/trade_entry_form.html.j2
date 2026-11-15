@@ -3,8 +3,9 @@
     Phase 7 Sub-C C.4: 7 sectioned <fieldset> blocks per spec §11.1
     (single-page; no JS accordion; operator scrolls). Field-level error
     markers driven by `vm.missing_fields` (frozenset[str]); draft
-    preservation via `vm.draft_*` fields populated by the route's
-    MissingPreTradeFieldsException catch path.
+    preservation via `vm.draft_*` fields populated by every refused-submit
+    re-render (the route's `_with_entry_submission`, Phase 22 entry-form
+    rider).
 
     Expects:
       - vm (TradeEntryFormVM) — REQUIRED
