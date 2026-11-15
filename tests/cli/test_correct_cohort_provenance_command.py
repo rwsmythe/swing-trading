@@ -68,7 +68,7 @@ def _cmd(cfg, ids, *extra):
 # ------------------------------------------- free-typing is UNREPRESENTABLE
 
 
-def test_a2_77_the_click_parameter_manifest_is_exactly_six_entries() -> None:
+def test_a2_77_the_click_parameter_manifest_is_the_declared_list() -> None:
     """A manifest READ, not a name grep. `help` is deliberately NOT a member:
     verified on the installed click, the auto help option is appended by
     `get_params(ctx)` at parse time and never lives in `.params`.
@@ -79,9 +79,9 @@ def test_a2_77_the_click_parameter_manifest_is_exactly_six_entries() -> None:
 
     sg-label T1.3 (D104) added the SEVENTH, `cite_fire_candidate_id`,
     declared after it: a ROW ID the service only confirms against the last
-    fire it derives, never a value. The test NAME still says six; its rename
-    is owed as a separate change (the version-mirror rule's reason: a rename
-    in the commit that moves the assertion obscures the diff)."""
+    fire it derives, never a value. Renamed from `..._is_exactly_six_entries`
+    in its own post-merge commit (CHARC ruling (b), 2026-11-12): the name
+    asserted a count the body no longer asserts, so it now asserts none."""
     cmd = main.commands["journal"].commands["correct-cohort-provenance"]
     assert [p.name for p in cmd.params] == [
         "trade_id", "cited_candidate_id", "cited_recommendation_id",

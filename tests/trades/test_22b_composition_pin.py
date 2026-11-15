@@ -280,7 +280,7 @@ BASE_PINS_22A2: dict[tuple[str, str], str] = {
      "test_a2_76_the_envelope_reading_is_written_by_apply_and_unwound_by_dry_run"):
         "db0cb83a288756bcdb118abdf00e5029816cf51280ff9cfb9e797e2579e962e7",
     (_M1,
-     "test_a2_77_the_click_parameter_manifest_is_exactly_six_entries"):
+     "test_a2_77_the_click_parameter_manifest_is_the_declared_list"):
         "45390d3859edc939321ba78bf3b17786f99f50ce85943b926d54aa8268ebe1e3",
     (_M1,
      "test_a2_78_both_surfaces_print_the_four_clauses_and_the_prose"):
@@ -394,6 +394,12 @@ _REASON_SG = ("re-scoped sg-label (0042), reason: HEAD moved to 0042; "
               "ledger 'Executing -- cell 3', class 3")
 _REASON_SG_CLI = ("re-scoped sg-label T1.3, reason: the CLI manifest gained "
                   "--cite-fire-candidate; ledger 'Executing -- cell 4'")
+# A2-77 was then RENAMED in its own post-merge commit (CHARC ruling (b),
+# 2026-11-12): the old name `..._is_exactly_six_entries` asserted a count the
+# body no longer asserts. Its BASE_PINS_22A2 key is re-keyed to the new name
+# with the base sha UNCHANGED (the base source is history); the re-scoped sha
+# below is the renamed source's.
+_REASON_RENAMED = "renamed: the name asserted a count the body no longer asserts"
 RE_SCOPED_SG_LABEL: dict[str, tuple[tuple[str, str], str, str]] = {
     "A2-10": ((_M4, "test_a2_10_three_edits_of_the_v38_stored_ddl_equal_the_v39_stored_ddl"),
               "701a850b276f78df58c6b896116780ed4b2c8f22cd08665000ec3363f9a3dc83", _REASON_SG),
@@ -409,9 +415,9 @@ RE_SCOPED_SG_LABEL: dict[str, tuple[tuple[str, str], str, str]] = {
               "798240c3e8e1df84e94a209b81dca40e721a5ab3bd7496748ccc850b61d1b5eb", _REASON_SG),
     "A2-31": ((_M4, "test_a2_31_the_tier2_row_is_append_only"),
               "ad340cc4e2b16c48e95479ef8cb292e649d944c5f55bf53ecee26fde5199d9a1", _REASON_SG),
-    "A2-77": ((_M1, "test_a2_77_the_click_parameter_manifest_is_exactly_six_entries"),
-              "7ce186263c14ebc7eb009214c76de6900f76537572634cfb24bf19d0da1859cb",
-              _REASON_SG_CLI),
+    "A2-77": ((_M1, "test_a2_77_the_click_parameter_manifest_is_the_declared_list"),
+              "af11149366980a1456d5195fb978a02fb80a622b5efe4e5737f0e2724cf3b2bb",
+              _REASON_RENAMED),
 }
 
 
@@ -441,7 +447,7 @@ def test_the_22a2_case_functions_are_byte_unchanged_except_three_re_scoped_b22_1
     assert not drifted, drifted
     assert not set(RE_SCOPED_SG_LABEL) & set(RE_SCOPED_22B)
     for rid, (key, sha, reason) in RE_SCOPED_SG_LABEL.items():
-        assert reason in (_REASON_SG, _REASON_SG_CLI)
+        assert reason in (_REASON_SG, _REASON_SG_CLI, _REASON_RENAMED)
         assert implementing[rid] == key, (rid, implementing[rid])
         assert _source_sha(*key) == sha, rid
         assert BASE_PINS_22A2[key] != sha, (rid, "re-scope changed nothing")
