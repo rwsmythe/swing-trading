@@ -338,8 +338,10 @@ class TradeEntryFormVM:
     prefill_shares: int = 0
     # Phase 7 Sub-C C.4 — draft_* preservation fields for the 18 pre-trade
     # required fields (spec §11.1). Mirrors the rationale/notes
-    # preservation pattern: when the MissingPreTradeFieldsException catch
-    # path re-renders the form, ``dataclasses.replace`` populates these
+    # preservation pattern: when ANY refused entry submit re-renders the
+    # form (Phase 22 entry-form rider: every recovery form goes through
+    # ``routes/trades.py:_with_entry_submission``; before it, only the
+    # MissingPreTradeFieldsException path did), these are populated
     # so the operator's typed values round-trip back into the inputs
     # (textarea body / input value attr / select selected / checkbox
     # checked). All default to safe empty values so the GET-form path

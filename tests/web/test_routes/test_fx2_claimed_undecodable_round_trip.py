@@ -4,24 +4,29 @@ leaves the entry recordable from the recovery form.
 RD ruled FX-2 = Y: a CLAIMED anchor that cannot be decoded keeps the standing
 400-and-clear ladder (the FILL-ORIGIN claim's guard, outside FX-1's reach).
 The first version of this test FAILED the original point 2 ("every typed value
-preserved"): ``_rerender_entry_form_with_error`` keeps no ``draft_*`` field, so
-the recovery form comes back with the pre-trade answers empty. RD re-ruled
-(Y stands, point 2 corrected): the cost of this 400 is RETYPING, not an
-unjournaled position. The three steps below are his test:
+preserved"): ``_rerender_entry_form_with_error`` kept no ``draft_*`` field, so
+the recovery form came back with the pre-trade answers empty. RD re-ruled
+(Y stands, point 2 corrected): the cost of this 400 was RETYPING, not an
+unjournaled position, and step 2 PINNED that loss so it would go red the day
+the helper was fixed.
+
+THE PIN RETIRED WITH ITS FIX (Phase 22 entry-form rider, the D47 companion,
+2026-11-14): every early 400 now hands back the operator's answers, so the
+corrected point 2 ("the operator retypes the answers") is false and RD's
+ORIGINAL point 2 holds. The three steps now read:
 
   1. claimed undecodable anchor, every pre-trade field filled -> 400; the
-     recovery form carries the FRESH anchor, not the rejected one;
-  2. the loss is PINNED as a known limitation -- the thirteen required
-     pre-trade fields render empty -- with the banked item named, so this goes
-     red and points at itself the day the helper is fixed;
-  3. the recovery form's own state, with only those thirteen answers re-entered,
-     writes the trade with the fill-origin and cohort keys the fresh anchor
-     earns.
+     recovery form carries the FRESH anchor, not the rejected one (unchanged,
+     byte for byte);
+  2. the recovery form KEEPS the thirteen required pre-trade answers (and the
+     two handling answers the old pin noted were dropped too);
+  3. the recovery form's own state, with NOTHING retyped, writes the trade
+     with the fill-origin and cohort keys the fresh anchor earns.
 
 The resubmit is the RECOVERY FORM'S OWN rendered state, serialized the way a
 browser serializes a form (every successful control: inputs, checked radios
-and checkboxes, textareas, the selected option of each select). Only the
-thirteen re-entered answers come from the test's own data.
+and checkboxes, textareas, the selected option of each select). Nothing in it
+comes from the test's own data.
 """
 from __future__ import annotations
 
@@ -125,17 +130,17 @@ def _serialize_first_form(page: str) -> dict[str, str]:
     return out
 
 
-# The thirteen REQUIRED pre-trade answers the recovery form drops (measured:
-# the missing-field banner of the resubmit WITHOUT them names exactly these).
-# `event_handling` / `gap_risk_handling` are dropped too, but are required only
-# when their risk is present, so the operator need not retype them here.
+# The thirteen REQUIRED pre-trade answers the recovery form USED TO drop
+# (measured: the missing-field banner of the resubmit WITHOUT them named
+# exactly these). `event_handling` / `gap_risk_handling` were dropped too
+# (required only when their risk is present); the rider keeps all fifteen.
 _THIRTEEN = (
     "catalyst", "emotional_state_pre_trade", "event_risk_present",
     "expected_scenario", "gap_risk_present", "invalidation_condition",
     "manual_entry_confidence", "market_regime", "premortem_execution",
     "premortem_market_sector", "premortem_technical", "thesis", "why_now",
 )
-_BANKED = "D47 companion (entry-form early-400 draft loss)"
+_HANDLING = ("event_handling", "gap_risk_handling")
 
 
 def _candidate_id(cfg, evaluation_run_id: int) -> int:
@@ -168,18 +173,14 @@ def test_fx2_a_claimed_undecodable_anchor_is_one_resubmit_from_a_written_trade(
         assert _FRESH in recovery["schwab_source_value_json"]
         assert recovery["fill_origin_at_form_render"] == "schwab_auto"
 
-        # STEP 2 -- THE KNOWN LIMITATION, PINNED. The day the helper keeps the
-        # drafts this goes red and names the item that fixed it.
-        kept = {k: recovery[k] for k in _THIRTEEN if recovery.get(k, "")}
-        assert kept == {}, (
-            f"the recovery form now KEEPS pre-trade answers {sorted(kept)}: "
-            f"{_BANKED} looks fixed -- retire this pin and FX-2's corrected "
-            f"point 2 with it")
+        # STEP 2 -- the recovery form KEEPS every answer (the D47 companion;
+        # the old pin of their loss retired with the fix).
+        kept = {k: recovery.get(k) for k in _THIRTEEN + _HANDLING}
+        assert kept == {k: sent[k] for k in _THIRTEEN + _HANDLING}, (
+            "the recovery form dropped pre-trade answers")
 
-        # STEP 3 -- the operator retypes the thirteen and resubmits the
-        # recovery form's own state.
+        # STEP 3 -- the recovery form's own state, nothing retyped.
         resubmit = dict(recovery)
-        resubmit.update({k: sent[k] for k in _THIRTEEN})
         second = client.post("/trades/entry", data=resubmit,
                              headers={"HX-Request": "true"})
     assert second.status_code == 200, second.text

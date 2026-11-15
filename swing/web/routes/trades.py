@@ -598,11 +598,80 @@ def _with_decision_choice(vm, submitted: str | None):
     return dc_replace(vm, selected_decision_candidate_id=chosen)
 
 
+def _with_entry_submission(
+    vm, *, entry_date: str, entry_price: float, initial_stop: float,
+    shares: int, rationale: str, notes: str | None, drafts: dict,
+):
+    """Phase 22 entry-form rider (C2): THE one re-render of a refused entry
+    submit, used by every entry-side recovery form (`_rerender_entry_form_
+    with_error`, the missing-field 400 and the duplicate-position 400).
+
+    It replaces the six submitted position fields and sets EVERY `draft_*`
+    field from `drafts` -- the operator's typed pre-trade answers, built
+    once at the top of `entry_post` (`_entry_drafts`). The D47 companion:
+    before this, only the missing-field 400 kept the answers and every
+    other refusal handed back a blank journal. Drafts are answers, never
+    anchors: the auto-fill / decision anchors stay with each caller.
+    """
+    from dataclasses import replace as dc_replace
+    if vm is None:
+        return vm
+    return dc_replace(
+        vm,
+        entry_date=entry_date,
+        entry_price=entry_price,
+        initial_stop=initial_stop,
+        input_shares=shares,
+        rationale=rationale,
+        notes=notes or "",
+        **drafts,
+    )
+
+
+def _entry_drafts(
+    *, thesis, why_now, invalidation_condition, expected_scenario,
+    premortem_technical, premortem_market_sector, premortem_execution,
+    premortem_additional, event_risk_present, event_handling, event_type,
+    event_date, gap_risk_present, gap_risk_handling, emo_clean,
+    manual_entry_confidence, market_regime, catalyst,
+    catalyst_other_description, entry_intent,
+) -> dict:
+    """The drafts object: every `draft_*` field of `TradeEntryFormVM` from
+    the SUBMITTED form, with the expressions the missing-field 400 has always
+    used (the cleaned emotional-state tuple; the submitted `entry_intent`
+    verbatim, possibly "", so the re-rendered select keeps the operator's
+    choice and never re-seeds the suggestion over it)."""
+    return {
+        "draft_thesis": thesis or "",
+        "draft_why_now": why_now or "",
+        "draft_invalidation_condition": invalidation_condition or "",
+        "draft_expected_scenario": expected_scenario or "",
+        "draft_premortem_technical": premortem_technical or "",
+        "draft_premortem_market_sector": premortem_market_sector or "",
+        "draft_premortem_execution": premortem_execution or "",
+        "draft_premortem_additional": premortem_additional or "",
+        "draft_event_risk_present": event_risk_present,
+        "draft_event_handling": event_handling or "",
+        "draft_event_type": event_type or "",
+        "draft_event_date": event_date or "",
+        "draft_gap_risk_present": gap_risk_present,
+        "draft_gap_risk_handling": gap_risk_handling or "",
+        "draft_emotional_state_pre_trade": tuple(emo_clean),
+        "draft_manual_entry_confidence": manual_entry_confidence or "",
+        "draft_market_regime": market_regime or "",
+        "draft_catalyst": catalyst or "",
+        "draft_catalyst_other_description": catalyst_other_description or "",
+        # Tuition-vs-error (Task 3): the SUBMITTED design intent verbatim
+        # (possibly ""); the template discriminates on `is not none`.
+        "draft_entry_intent": entry_intent,
+    }
+
+
 def _rerender_entry_form_with_error(
     *, request: Request, templates, cfg, cache, executor,
     ticker: str, entry_date: str, entry_price: float, shares: int,
     initial_stop: float, rationale: str, notes: str | None,
-    error_message: str, origin: str = "watchlist",
+    error_message: str, drafts: dict, origin: str = "watchlist",
     # Phase 13 T3.SB1 Codex R1 Major #3 fix — preserve the submitted
     # auto-fill anchors across validation error re-renders. Without
     # these, ``build_entry_form_vm`` below fires a FRESH Schwab Trader
@@ -630,6 +699,10 @@ def _rerender_entry_form_with_error(
     form's colspan + Cancel target match the originating surface
     (hyp-recs vs watchlist). Defaults to 'watchlist' for backward
     compat with any caller that omits the kwarg.
+
+    Phase 22 entry-form rider: ``drafts`` (REQUIRED; every caller passes the
+    one object `entry_post` builds) carries the operator's pre-trade answers
+    back through `_with_entry_submission` (the D47 companion).
     """
     from dataclasses import replace as dc_replace
     vm = build_entry_form_vm(
@@ -637,14 +710,10 @@ def _rerender_entry_form_with_error(
         origin=origin,
     )
     if vm is not None:
-        vm = dc_replace(
-            vm,
-            entry_date=entry_date,
-            entry_price=entry_price,
-            initial_stop=initial_stop,
-            input_shares=shares,
-            rationale=rationale,
-            notes=notes or "",
+        vm = _with_entry_submission(
+            vm, entry_date=entry_date, entry_price=entry_price,
+            initial_stop=initial_stop, shares=shares, rationale=rationale,
+            notes=notes, drafts=drafts,
         )
         vm = _with_decision_choice(vm, submitted_decision_candidate_id)
         # Phase 13 T3.SB1 Codex R1 Major #3 fix — overwrite the freshly-
@@ -955,6 +1024,35 @@ def entry_post(
     # layout on each round-trip.
     origin_coerced = _coerce_origin(origin)
 
+    # Phase 7 Sub-C C.3 — emotional_state_pre_trade cleaning (the JSON
+    # encoding below consumes it). Drops empty strings so a bare-cURL POST
+    # submitting "emotional_state_pre_trade=" doesn't encode `[""]` and dodge
+    # the gate. Computed HERE (Phase 22 entry-form rider) because the drafts
+    # object below needs it before the first early 400.
+    emo_clean = [
+        s for s in (emotional_state_pre_trade or []) if s and s.strip()
+    ]
+    # Phase 22 entry-form rider (D47 companion): the operator's pre-trade
+    # answers, built ONCE and handed to EVERY recovery form, so a refusal
+    # never blanks the journal entry.
+    drafts = _entry_drafts(
+        thesis=thesis, why_now=why_now,
+        invalidation_condition=invalidation_condition,
+        expected_scenario=expected_scenario,
+        premortem_technical=premortem_technical,
+        premortem_market_sector=premortem_market_sector,
+        premortem_execution=premortem_execution,
+        premortem_additional=premortem_additional,
+        event_risk_present=event_risk_present,
+        event_handling=event_handling, event_type=event_type,
+        event_date=event_date, gap_risk_present=gap_risk_present,
+        gap_risk_handling=gap_risk_handling, emo_clean=emo_clean,
+        manual_entry_confidence=manual_entry_confidence,
+        market_regime=market_regime, catalyst=catalyst,
+        catalyst_other_description=catalyst_other_description,
+        entry_intent=entry_intent,
+    )
+
     # D86 T4.3, FORM C (RD, FX-1 ruled 2026-11-11). COHORT-GUARD REFUSES:
     # LABEL. ========== THIS GUARD REFUSES THE **LABEL**, NEVER THE **ENTRY**.
     #
@@ -1015,6 +1113,7 @@ def entry_post(
             entry_price=entry_price, shares=shares, initial_stop=initial_stop,
             rationale=rationale, notes=notes, error_message=rationale_error,
             origin=origin_coerced,
+            drafts=drafts,
             **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
@@ -1050,6 +1149,7 @@ def entry_post(
                 f"stop={initial_stop}"
             ),
             origin=origin_coerced,
+            drafts=drafts,
             **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
@@ -1080,6 +1180,7 @@ def entry_post(
                 SEAM_MESSAGE if entry_intent == UNINTENDED_EXECUTION
                 else f"invalid entry_intent {entry_intent!r}"),
             origin=origin_coerced,
+            drafts=drafts,
             **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
@@ -1119,6 +1220,7 @@ def entry_post(
                 "pipeline run. (V1 cached-only; manual fallback deferred to V2.)"
             ),
             origin=origin_coerced,
+            drafts=drafts,
             **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
@@ -1144,6 +1246,7 @@ def entry_post(
                 f"got {cp_algo_value!r}."
             ),
             origin=origin_coerced,
+            drafts=drafts,
             **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
@@ -1189,6 +1292,7 @@ def entry_post(
                     "pipeline_runs row."
                 ),
                 origin=origin_coerced,
+                drafts=drafts,
                 **_anchor_replay(),
                 submitted_decision_candidate_id=decision_candidate_id,
             )
@@ -1205,6 +1309,7 @@ def entry_post(
                     f"pipeline_runs.id={cp_anchor_value}"
                 ),
                 origin=origin_coerced,
+                drafts=drafts,
                 **_anchor_replay(),
                 submitted_decision_candidate_id=decision_candidate_id,
             )
@@ -1273,6 +1378,7 @@ def entry_post(
                     "the form to bind a current anchor."
                 ),
                 origin=origin_coerced,
+                drafts=drafts,
                 **_anchor_replay(),
                 submitted_decision_candidate_id=decision_candidate_id,
             )
@@ -1333,6 +1439,7 @@ def entry_post(
                     f"candidate; audit row recorded for review."
                 ),
                 origin=origin_coerced,
+                drafts=drafts,
                 **_anchor_replay(),
                 submitted_decision_candidate_id=decision_candidate_id,
             )
@@ -1340,13 +1447,9 @@ def entry_post(
     # Phase 7 Sub-C C.3 — emotional_state_pre_trade JSON-encoding.
     # Matches CLI's `_json.dumps(list(emotional_state))` (swing/cli.py).
     # Empty list / None → None so the validator's required-field check
-    # fires (NULL is treated as missing). Drops empty strings so a
-    # bare-cURL POST submitting "emotional_state_pre_trade=" doesn't
-    # encode `[""]` and dodge the gate.
+    # fires (NULL is treated as missing). `emo_clean` is the cleaned list
+    # computed at the top of this handler (the drafts object needs it).
     import json as _json
-    emo_clean = [
-        s for s in (emotional_state_pre_trade or []) if s and s.strip()
-    ]
     emo_json: str | None = _json.dumps(emo_clean) if emo_clean else None
 
     # Phase 13 T3.SB1 T-B.1.4 — fill_origin transition resolution.
@@ -1427,6 +1530,7 @@ def entry_post(
                 initial_stop=initial_stop, rationale=rationale, notes=notes,
                 error_message=error_message,
                 origin=origin_coerced,
+                drafts=drafts,
                 # Anchor was rejected as invalid — DON'T preserve it.
                 # Leaving these None tells _rerender_entry_form_with_error
                 # to use the rebuilt VM's fresh auto-fill anchor.
@@ -1664,6 +1768,7 @@ def entry_post(
                 "Re-render the form to recover."
             ),
             origin=origin_coerced,
+            drafts=drafts,
             **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
@@ -1701,6 +1806,7 @@ def entry_post(
             initial_stop=initial_stop, rationale=rationale, notes=notes,
             error_message=error_message,
             origin=origin_coerced,
+            drafts=drafts,
             **_anchor_replay(),
             submitted_decision_candidate_id=decision_candidate_id,
         )
@@ -1924,6 +2030,7 @@ def entry_post(
             initial_stop=initial_stop, rationale=rationale, notes=notes,
             error_message=error_message,
             origin=origin_coerced,
+            drafts=drafts,
             **_anchor_replay(),
             submitted_decision_candidate_id=None,
         )
@@ -2084,44 +2191,19 @@ def entry_post(
                 )
                 fresh_vm = vm
                 if vm is not None:
+                    # Phase 22 entry-form rider (C2): the six submitted fields
+                    # and EVERY draft (the 18 pre-trade answers + the SUBMITTED
+                    # design intent, verbatim, possibly "" -- the template
+                    # discriminates on `is not none`, Codex R1-Major-1) come
+                    # from the ONE helper every entry recovery form uses.
+                    vm = _with_entry_submission(
+                        vm, entry_date=entry_date, entry_price=entry_price,
+                        initial_stop=initial_stop, shares=shares,
+                        rationale=rationale, notes=notes, drafts=drafts,
+                    )
                     vm = dc_replace(
                         vm,
-                        entry_date=entry_date,
-                        entry_price=entry_price,
-                        initial_stop=initial_stop,
-                        input_shares=shares,
-                        rationale=rationale,
-                        notes=notes or "",
-                        # 18 pre-trade field draft preservation:
-                        draft_thesis=thesis or "",
-                        draft_why_now=why_now or "",
-                        draft_invalidation_condition=invalidation_condition or "",
-                        draft_expected_scenario=expected_scenario or "",
-                        draft_premortem_technical=premortem_technical or "",
-                        draft_premortem_market_sector=premortem_market_sector or "",
-                        draft_premortem_execution=premortem_execution or "",
-                        draft_premortem_additional=premortem_additional or "",
-                        draft_event_risk_present=event_risk_present,
-                        draft_event_handling=event_handling or "",
-                        draft_event_type=event_type or "",
-                        draft_event_date=event_date or "",
-                        draft_gap_risk_present=gap_risk_present,
-                        draft_gap_risk_handling=gap_risk_handling or "",
-                        draft_emotional_state_pre_trade=tuple(emo_clean),
-                        draft_manual_entry_confidence=manual_entry_confidence or "",
-                        draft_market_regime=market_regime or "",
-                        draft_catalyst=catalyst or "",
-                        draft_catalyst_other_description=(
-                            catalyst_other_description or ""
-                        ),
                         missing_fields=frozenset(exc.missing_fields),
-                        # Tuition-vs-error (Task 3): round-trip the SUBMITTED
-                        # design-intent verbatim (possibly "") so the re-rendered
-                        # <select> pre-selects the operator's choice -- NOT the
-                        # suggestion. An explicit "" (Unclassified) survives the
-                        # force resubmit because the template discriminates on
-                        # `is not none` (Codex R1-Major-1: NULL != standard).
-                        draft_entry_intent=entry_intent,
                         # Phase 13 T3.SB1 Codex R1 Major #3 fix — preserve
                         # the submitted auto-fill anchors so the
                         # MissingPreTradeFieldsException re-render carries
@@ -2378,15 +2460,17 @@ def entry_post(
                 )
                 fresh_vm = vm
                 if vm is not None:
+                    # Phase 22 entry-form rider (C2): the six submitted fields
+                    # (`input_shares` is the user's submitted count) and every
+                    # draft come from the ONE helper every entry recovery form
+                    # uses -- the duplicate 400 kept no answers before.
+                    vm = _with_entry_submission(
+                        vm, entry_date=entry_date, entry_price=entry_price,
+                        initial_stop=initial_stop, shares=shares,
+                        rationale=rationale, notes=notes, drafts=drafts,
+                    )
                     vm = dc_replace(
                         vm,
-                        entry_date=entry_date,
-                        entry_price=entry_price,
-                        initial_stop=initial_stop,
-                        # user's submitted value; suggested_shares stays as server computed
-                        input_shares=shares,
-                        rationale=rationale,
-                        notes=notes or "",
                         # Phase 13 T3.SB1 Codex R1 Major #3 + R2 Minor #1
                         # fix — preserve the submitted auto-fill anchors AND
                         # restore kind/advisory on the duplicate-position
@@ -2464,6 +2548,7 @@ def entry_post(
                     initial_stop=initial_stop, rationale=rationale, notes=notes,
                     error_message=f"Trade entry rejected: {exc}",
                     origin=origin_coerced,
+                    drafts=drafts,
                     **_anchor_replay(),
                     submitted_decision_candidate_id=decision_candidate_id,
                 )
@@ -2501,6 +2586,7 @@ def entry_post(
                         "contact a developer if the form was not manually altered."
                     ),
                     origin=origin_coerced,
+                    drafts=drafts,
                     **_anchor_replay(),
                     submitted_decision_candidate_id=decision_candidate_id,
                 )
@@ -2551,6 +2637,7 @@ def entry_post(
                         "contact a developer if the form was not manually altered."
                     ),
                     origin=origin_coerced,
+                    drafts=drafts,
                     **_anchor_replay(),
                     submitted_decision_candidate_id=decision_candidate_id,
                 )
