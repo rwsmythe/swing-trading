@@ -65,11 +65,21 @@ def test_sizing_hint_stop_ge_entry(test_cfg):
 
 
 def test_sizing_hint_zero_equity(seeded_db, monkeypatch):
-    """Zero equity → 200 with feasible=False guidance, not 500."""
+    """Zero equity → 200 with feasible=False guidance, not 500.
+
+    Phase 22 entry-form rider (D97): the hint now sizes on the FLOORED equity,
+    so a zero REAL equity under the test config's $7,500 floor sizes on $7,500
+    and is feasible. The no-equity branch is reachable only with no floor, so
+    this test sets the floor to 0 on the app's own cfg (after the startup
+    risk_policy reconcile) to keep pinning that branch's guidance."""
+    from dataclasses import replace as _replace
+
     cfg, cfg_path = seeded_db
     # Force equity=0 by patching current_equity where the route reads it.
     monkeypatch.setattr("swing.web.routes.trades.current_equity", lambda **_kw: 0.0)
     app = create_app(cfg, cfg_path)
+    app.state.cfg = _replace(app.state.cfg, account=_replace(
+        app.state.cfg.account, risk_equity_floor=0.0))
     with TestClient(app) as client:
         r = client.get("/trades/entry/sizing-hint?entry_price=180.0&initial_stop=170.0")
     assert r.status_code == 200
@@ -4992,12 +5002,14 @@ def test_b1_entry_form_asides_default_collapsed(seeded_db, monkeypatch):
 
 # ---------------------------------------------------------------------------
 # D84 T8 steps 3-4 -- the entry form and its sizing hint STATE the zero on the
-# H4 manual path (RD floor (1); CHARC E-e). The entry form sizes on the RAW
-# current equity ($1,200 here: the unfloored entry-form sizing is BANKED, not
-# changed), so a KOD-shaped entry (104.00 / 29.81) is a risk-bound zero.
+# H4 manual path (RD floor (1); CHARC E-e). Phase 22 entry-form rider (D97):
+# the entry form now sizes on the FLOORED equity -- max($1,200 real, $7,500
+# floor) = $7,500, a $37.50 budget (it was the raw $1,200, a $6.00 budget, and
+# "12.4x budget"). A KOD-shaped entry (104.00 / 29.81) risks $74.19 a share,
+# 74.19 / 37.50 = 1.98 -> "2.0x budget", so it is STILL a risk-bound zero.
 # ---------------------------------------------------------------------------
 _KOD_ENTRY_LINE = (
-    "0 shares at the $6.00 budget; 1 share risks $74.19 (12.4x budget) at "
+    "0 shares at the $37.50 budget; 1 share risks $74.19 (2.0x budget) at "
     "entry 104.00; above budget if you proceed")
 
 
@@ -5116,7 +5128,7 @@ def _shares_input_value(body):
 def test_an_auto_filled_risk_bound_zero_states_the_zero_with_the_fill_in_the_input(
         seeded_db, monkeypatch):
     """Discriminator (1). Populated auto-fill + a risk-bound-zero sizing (the KOD
-    geometry at the raw $1,200 equity): the hint states the zero AND the shares
+    geometry at the floored $7,500 equity, D97): the hint states the zero AND the shares
     input carries the broker quantity. Pre-fix the fill's count overwrote
     `suggested_shares`, so the hint rendered "Suggested max: 7 sh (~$0.00
     risk = 0.00%)" and the stated zero never showed."""
@@ -5139,9 +5151,11 @@ def test_an_auto_filled_risk_bound_zero_states_the_zero_with_the_fill_in_the_inp
 def test_an_auto_filled_feasible_sizing_hints_the_sizing_not_the_fill(
         seeded_db, monkeypatch):
     """Discriminator (2). Populated auto-fill + FEASIBLE sizing: the hint states
-    the sizing-derived maximum (entry 20.00 / stop 19.50 at $1,200: budget $6
-    -> 12 by risk, 15% position cap -> 9 shares, $4.50 risk = 0.38%), not the
-    fill's 50; the shares input is prefilled with the fill's 50."""
+    the sizing-derived maximum, not the fill's 50; the shares input is
+    prefilled with the fill's 50. Phase 22 entry-form rider (D97): the sizing
+    equity is the floored $7,500 (real $1,200): entry 20.00 / stop 19.50,
+    budget $37.50 -> 75 by risk, 15% position cap 1125 / 20 -> 56 shares,
+    $28.00 risk = 0.37% (it was $1,200: 9 shares, $4.50 risk = 0.38%)."""
     from datetime import datetime
 
     from swing.data.db import connect
@@ -5174,8 +5188,8 @@ def test_an_auto_filled_feasible_sizing_hints_the_sizing_not_the_fill(
     with TestClient(app) as client:
         r = client.get("/trades/entry/form?ticker=FEZ")
     assert r.status_code == 200
-    assert "Suggested max: <strong>9 sh</strong>" in r.text
-    assert "~$4.50 risk" in r.text
+    assert "Suggested max: <strong>56 sh</strong>" in r.text
+    assert "~$28.00 risk" in r.text
     assert "Suggested max: <strong>50 sh</strong>" not in r.text
     assert _shares_input_value(r.text) == 50
 

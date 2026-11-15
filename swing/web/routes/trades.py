@@ -17,7 +17,7 @@ from swing.data.db import connect
 from swing.data.repos.cash import list_cash
 from swing.data.repos.fills import list_fills_for_trade
 from swing.data.repos.trades import get_trade, list_open_trades
-from swing.recommendations.sizing import SizingResult, compute_shares, zero_share_line
+from swing.recommendations.sizing import SizingResult
 from swing.trades.entry import (
     DecisionNightRefusedError,
     DuplicateOpenPositionError,
@@ -735,6 +735,7 @@ def sizing_hint(
         # consumes non-entry fills via the shared _ExitShape pattern.
         from swing.web.view_models.trades import (
             _list_all_exitshape_via_fills,
+            entry_form_sizing,
         )
 
         conn = connect(cfg.paths.db_path)
@@ -748,11 +749,15 @@ def sizing_hint(
             starting_equity=cfg.account.starting_equity,
             exits=exits, cash_movements=cash_movements,
         )
-        sizing: SizingResult = compute_shares(
-            entry=entry, stop=stop, equity=equity,
-            max_risk_pct=cfg.risk.max_risk_pct,
-            position_pct_cap=cfg.sizing.position_pct_cap,
-        )
+        # D97 (Phase 22 entry-form rider): the ONE entry-form sizing, which
+        # floors the equity exactly as the form, the nightly recommendation
+        # and the latch card do.
+        form_sizing = entry_form_sizing(
+            cfg=cfg, entry=entry, stop=stop, real_equity=equity)
+        sizing: SizingResult | None = form_sizing.sizing
+        if sizing is None:
+            raise ValueError(
+                f"no sizable geometry for entry={entry!r} stop={stop!r}")
     except Exception as exc:
         log.warning("sizing-hint unexpected exception: %s", exc)
         return templates.TemplateResponse(
@@ -766,8 +771,7 @@ def sizing_hint(
         else:
             # D84 (RD's floor (1); CHARC E-e): the STATED zero, never "too
             # tight" -- the one formatter's line on the entry basis.
-            reason = zero_share_line(
-                sizing, basis_label="entry", basis_price=entry)
+            reason = form_sizing.sizing_zero_line
         return templates.TemplateResponse(
             request, "partials/sizing_hint.html.j2",
             {"guidance": reason},

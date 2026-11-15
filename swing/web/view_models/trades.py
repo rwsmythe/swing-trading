@@ -21,9 +21,13 @@ from swing.data.repos.trades import (
 )
 from swing.data.repos.watchlist import list_active_watchlist
 from swing.evaluation.dates import PageKind, topbar_session_date
-from swing.recommendations.sizing import compute_shares, zero_share_line
+from swing.recommendations.sizing import (
+    SizingResult,
+    compute_shares,
+    zero_share_line,
+)
 from swing.trades.entry import entry_rationale_options
-from swing.trades.equity import current_equity
+from swing.trades.equity import current_equity, sizing_equity
 from swing.trades.exit import ExitReason, recorded_exit_identities
 from swing.trades.exit_auto_fill import PossibleDuplicateFill
 from swing.trades.intent import (
@@ -317,9 +321,14 @@ class TradeEntryFormVM:
     # D84 T8 step 3 (RD's floor (1)): the STATED zero when the prices are
     # valid and the sizing comes out at zero shares -- the one formatter's
     # line on the "entry" basis. None otherwise, so "Enter a valid entry price
-    # and stop" renders ONLY when the prices are invalid. The equity this form
-    # sizes on is the unfloored current equity (a banked item, unchanged).
+    # and stop" renders ONLY when the prices are invalid. The four sizing
+    # fields come from `entry_form_sizing` (D97: the FLOORED equity).
     sizing_zero_line: str | None = None
+    # D97/D98 (Phase 22 entry-form rider): the REAL (unfloored) equity the
+    # builder read. Not rendered. A refused submit's re-render resizes on the
+    # SUBMITTED prices from this value through `entry_form_sizing`, so the
+    # floor is applied in one place and no second DB read is needed.
+    sizing_real_equity: float = 0.0
     # D84 T8.3 completion (CHARC amendment 3): the shares INPUT's prefill,
     # distinct from the HINT. The Schwab auto-fill's share count when the
     # auto-fill is populated, else the sizing-derived shares. The input shows
@@ -437,6 +446,70 @@ class TradeEntryFormVM:
     entry_intent_choices: tuple[tuple[str, str], ...] = ()
     suggested_entry_intent: str | None = None
     draft_entry_intent: str | None = None
+
+
+@dataclass(frozen=True)
+class EntryFormSizing:
+    """The entry form's four sizing fields, plus the `SizingResult` they came
+    from (None when the geometry is not sizable)."""
+    suggested_shares: int
+    risk_dollars: float
+    risk_pct: float
+    sizing_zero_line: str | None
+    sizing: SizingResult | None = None
+
+    def vm_fields(self) -> dict:
+        """The four `TradeEntryFormVM` fields, for `dataclasses.replace`."""
+        return {
+            "suggested_shares": self.suggested_shares,
+            "risk_dollars": self.risk_dollars,
+            "risk_pct": self.risk_pct,
+            "sizing_zero_line": self.sizing_zero_line,
+        }
+
+
+def entry_form_sizing(
+    *, cfg: Config, entry: float, stop: float, real_equity: float,
+) -> EntryFormSizing:
+    """THE entry form's sizing (Phase 22 entry-form rider, C1). Three
+    callers: `build_entry_form_vm`, the `sizing-hint` route and the entry
+    POST's re-render helper.
+
+    D97: the equity is floored here, `sizing_equity(real_equity=...,
+    floor=cfg.account.risk_equity_floor)`, the same call the nightly
+    recommendation (`swing/pipeline/runner.py`) and the latch card
+    (`swing/web/view_models/latches.py`) make, so the three surfaces state
+    one budget for one account. `real_equity` is the UNFLOORED equity.
+
+    A geometry that is not `entry > 0 and 0 < stop < entry` (or carries a
+    non-finite price) is not sized: (0, 0.0, 0.0, None), so the template asks
+    for valid prices rather than stating a zero.
+    """
+    import math
+
+    sizable = (
+        math.isfinite(entry) and math.isfinite(stop)
+        and entry > 0 and 0 < stop < entry
+    )
+    if not sizable:
+        return EntryFormSizing(
+            suggested_shares=0, risk_dollars=0.0, risk_pct=0.0,
+            sizing_zero_line=None, sizing=None)
+    sizing = compute_shares(
+        entry=entry, stop=stop,
+        equity=sizing_equity(
+            real_equity=real_equity, floor=cfg.account.risk_equity_floor),
+        max_risk_pct=cfg.risk.max_risk_pct,
+        position_pct_cap=cfg.sizing.position_pct_cap,
+    )
+    return EntryFormSizing(
+        suggested_shares=sizing.shares,
+        risk_dollars=sizing.risk_dollars,
+        risk_pct=sizing.risk_pct,
+        sizing_zero_line=zero_share_line(
+            sizing, basis_label="entry", basis_price=entry),
+        sizing=sizing,
+    )
 
 
 def build_entry_form_vm(
@@ -854,27 +927,15 @@ def build_entry_form_vm(
             auto_fill.entry_date or auto_fill_entry_date_default
         )
 
-    # Sizing hint at current (entry, stop).
+    # Sizing hint at current (entry, stop). D97: `entry_form_sizing` floors
+    # the equity; the VM keeps the REAL equity for a re-render's resize.
     equity = current_equity(
         starting_equity=cfg.account.starting_equity,
         exits=exits, cash_movements=cash_movements,
     )
-    if entry_price > 0 and 0 < initial_stop < entry_price:
-        sizing = compute_shares(
-            entry=entry_price, stop=initial_stop, equity=equity,
-            max_risk_pct=cfg.risk.max_risk_pct,
-            position_pct_cap=cfg.sizing.position_pct_cap,
-        )
-        suggested_shares = sizing.shares
-        risk_dollars = sizing.risk_dollars
-        risk_pct = sizing.risk_pct
-        sizing_zero_line = zero_share_line(
-            sizing, basis_label="entry", basis_price=entry_price)
-    else:
-        suggested_shares = 0
-        risk_dollars = 0.0
-        risk_pct = 0.0
-        sizing_zero_line = None
+    form_sizing = entry_form_sizing(
+        cfg=cfg, entry=entry_price, stop=initial_stop, real_equity=equity)
+    suggested_shares = form_sizing.suggested_shares
     # Phase 13 T3.SB1 — the Schwab shares prefill the INPUT so it matches
     # the actual fill. D84 T8.3 completion (CHARC amendment 3): the fill's
     # count goes to `prefill_shares`, never over `suggested_shares` -- the
@@ -907,10 +968,8 @@ def build_entry_form_vm(
         initial_stop=initial_stop,
         watchlist_entry_target=watchlist_entry_target,
         watchlist_initial_stop=watchlist_initial_stop,
-        suggested_shares=suggested_shares,
-        risk_dollars=risk_dollars,
-        risk_pct=risk_pct,
-        sizing_zero_line=sizing_zero_line,
+        **form_sizing.vm_fields(),
+        sizing_real_equity=equity,
         prefill_shares=prefill_shares,
         soft_warn_threshold=cfg.position_limits.soft_warn_open,
         hard_cap=cfg.position_limits.hard_cap_open,
